@@ -255,4 +255,4 @@ Tests       43 passed (43)
 | 归档群组只读 | PASS | `blocks writes to an archived group` |
 | 成员生命周期 | PASS | `rejects duplicate memberships and removing the last group owner` |
 
-全量校验：`lint` / `typecheck` / `format:check` / `test`（43）/ `build` 全过。
+全量校验：`lint` / `typecheck` / `format:check` / `test`（43）/ `build` 全过。提交：`b79a580`。
