@@ -6,7 +6,7 @@ import { acquireInstanceLock } from "./lock.js";
 const migrationsFolder = fileURLToPath(new URL("../drizzle/", import.meta.url));
 
 const config = loadConfig();
-const lockPath = `${config.databasePath}.lock`;
+const lockPath = `${config.databasePath}.lockdb`;
 const lock = acquireInstanceLock(lockPath);
 
 try {

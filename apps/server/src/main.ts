@@ -4,7 +4,7 @@ import { acquireInstanceLock, InstanceLockError, openDatabase } from "@room/data
 import { buildApp } from "./app.js";
 
 const config = loadConfig();
-const lockPath = `${config.databasePath}.lock`;
+const lockPath = `${config.databasePath}.lockdb`;
 
 let lock: ReturnType<typeof acquireInstanceLock>;
 try {

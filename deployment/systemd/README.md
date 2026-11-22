@@ -25,7 +25,7 @@ systemctl status agentroom
 curl -s http://127.0.0.1:8787/healthz
 ```
 
-数据库文件位于 `DATABASE_PATH`，单实例锁是同目录下的 `room.db.lock`。
+数据库文件位于 `DATABASE_PATH`；单实例锁是同目录下的 `room.db.lockdb`（一个由 SQLite 持有 `BEGIN IMMEDIATE` 的锁库，进程退出即释放，无需手工删除）。
 
 ## 端口与网络
 
