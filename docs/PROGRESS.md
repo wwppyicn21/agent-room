@@ -126,6 +126,33 @@ $ 停库写入 e2e 行 → 重启 → 读回 [ { key: 'e2e', value: 'persisted' 
 | 单实例锁用 pid 文件而非 flock | 无原生依赖；死进程锁可自动回收；pid 复用属于已知理论风险 |
 | 冷启动约 3 秒 | Node 加载原生模块 + 迁移；M2 起观察是否可接受 |
 
+### M1 评审修复（2026-11-22）
+
+ChatGPT 审查指出一个高优先级问题：旧 pid 锁在回收“过期锁”时先读 pid、再删除文件，两个启动进程可能同时判断锁已过期，A 删除旧锁并创建新锁后，B 又删掉 A 的新锁，双方都认为自己持有锁。已修复：
+
+- 锁改为独立 SQLite 锁库 `room.db.lockdb`，进程用 `BEGIN IMMEDIATE` 持有至退出；获取与竞争由 SQLite / OS 文件锁保证原子性，进程死亡由内核释放，**不再存在删除过期锁的步骤**。
+- 第二实例得到 `SQLITE_BUSY`，转成 `InstanceLockError` 并退出 1；pid 写在未提交事务内，供诊断。
+- 锁库与 `-journal` 进入 `.gitignore`；`main.ts`、`init.ts` 的锁路径同步为 `*.lockdb`。
+
+并发与崩溃验证：
+
+```text
+# 3 个独立子进程同时抢锁
+ACQUIRED ×1，LOCKED ×2（vitest: lets exactly one of several concurrent starters win）
+
+# 真实 server 双实例同时启动
+alive: A=no B=yes
+[agent-room] another agent-room instance is already running (lock database /tmp/room-lock-e2e/room.db.lockdb)
+
+# SIGKILL 持有者后立即重启
+kill -9 <winner> → 端口释放
+node apps/server/dist/main.js → agent-room listening
+curl /readyz → {"status":"ready","database":"ok"} 200
+SIGTERM → exit 0
+```
+
+第二个问题（低）：`docs/PLAN.md` 执行表已同步，M0 记为 `4d12d79`、M1 记为 `1ab5092`。
+
 ### M1 遗留
 
 - `/ws` 目前只有 hello / ping / 错误处理，业务协议在 M2/M5 填充。

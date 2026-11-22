@@ -1807,8 +1807,8 @@ M9  Cloudflare + Mini PC 原生部署、SQLite 备份/恢复、JSON 数据导入
 
 | 里程碑 | 状态 | Commit / 分支 | 测试结果 | 备注 |
 |---|---|---|---|---|
-| M0 | 未开始 | | | |
-| M1 | 未开始 | | | |
+| M0 | 完成（2026-11-22） | 4d12d79 | 旧服务编译通过、插件语法 6/6、环境核对通过 | 盘点见 docs/INVENTORY.md，迁移参考见 docs/MIGRATION.md |
+| M1 | 完成（2026-11-22） | 1ab5092 | lint / typecheck / 18 tests / build 全过；并发启动与 SIGKILL 恢复实测 | 实现记录见 docs/PROGRESS.md「M1」 |
 | M2 | 未开始 | | | |
 | M3 | 未开始 | | | |
 | M4 | 未开始 | | | |
