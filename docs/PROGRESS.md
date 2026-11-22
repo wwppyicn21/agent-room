@@ -210,6 +210,8 @@ pending deliveries: SEARCH agent_deliveries USING INDEX agent_deliveries_pending
 - `threads.source_message_id` 因与 `messages.thread_id` 成环，不建硬外键；服务层校验同群。
 - Agent 投递当前是 `pending → delivered → acked` 的状态机，真正的长连接推送在 M5。
 
+提交：`cba3ce5`；`docs/PLAN.md` 执行表已同步。
+
 ### M2 遗留
 
 - 尚未有 HTTP/WS API 层（M2 只做服务层与权限规则）；Dev Auth Provider 在 M3 接 Access 前补齐。
