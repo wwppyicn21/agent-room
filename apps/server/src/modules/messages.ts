@@ -5,7 +5,12 @@ import { messageContentSchema } from "@room/protocol";
 import type { RoomContext, RoomDb } from "./context.js";
 import { NotFoundError, ValidationError, isUniqueViolation } from "./errors.js";
 import { appendEvent, enqueueGroupAgentDeliveries } from "./events.js";
-import { type Actor, requireActiveGroup, requireActor, requireGroupMember } from "./permissions.js";
+import {
+  type Actor,
+  requireActiveGroup,
+  requireGroupMember,
+  requireWritableActor,
+} from "./permissions.js";
 
 export interface PostMessageInput {
   groupId: string;
@@ -22,7 +27,7 @@ export function postMessage(ctx: RoomContext, input: PostMessageInput): MessageR
   return ctx.db.transaction((transaction) => {
     const db = transaction as unknown as RoomDb;
     const group = requireActiveGroup(db, input.groupId);
-    requireActor(db, input.actor);
+    requireWritableActor(db, input.actor);
     requireGroupMember(db, input.groupId, input.actor);
     const content = messageContentSchema.parse(input.content);
     const hop = input.hop ?? 0;

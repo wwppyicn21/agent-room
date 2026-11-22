@@ -62,6 +62,27 @@ export function requireSystemAdmin(db: RoomDb, userId: string): UserRow {
   return user;
 }
 
+export function requireOwner(db: RoomDb, userId: string): UserRow {
+  const user = requireUser(db, userId);
+  if (user.role !== "owner") {
+    throw new ForbiddenError(`user ${userId} is not the system owner`);
+  }
+  return user;
+}
+
+/** Readonly users keep read access but may never write. */
+export function requireWriteUser(db: RoomDb, userId: string): UserRow {
+  const user = requireUser(db, userId);
+  if (user.role === "readonly") {
+    throw new ForbiddenError(`user ${userId} is readonly`);
+  }
+  return user;
+}
+
+export function requireWritableActor(db: RoomDb, actor: Actor): UserRow | AgentRow {
+  return actor.type === "user" ? requireWriteUser(db, actor.id) : requireAgent(db, actor.id);
+}
+
 export function requireGroup(db: RoomDb, groupId: string): GroupRow {
   const group = db.select().from(groups).where(eq(groups.id, groupId)).get();
   if (!group) throw new NotFoundError(`group ${groupId} not found`);
@@ -95,6 +116,8 @@ export function isGroupMember(
 }
 
 export function requireGroupMember(db: RoomDb, groupId: string, actor: Actor): GroupMemberRow {
+  requireGroup(db, groupId);
+  requireActor(db, actor);
   const membership = db
     .select()
     .from(groupMembers)
@@ -121,10 +144,21 @@ export function requireGroupManager(db: RoomDb, groupId: string, actor: Actor): 
     throw new ForbiddenError("agents cannot manage groups");
   }
   requireGroup(db, groupId);
-  const membership = requireGroupMember(db, groupId, actor);
-  if (membership.memberRole === "owner" || membership.memberRole === "admin") return;
   const user = requireUser(db, actor.id);
-  if (!isSystemAdmin(user)) {
+  // System owners/admins manage any group, including groups they did not join.
+  if (isSystemAdmin(user)) return;
+  const membership = db
+    .select()
+    .from(groupMembers)
+    .where(
+      and(
+        eq(groupMembers.groupId, groupId),
+        eq(groupMembers.memberType, "user"),
+        eq(groupMembers.memberId, actor.id),
+      ),
+    )
+    .get();
+  if (!membership || (membership.memberRole !== "owner" && membership.memberRole !== "admin")) {
     throw new ForbiddenError(`user ${actor.id} cannot manage group ${groupId}`);
   }
 }

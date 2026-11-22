@@ -14,6 +14,7 @@ import {
   requireAgent,
   requireGroupManager,
   requireGroupMember,
+  requireWriteUser,
   validateTitle,
 } from "./permissions.js";
 
@@ -28,10 +29,23 @@ export function createTaskFromMessage(
     description?: string | null;
     assignedAgentId?: string | null;
     createdByUserId: string;
+    idempotencyKey?: string | null;
   },
 ): { task: TaskRow; threadId: string } {
+  requireWriteUser(ctx.db, input.createdByUserId);
   requireActiveGroup(ctx.db, input.groupId);
-  requireGroupMember(ctx.db, input.groupId, { type: "user", id: input.createdByUserId });
+  const idempotencyKey = input.idempotencyKey?.trim() || null;
+  if (idempotencyKey) {
+    const existing = ctx.db
+      .select()
+      .from(tasks)
+      .where(and(eq(tasks.groupId, input.groupId), eq(tasks.idempotencyKey, idempotencyKey)))
+      .get();
+    if (existing) {
+      if (!existing.threadId) throw new ConflictError(`task ${existing.id} has no thread`);
+      return { task: existing, threadId: existing.threadId };
+    }
+  }
   getGroupMessageRow(ctx, input.groupId, input.sourceMessageId);
   const title = validateTitle(input.title, "title");
   if (input.assignedAgentId) {
@@ -62,6 +76,7 @@ export function createTaskFromMessage(
         id: taskId,
         groupId: input.groupId,
         threadId,
+        idempotencyKey,
         sourceMessageId: input.sourceMessageId,
         title,
         description: input.description ?? null,
@@ -138,6 +153,7 @@ export function assignTask(
 ): TaskRow {
   const task = getTaskRow(ctx, input.taskId);
   requireGroupManager(ctx.db, task.groupId, { type: "user", id: input.actorUserId });
+  requireWriteUser(ctx.db, input.actorUserId);
   requireAgent(ctx.db, input.agentId);
   if (!isGroupMember(ctx.db, task.groupId, "agent", input.agentId)) {
     throw new ValidationError(`agent ${input.agentId} is not a member of the group`);

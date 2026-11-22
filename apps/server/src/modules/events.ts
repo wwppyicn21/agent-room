@@ -1,4 +1,4 @@
-import { and, asc, eq } from "drizzle-orm";
+import { and, asc, eq, or } from "drizzle-orm";
 import {
   agentDeliveries,
   type AgentDeliveryRow,
@@ -9,7 +9,7 @@ import {
 import { newId } from "@room/protocol";
 import { type EventType, eventPayloadSchema } from "@room/protocol";
 import type { RoomContext, RoomDb } from "./context.js";
-import { NotFoundError } from "./errors.js";
+import { ConflictError, NotFoundError } from "./errors.js";
 import { requireAgent } from "./permissions.js";
 import type { Actor } from "./permissions.js";
 
@@ -116,19 +116,56 @@ export function listPendingDeliveries(
     .all();
 }
 
+/**
+ * Pending plus delivered-but-not-yet-acked rows. A delivered row whose agent
+ * disconnected before acking stays recoverable instead of silently dropping.
+ */
+export function listOutstandingDeliveries(
+  ctx: RoomContext,
+  input: { agentId: string; limit?: number },
+): AgentDeliveryRow[] {
+  requireAgent(ctx.db, input.agentId);
+  const limit = Math.min(Math.max(input.limit ?? 50, 1), 200);
+  return ctx.db
+    .select()
+    .from(agentDeliveries)
+    .where(
+      and(
+        eq(agentDeliveries.agentId, input.agentId),
+        or(eq(agentDeliveries.status, "pending"), eq(agentDeliveries.status, "delivered")),
+      ),
+    )
+    .orderBy(asc(agentDeliveries.createdAt), asc(agentDeliveries.id))
+    .limit(limit)
+    .all();
+}
+
+function getDeliveryForAgent(
+  ctx: RoomContext,
+  deliveryId: string,
+  agentId: string,
+): AgentDeliveryRow {
+  requireAgent(ctx.db, agentId);
+  const delivery = ctx.db
+    .select()
+    .from(agentDeliveries)
+    .where(and(eq(agentDeliveries.id, deliveryId), eq(agentDeliveries.agentId, agentId)))
+    .get();
+  if (!delivery) throw new NotFoundError(`delivery ${deliveryId} not found`);
+  return delivery;
+}
+
+/** pending -> delivered. Every attempt increments `attempts`. */
 export function markDeliveryDelivered(
   ctx: RoomContext,
   input: { deliveryId: string; agentId: string; now?: number },
 ): AgentDeliveryRow {
-  requireAgent(ctx.db, input.agentId);
-  const delivery = ctx.db
-    .select()
-    .from(agentDeliveries)
-    .where(
-      and(eq(agentDeliveries.id, input.deliveryId), eq(agentDeliveries.agentId, input.agentId)),
-    )
-    .get();
-  if (!delivery) throw new NotFoundError(`delivery ${input.deliveryId} not found`);
+  const delivery = getDeliveryForAgent(ctx, input.deliveryId, input.agentId);
+  if (delivery.status !== "pending") {
+    throw new ConflictError(
+      `delivery ${delivery.id} is ${delivery.status}; only pending deliveries can be delivered`,
+    );
+  }
   const now = input.now ?? ctx.now();
   ctx.db
     .update(agentDeliveries)
@@ -136,25 +173,25 @@ export function markDeliveryDelivered(
       status: "delivered",
       attempts: delivery.attempts + 1,
       deliveredAt: now,
+      lastError: null,
     })
     .where(eq(agentDeliveries.id, delivery.id))
     .run();
   return { ...delivery, status: "delivered", attempts: delivery.attempts + 1, deliveredAt: now };
 }
 
+/** delivered -> acked. Acking an already acked delivery is idempotent. */
 export function ackDelivery(
   ctx: RoomContext,
   input: { deliveryId: string; agentId: string; now?: number },
 ): AgentDeliveryRow {
-  requireAgent(ctx.db, input.agentId);
-  const delivery = ctx.db
-    .select()
-    .from(agentDeliveries)
-    .where(
-      and(eq(agentDeliveries.id, input.deliveryId), eq(agentDeliveries.agentId, input.agentId)),
-    )
-    .get();
-  if (!delivery) throw new NotFoundError(`delivery ${input.deliveryId} not found`);
+  const delivery = getDeliveryForAgent(ctx, input.deliveryId, input.agentId);
+  if (delivery.status === "acked") return delivery;
+  if (delivery.status !== "delivered") {
+    throw new ConflictError(
+      `delivery ${delivery.id} is ${delivery.status}; only delivered deliveries can be acked`,
+    );
+  }
   const now = input.now ?? ctx.now();
   ctx.db
     .update(agentDeliveries)
@@ -162,4 +199,42 @@ export function ackDelivery(
     .where(eq(agentDeliveries.id, delivery.id))
     .run();
   return { ...delivery, status: "acked", ackedAt: now };
+}
+
+/** pending|delivered -> failed. Failing an already failed delivery is idempotent. */
+export function failDelivery(
+  ctx: RoomContext,
+  input: { deliveryId: string; agentId: string; error?: string | null; now?: number },
+): AgentDeliveryRow {
+  const delivery = getDeliveryForAgent(ctx, input.deliveryId, input.agentId);
+  if (delivery.status === "failed") return delivery;
+  if (delivery.status === "acked") {
+    throw new ConflictError(`delivery ${delivery.id} is acked and cannot fail`);
+  }
+  ctx.db
+    .update(agentDeliveries)
+    .set({ status: "failed", lastError: input.error ?? "delivery failed" })
+    .where(eq(agentDeliveries.id, delivery.id))
+    .run();
+  return { ...delivery, status: "failed", lastError: input.error ?? "delivery failed" };
+}
+
+/** delivered -> pending, for retrying a delivery whose ack never arrived. */
+export function requeueDelivery(
+  ctx: RoomContext,
+  input: { deliveryId: string; agentId: string },
+): AgentDeliveryRow {
+  const delivery = getDeliveryForAgent(ctx, input.deliveryId, input.agentId);
+  if (delivery.status === "pending") return delivery;
+  if (delivery.status !== "delivered") {
+    throw new ConflictError(
+      `delivery ${delivery.id} is ${delivery.status}; only delivered deliveries can be requeued`,
+    );
+  }
+  ctx.db
+    .update(agentDeliveries)
+    .set({ status: "pending", deliveredAt: null })
+    .where(eq(agentDeliveries.id, delivery.id))
+    .run();
+  return { ...delivery, status: "pending", deliveredAt: null };
 }

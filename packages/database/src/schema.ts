@@ -238,6 +238,7 @@ export const tasks = sqliteTable(
     sourceMessageId: text("source_message_id").references(() => messages.id, {
       onDelete: "set null",
     }),
+    idempotencyKey: text("idempotency_key"),
     title: text("title").notNull(),
     description: text("description"),
     status: text("status", {
@@ -270,6 +271,7 @@ export const tasks = sqliteTable(
     index("tasks_status_idx").on(table.status),
     index("tasks_thread_idx").on(table.threadId),
     index("tasks_assignee_idx").on(table.assignedAgentId),
+    uniqueIndex("tasks_group_idempotency_uq").on(table.groupId, table.idempotencyKey),
   ],
 );
 

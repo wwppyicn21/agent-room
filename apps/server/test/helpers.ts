@@ -1,7 +1,8 @@
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { type DatabaseHandle, migrationsFolder, openDatabase } from "@room/database";
+import { eq } from "drizzle-orm";
+import { type DatabaseHandle, migrationsFolder, openDatabase, users } from "@room/database";
 import type { RbacRole } from "@room/protocol";
 import { type RoomContext, createRoomContext } from "../src/modules/context.js";
 import { registerAgent } from "../src/modules/agents.js";
@@ -29,7 +30,10 @@ export function createTestRoom(): TestRoom {
 }
 
 export function seedUser(ctx: RoomContext, displayName: string, role: RbacRole = "member"): string {
-  return createUser(ctx, { displayName, role }).id;
+  // The first user bootstraps as owner; later users are created by that owner.
+  const owner = ctx.db.select({ id: users.id }).from(users).where(eq(users.role, "owner")).get();
+  if (!owner) return createUser(ctx, { displayName, role: "owner" }).id;
+  return createUser(ctx, { displayName, role, actorUserId: owner.id }).id;
 }
 
 export function seedGroup(ctx: RoomContext, ownerUserId: string, name = "group"): string {

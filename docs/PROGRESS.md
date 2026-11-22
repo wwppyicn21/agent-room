@@ -217,3 +217,42 @@ pending deliveries: SEARCH agent_deliveries USING INDEX agent_deliveries_pending
 - 尚未有 HTTP/WS API 层（M2 只做服务层与权限规则）；Dev Auth Provider 在 M3 接 Access 前补齐。
 - 消息风控（`maxRepliesPerRoot`、`maxAgentMessagesPerMinute`）已存配置，尚未在发送路径强制执行。
 - `listTasks` 的 keyset 游标按 `(created_at, id)`；任务量极大时再接 `EXPLAIN` 回归。
+
+### M2 Review Fix（2026-11-22）
+
+按评审（ChatGPT 静态审查）补齐 M2 的权限边界、状态一致性与测试覆盖；未提前实现 M3/M4/M5。
+
+修复：
+
+- **P1 全局 readonly**：新增 `requireWriteUser` / `requireWritableActor`；`postMessage`、`createThread`、`createTaskFromMessage`、`createGroup`、`closeThread`、`addMember`、`removeMember`、`updateGroupAISettings`、`assignTask` 全部拒绝 readonly 用户。readonly 的群管理员也不能管理群组。
+- **P1 disabled 身份**：`requireGroupMember` 先 `requireActor`，读接口（`listMessages` / `getMessage` / `getThread` / `listThreads` / `listGroupMembers` / `getTask` / `listTasks`）统一拒绝 disabled 用户 / Agent。
+- **P1 Owner/Admin 分级**：`createUser` 增加 `actorUserId`（首个用户是 bootstrap owner）；只有 owner 能创建 / 提升 owner 与 admin、能禁用 owner/admin；last-owner 保护保留。
+- **P1 `requireGroupManager` 顺序**：系统 owner/admin 直接放行（可管理非成员群组），普通用户才校验群内 owner/admin。
+- **P2 Agent 群角色**：Agent 只能以 `member` 加入群组，`admin`/`owner` 抛 `ValidationError`。
+- **P2 External Identity 事务**：`external_identities` + `events(identity.linked)` + `audit_logs` 同事务。
+- **P2 Task 幂等**：`tasks.idempotency_key` + `unique(group_id, idempotency_key)`（迁移 `0003_closed_newton_destine.sql`）；重复请求返回原 Task / Thread。
+- **P2 Delivery 状态机**：`pending → delivered → acked`、`pending|delivered → failed`、`delivered → pending`（requeue）；非法转换抛 `ConflictError`，ack/fail 幂等；新增 `listOutstandingDeliveries` 覆盖“已送达未 ack”。
+- **P3 文档**：README 更新到 M2；`docs/DATABASE.md` 增投递状态机与已知偏差。
+
+测试从 27 增至 43（新增 `apps/server/test/permissions.test.ts` 16 例）：
+
+```text
+Test Files  7 passed (7)
+Tests       43 passed (43)
+```
+
+| 评审项 | 结果 | 测试 |
+|---|---|---|
+| Readonly 全局生效 | PASS | `rejects message, thread, task and group writes from readonly users` / `rejects group management by a readonly group admin` |
+| Disabled 用户/Agent | PASS | `rejects reads from a disabled user` / `rejects reads and writes from a disabled agent` / `rejects group management by a disabled group admin` |
+| System Admin 管非成员群组 | PASS | `lets a system admin manage a group they are not a member of` |
+| Owner / Admin 分级 | PASS | `only the owner can grant admin or owner roles` / `only the owner can disable an admin` |
+| Last owner 保护 | PASS | `protects the last active owner from demotion and disabling` |
+| Agent 群角色 | PASS | `refuses to grant agents owner or admin roles` |
+| External Identity 事务 | PASS | `commits the external identity, event and audit row atomically` |
+| Task 请求幂等 | PASS | `returns the original task for a repeated idempotency key` |
+| Delivery 状态机 | PASS | `enforces the pending -> delivered -> acked transition and requeue` |
+| 归档群组只读 | PASS | `blocks writes to an archived group` |
+| 成员生命周期 | PASS | `rejects duplicate memberships and removing the last group owner` |
+
+全量校验：`lint` / `typecheck` / `format:check` / `test`（43）/ `build` 全过。

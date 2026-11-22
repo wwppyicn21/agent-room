@@ -6,7 +6,9 @@
 
 ## 状态
 
-**M1 完成**（2026-11-22）：pnpm workspace、Fastify 骨架、SQLite（WAL/外键/单实例锁）、最小 WebSocket、systemd 单元与 CI 已就绪。业务表与 Room Core 在 M2 实现。
+**M2 完成**（2026-11-22，含评审修复）：M0 盘点、M1 骨架、M2 Room Core（用户 / 群组 / Agent / 消息 / Thread / Task / Outbox / Audit）与权限规则已就绪，43 个测试通过。
+
+M3 尚未开始。当前只提供 Room Core 服务层、健康探针与最小 WebSocket；**没有 HTTP/WS 业务 API，也没有公网用户认证**。
 
 ## 快速开始
 

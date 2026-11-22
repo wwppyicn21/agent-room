@@ -11,6 +11,7 @@ import {
   requireActiveGroup,
   requireGroupManager,
   requireGroupMember,
+  requireWriteUser,
   validateTitle,
 } from "./permissions.js";
 
@@ -24,7 +25,7 @@ export function createThread(
   },
 ): ThreadRow {
   requireActiveGroup(ctx.db, input.groupId);
-  requireGroupMember(ctx.db, input.groupId, { type: "user", id: input.createdByUserId });
+  requireWriteUser(ctx.db, input.createdByUserId);
   getGroupMessageRow(ctx, input.groupId, input.sourceMessageId);
   const title = validateTitle(input.title, "title");
   const now = ctx.now();
@@ -90,6 +91,7 @@ export function closeThread(
   ctx: RoomContext,
   input: { threadId: string; actorUserId: string },
 ): ThreadRow {
+  requireWriteUser(ctx.db, input.actorUserId);
   const thread = getThread(ctx, {
     threadId: input.threadId,
     viewer: { type: "user", id: input.actorUserId },

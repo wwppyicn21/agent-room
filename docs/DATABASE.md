@@ -104,7 +104,7 @@ tasks by group: SEARCH tasks USING INDEX tasks_group_idx (group_id=?)
 pending deliveries: SEARCH agent_deliveries USING INDEX agent_deliveries_pending_idx (agent_id=? AND status=?)
 events by group: SEARCH events USING INDEX events_group_seq_idx (group_id=? AND seq>?)
 message idempotency: SEARCH messages USING INDEX messages_group_client_uq (group_id=? AND client_message_id=?)
-explicit indexes: 30
+explicit indexes: 31
 ```
 
 消息分页使用 `WHERE group_id = ? AND seq > ? ORDER BY seq LIMIT 50`，命中
@@ -124,7 +124,31 @@ explicit indexes: 30
 所有函数都在 `ctx.db.transaction(...)` 内完成上述写入；zod 校验、权限判断失败时整个事务回滚。
 事务内没有 `fetch`、模型调用或等待用户输入。
 
-## 7. 常用命令
+### 6.1 投递状态机与请求幂等
+
+`agent_deliveries.status`：
+
+```text
+pending ──deliver──▶ delivered ──ack──▶ acked
+   │                     │
+   │                     └──requeue──▶ pending   （ack 超时后重投）
+   └──────────fail───────┴──────────▶ failed
+```
+
+- 非法转换抛 `ConflictError`；`acked` 再次 `ack`、`failed` 再次 `fail` 幂等。
+- `listPendingDeliveries` 只取 `pending`；`listOutstandingDeliveries` 取 `pending + delivered`，避免“已送达但断线未 ack”的投递永久消失。
+- `tasks(group_id, idempotency_key)` 唯一索引把 HTTP 重试折叠成同一个 Task；`createTaskFromMessage` 命中已有 key 时直接返回原 Task 与 Thread。
+- `linkExternalIdentity` 的 `external_identities`、`events(identity.linked)`、`audit_logs` 在同一事务提交。
+
+## 7. 已知偏差（当前实现 vs 目标设计）
+
+- `eventPayloadSchema` 仍是通用 `z.record`，尚未按事件类型逐一定义 payload schema（M3 起随 Agent SDK 收紧）。
+- 状态枚举字段没有数据库 `CHECK` 约束，靠 zod 与服务层状态机保证；迁移中不手写 CHECK，避免 Drizzle snapshot 漂移。
+- `group_members.member_id` 是多态列、`threads.source_message_id` 因循环依赖无硬外键，均由服务层校验。
+- Task 状态机只实现 `queued/assigned/running/succeeded/failed`；`waiting_approval/paused/cancelled` 属 M5。
+- 投递的长连接推送与租约在 M3；M2 只提供状态机与恢复查询。
+
+## 8. 常用命令
 
 ```bash
 pnpm --filter @room/database db:generate   # schema.ts -> drizzle/000N_*.sql

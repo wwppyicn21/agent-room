@@ -17,7 +17,13 @@ import {
 } from "@room/protocol";
 import type { RoomContext, RoomDb } from "./context.js";
 import { recordAudit } from "./audit.js";
-import { ConflictError, ForbiddenError, NotFoundError, isUniqueViolation } from "./errors.js";
+import {
+  ConflictError,
+  ForbiddenError,
+  NotFoundError,
+  ValidationError,
+  isUniqueViolation,
+} from "./errors.js";
 import { appendEvent } from "./events.js";
 import {
   assertKnownMember,
@@ -26,6 +32,7 @@ import {
   requireGroupManager,
   requireGroupMember,
   requireUser,
+  requireWriteUser,
   validateTitle,
 } from "./permissions.js";
 
@@ -34,7 +41,7 @@ export function createGroup(
   input: { name: string; description?: string | null; createdByUserId: string },
 ): GroupRow {
   const name = validateTitle(input.name, "name", 120);
-  const creator = requireUser(ctx.db, input.createdByUserId);
+  const creator = requireWriteUser(ctx.db, input.createdByUserId);
   const now = ctx.now();
   const groupId = newId("grp");
   const membershipId = newId("mem");
@@ -120,8 +127,13 @@ export function addMember(
   },
 ): GroupMemberRow {
   requireGroupManager(ctx.db, input.groupId, { type: "user", id: input.actorUserId });
+  requireWriteUser(ctx.db, input.actorUserId);
+  requireActiveGroup(ctx.db, input.groupId);
   const memberType = memberTypeSchema.parse(input.memberType);
   const memberRole = groupRoleSchema.parse(input.memberRole ?? "member");
+  if (memberType === "agent" && memberRole !== "member") {
+    throw new ValidationError("agents can only be group members, not owners or admins");
+  }
   assertKnownMember(ctx.db, input.groupId, memberType, input.memberId);
   const now = ctx.now();
   const id = newId("mem");
@@ -169,6 +181,7 @@ export function removeMember(
   input: { groupId: string; actorUserId: string; memberType: "user" | "agent"; memberId: string },
 ): void {
   requireGroupManager(ctx.db, input.groupId, { type: "user", id: input.actorUserId });
+  requireWriteUser(ctx.db, input.actorUserId);
   const memberType = memberTypeSchema.parse(input.memberType);
   const membership = ctx.db
     .select()
@@ -225,6 +238,7 @@ export function updateGroupAISettings(
   input: { groupId: string; actorUserId: string; settings: GroupAISettings },
 ): GroupRow {
   requireGroupManager(ctx.db, input.groupId, { type: "user", id: input.actorUserId });
+  requireWriteUser(ctx.db, input.actorUserId);
   requireActiveGroup(ctx.db, input.groupId);
   const settings = groupAISettingsSchema.parse(input.settings);
   const now = ctx.now();
