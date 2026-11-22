@@ -1,0 +1,179 @@
+import { and, asc, eq, gt, isNull, sql } from "drizzle-orm";
+import { messages, type MessageRow, threads } from "@room/database";
+import { newId } from "@room/protocol";
+import { messageContentSchema } from "@room/protocol";
+import type { RoomContext, RoomDb } from "./context.js";
+import { NotFoundError, ValidationError, isUniqueViolation } from "./errors.js";
+import { appendEvent, enqueueGroupAgentDeliveries } from "./events.js";
+import { type Actor, requireActiveGroup, requireActor, requireGroupMember } from "./permissions.js";
+
+export interface PostMessageInput {
+  groupId: string;
+  actor: Actor;
+  content: string;
+  threadId?: string | null;
+  rootMessageId?: string | null;
+  replyToMessageId?: string | null;
+  hop?: number;
+  clientMessageId?: string | null;
+}
+
+export function postMessage(ctx: RoomContext, input: PostMessageInput): MessageRow {
+  return ctx.db.transaction((transaction) => {
+    const db = transaction as unknown as RoomDb;
+    const group = requireActiveGroup(db, input.groupId);
+    requireActor(db, input.actor);
+    requireGroupMember(db, input.groupId, input.actor);
+    const content = messageContentSchema.parse(input.content);
+    const hop = input.hop ?? 0;
+    if (!Number.isInteger(hop) || hop < 0 || hop > group.maxHops) {
+      throw new ValidationError(`hop must be an integer between 0 and ${group.maxHops}`);
+    }
+
+    if (input.threadId) {
+      const thread = db.select().from(threads).where(eq(threads.id, input.threadId)).get();
+      if (!thread) throw new NotFoundError(`thread ${input.threadId} not found`);
+      if (thread.groupId !== input.groupId) {
+        throw new ValidationError("thread belongs to a different group");
+      }
+    }
+    for (const [field, id] of [
+      ["rootMessageId", input.rootMessageId],
+      ["replyToMessageId", input.replyToMessageId],
+    ] as const) {
+      if (!id) continue;
+      const parent = db.select().from(messages).where(eq(messages.id, id)).get();
+      if (!parent) throw new NotFoundError(`${field} ${id} not found`);
+      if (parent.groupId !== input.groupId) {
+        throw new ValidationError(`${field} belongs to a different group`);
+      }
+    }
+
+    const clientMessageId = input.clientMessageId?.trim() || null;
+    if (clientMessageId) {
+      const existing = db
+        .select()
+        .from(messages)
+        .where(
+          and(eq(messages.groupId, input.groupId), eq(messages.clientMessageId, clientMessageId)),
+        )
+        .get();
+      if (existing) return existing;
+    }
+
+    const maxSeq = db
+      .select({ value: sql<number>`coalesce(max(${messages.seq}), 0)` })
+      .from(messages)
+      .where(eq(messages.groupId, input.groupId))
+      .get();
+    const seq = Number(maxSeq?.value ?? 0) + 1;
+    const id = newId("msg");
+    const now = ctx.now();
+    try {
+      db.insert(messages)
+        .values({
+          id,
+          groupId: input.groupId,
+          threadId: input.threadId ?? null,
+          senderType: input.actor.type,
+          senderId: input.actor.id,
+          content,
+          rootMessageId: input.rootMessageId ?? null,
+          replyToMessageId: input.replyToMessageId ?? null,
+          hop,
+          clientMessageId,
+          seq,
+          createdAt: now,
+        })
+        .run();
+    } catch (error) {
+      if (isUniqueViolation(error) && clientMessageId) {
+        const existing = db
+          .select()
+          .from(messages)
+          .where(
+            and(eq(messages.groupId, input.groupId), eq(messages.clientMessageId, clientMessageId)),
+          )
+          .get();
+        if (existing) return existing;
+      }
+      throw error;
+    }
+
+    const event = appendEvent(db, {
+      type: "message.created",
+      actor: input.actor,
+      groupId: input.groupId,
+      threadId: input.threadId ?? null,
+      payload: {
+        messageId: id,
+        senderType: input.actor.type,
+        senderId: input.actor.id,
+        content,
+        rootMessageId: input.rootMessageId ?? null,
+        hop,
+      },
+      createdAt: now,
+    });
+    enqueueGroupAgentDeliveries(db, {
+      groupId: input.groupId,
+      eventId: event.id,
+      createdAt: now,
+      excludeAgentId: input.actor.type === "agent" ? input.actor.id : null,
+    });
+    return db.select().from(messages).where(eq(messages.id, id)).get()!;
+  });
+}
+
+export interface ListMessagesInput {
+  groupId: string;
+  viewer: Actor;
+  limit?: number;
+  cursor?: number;
+}
+
+export function listMessages(
+  ctx: RoomContext,
+  input: ListMessagesInput,
+): { items: MessageRow[]; nextCursor: number | null } {
+  const limit = Math.min(Math.max(input.limit ?? 50, 1), 100);
+  requireGroupMember(ctx.db, input.groupId, input.viewer);
+  const cursor = input.cursor ?? 0;
+  const items = ctx.db
+    .select()
+    .from(messages)
+    .where(
+      and(
+        eq(messages.groupId, input.groupId),
+        gt(messages.seq, cursor),
+        isNull(messages.deletedAt),
+      ),
+    )
+    .orderBy(asc(messages.seq))
+    .limit(limit)
+    .all();
+  const last = items.at(-1);
+  return { items, nextCursor: items.length === limit && last ? last.seq : null };
+}
+
+export function getMessage(
+  ctx: RoomContext,
+  input: { messageId: string; viewer: Actor },
+): MessageRow {
+  const message = ctx.db.select().from(messages).where(eq(messages.id, input.messageId)).get();
+  if (!message) throw new NotFoundError(`message ${input.messageId} not found`);
+  requireGroupMember(ctx.db, message.groupId, input.viewer);
+  return message;
+}
+
+export function getGroupMessageRow(
+  ctx: RoomContext,
+  groupId: string,
+  messageId: string,
+): MessageRow {
+  const message = ctx.db.select().from(messages).where(eq(messages.id, messageId)).get();
+  if (!message) throw new NotFoundError(`message ${messageId} not found`);
+  if (message.groupId !== groupId)
+    throw new ValidationError("message belongs to a different group");
+  return message;
+}

@@ -164,3 +164,54 @@ SIGTERM → exit 0
 - Users / groups / memberships / agents / agent keys 的 schema 与 service
 - Messages、Threads、Tasks / Task Runs、Events / Outbox、Audit logs
 - 权限规则与 Dev Auth Provider；事务内不发起 AI/网络调用
+
+### M2：数据库与 Room Core（2026-11-22）
+
+按 `docs/PLAN.md` M2 实现服务层；数据库设计、ERD、索引与查询计划见 `docs/DATABASE.md`。
+
+实现范围：
+
+- `packages/protocol`：统一 ID（`前缀_UUIDv4`）、UTC 时间工具、RBAC / 群组 AI 策略 / 消息 / 事件 zod schema、事件类型枚举。
+- `packages/database`：13 张业务表 + `system_meta`，迁移 `0001_lowly_speedball.sql`、`0002_glossy_vulcan.sql`；共 30 个显式索引。
+- `apps/server/src/modules`：`users` / `groups` / `agents` / `messages` / `threads` / `tasks` / `events` / `audit` 服务，以及权限层（成员校验、群管理员、最后 owner 保护）。
+- 事务性 Outbox：消息、事件、Agent 投递同事务提交；`events.seq` 自增作为增量游标；`agent_deliveries(agent_id, event_id)` 唯一。
+- 任务链路：`queued → assigned → running → succeeded/failed`；`createTaskFromMessage` 同事务建 Thread + Task；完成时把 `task_summary` 系统消息写回父 Group。
+
+验证证据：
+
+```text
+Test Files  6 passed (6)
+Tests       27 passed (27)   # 新增 9 个 Room Core 用例
+
+messages pagination: SEARCH messages USING INDEX messages_group_seq_uq (group_id=? AND seq>?)
+membership lookup: SEARCH group_members USING INDEX group_members_member_uq (...)
+tasks by group: SEARCH tasks USING INDEX tasks_group_idx (group_id=?)
+pending deliveries: SEARCH agent_deliveries USING INDEX agent_deliveries_pending_idx (agent_id=? AND status=?)
+```
+
+覆盖的验收点：
+
+| 验收点 | 测试 |
+|---|---|
+| 多用户、多独立群组 | `keeps groups isolated` |
+| 非成员不能读群消息 | `keeps groups isolated` |
+| Agent 不能访问未加入群组 | `rejects agents that are not members` |
+| Message/Thread/Task 外键一致 | `creates a thread and a task from one message` |
+| 一条消息创建 Thread/Task | 同上 |
+| 完成任务摘要写回父 Group | `writes the task completion summary back` |
+| 业务 + 事件 + 投递同事务 | `commits message, event and agent deliveries together` |
+| 事务内无 AI/网络/等待 | 代码检查 + 事务边界表（docs/DATABASE.md §6） |
+| 重启后消息与 Task 恢复 | `keeps data across a close/reopen cycle` |
+| 分页 + 索引、无全表扫描 | `paginates large message sets`（含 EXPLAIN QUERY PLAN 断言） |
+
+已知取舍：
+
+- `group_members.member_id` 是多态列，没有单一外键；成员存在性由服务层强校验，唯一索引防重复。
+- `threads.source_message_id` 因与 `messages.thread_id` 成环，不建硬外键；服务层校验同群。
+- Agent 投递当前是 `pending → delivered → acked` 的状态机，真正的长连接推送在 M5。
+
+### M2 遗留
+
+- 尚未有 HTTP/WS API 层（M2 只做服务层与权限规则）；Dev Auth Provider 在 M3 接 Access 前补齐。
+- 消息风控（`maxRepliesPerRoot`、`maxAgentMessagesPerMinute`）已存配置，尚未在发送路径强制执行。
+- `listTasks` 的 keyset 游标按 `(created_at, id)`；任务量极大时再接 `EXPLAIN` 回归。

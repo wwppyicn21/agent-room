@@ -14,7 +14,9 @@
     "@fastify/websocket": "^11.3.7",
     "@room/config": "workspace:*",
     "@room/database": "workspace:*",
-    "fastify": "^5.12.8"
+    "fastify": "^5.12.8",
+    "@room/protocol": "workspace:*",
+    "drizzle-orm": "^0.45.4"
   },
   "devDependencies": {
     "tsx": "^4.23.15"

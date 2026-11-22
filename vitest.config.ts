@@ -14,6 +14,7 @@ export default defineConfig({
     alias: {
       "@room/config": resolveWorkspace("./packages/config/src/index.ts"),
       "@room/database": resolveWorkspace("./packages/database/src/index.ts"),
+      "@room/protocol": resolveWorkspace("./packages/protocol/src/index.ts"),
     },
   },
 });
