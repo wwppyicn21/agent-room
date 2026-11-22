@@ -1,0 +1,8 @@
+pnpm-lock.yaml
+packages/database/drizzle/
+docs/PLAN.md
+docs/INVENTORY.md
+docs/MIGRATION.md
+docs/PROGRESS.md
+README.md
+AGENTS.md

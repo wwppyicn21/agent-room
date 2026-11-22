@@ -65,13 +65,75 @@ OK {"c":1} sqlite 3.54.1
 
 ### 遗留问题
 
-1. Cloudflare Access 的域名与 `chat.*` / `agent.*` hostname 未知，M9 前需要用户提供。
-2. 旧数据导入是否在切换时执行、Task Channel 与 Thread 的最终映射，待 M5/M9 确认。
+1. ~~Cloudflare Access 的域名与 hostname~~ → 已定：`chat.*`（2026-11-22）。
+2. ~~旧数据是否导入~~ → 已定：**不导入**，空库启动。
 3. 本机内存 3.4 GiB 无 swap，M8 前端构建与并发测试需控制并发度。
 
-### 下一步（M1）
+## M1：工程骨架与 SQLite 基础
 
-- pnpm workspace、统一 TS / lint / format / typecheck / test
-- `apps/server` Fastify + config schema + logger + error handler + health/readiness
-- `better-sqlite3` + Drizzle SQLite 连接、migration、WAL / foreign_keys / busy_timeout / synchronous
-- 单实例锁；最小 WebSocket；systemd 单元；CI 与原生模块安装验证
+- 状态：**完成**
+- 日期：2026-11-22
+- 执行：DSH agent（lead）
+
+### 做了什么
+
+1. pnpm workspace：`apps/server`、`packages/config`、`packages/database`；根脚本 `build` / `typecheck` / `lint` / `format` / `test` / `dev` / `db:init` / `db:generate`。
+2. `@room/config`：zod schema + 默认值（`127.0.0.1:8787`、`./data/room.db`），环境变量是唯一配置源；非法值抛出带字段名的 `ConfigError`。
+3. `@room/database`：`better-sqlite3` + Drizzle SQLite；打开时设置 `journal_mode=WAL`、`foreign_keys=ON`、`busy_timeout=5000`、`synchronous=FULL`；Drizzle migration `0000_modern_synch`；单实例锁（`*.lock` pid 文件、死进程自动回收、0600、退出时释放）。
+4. `apps/server`：Fastify 5 + `@fastify/websocket` 11；`/healthz`、`/readyz`、`/ws`（hello / ping→pong / 错误码）；结构化 404 与 500；logger 带 redact；SIGINT/SIGTERM 优雅关闭数据库与锁。
+5. 原生部署：`deployment/systemd/agentroom.service`、`config/agentroom.env.example`、`scripts/start.sh`、`scripts/init-db.sh`；CI 跑 lint/typecheck/test/build 并验证原生模块。
+6. SQLite 约束：同步 API 只做短事务（M2 起由 service 层保证）；`data/`、`*.db*` 不提交。
+
+### 证据
+
+```text
+$ pnpm install --frozen-lockfile
+Done in 1.4s using pnpm v10.34.9
+
+$ pnpm typecheck  → 3 packages Done, exit 0
+$ pnpm lint       → exit 0
+$ pnpm test       → 5 files / 18 tests passed
+$ pnpm build      → 3 packages Done, exit 0
+
+$ DATABASE_PATH=/tmp/agent-room-e2e/room.db pnpm db:init
+{
+  "database": "/tmp/agent-room-e2e/room.db",
+  "pragmas": { "journalMode": "wal", "foreignKeys": 1, "busyTimeout": 5000, "synchronous": 2 },
+  "systemMetaTable": true
+}
+
+$ node apps/server/dist/main.js        # 未设置 HOST/PORT
+{"host":"127.0.0.1","port":8787,"msg":"agent-room listening"}
+$ ss -ltnp | grep 8787
+LISTEN 0 511 127.0.0.1:8787 0.0.0.0:* users:(("node-MainThread",pid=52167,fd=24))
+$ curl /healthz → {"status":"ok"} 200
+$ curl /readyz  → {"status":"ready","database":"ok"} 200
+
+$ 第二实例（同一 DATABASE_PATH）
+exit=1
+[agent-room] database is already locked by process 52167 (/tmp/agent-room-e2e/room.db.lock)
+
+$ SIGTERM → exit=0，room.db.lock 已删除
+$ 停库写入 e2e 行 → 重启 → 读回 [ { key: 'e2e', value: 'persisted' } ]，readyz 200
+```
+
+### 决策记录
+
+| 决策 | 说明 |
+|---|---|
+| 工作区包 `types` 指向 `src/index.ts` | 避免 typecheck 依赖先 build；运行时仍走 `dist/` |
+| `pnpm.onlyBuiltDependencies` 允许 `better-sqlite3`、`esbuild` | pnpm 10 默认拦截安装脚本；已实测原生绑定可用 |
+| 单实例锁用 pid 文件而非 flock | 无原生依赖；死进程锁可自动回收；pid 复用属于已知理论风险 |
+| 冷启动约 3 秒 | Node 加载原生模块 + 迁移；M2 起观察是否可接受 |
+
+### M1 遗留
+
+- `/ws` 目前只有 hello / ping / 错误处理，业务协议在 M2/M5 填充。
+- 没有认证（Dev Auth Provider 在 M2 引入，M3 接 Cloudflare Access）。
+- 生产库路径与 systemd 单元尚未在 Mini PC 上实际安装（M9 做安装/回滚演练）。
+
+### 下一步（M2）
+
+- Users / groups / memberships / agents / agent keys 的 schema 与 service
+- Messages、Threads、Tasks / Task Runs、Events / Outbox、Audit logs
+- 权限规则与 Dev Auth Provider；事务内不发起 AI/网络调用
