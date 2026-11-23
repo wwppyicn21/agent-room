@@ -1,5 +1,5 @@
-import { and, desc, eq } from "drizzle-orm";
-import { threads, type ThreadRow } from "@room/database";
+import { and, desc, eq, isNull, sql } from "drizzle-orm";
+import { messages, tasks, type TaskRow, threads, type ThreadRow } from "@room/database";
 import { newId } from "@room/protocol";
 import type { RoomContext, RoomDb } from "./context.js";
 import { recordAudit } from "./audit.js";
@@ -75,14 +75,21 @@ export function getThread(ctx: RoomContext, input: { threadId: string; viewer: A
 
 export function listThreads(
   ctx: RoomContext,
-  input: { groupId: string; viewer: Actor; limit?: number },
+  input: {
+    groupId: string;
+    viewer: Actor;
+    status?: ThreadRow["status"];
+    limit?: number;
+  },
 ): ThreadRow[] {
   requireGroupMember(ctx.db, input.groupId, input.viewer);
   const limit = Math.min(Math.max(input.limit ?? 50, 1), 200);
+  const conditions = [eq(threads.groupId, input.groupId)];
+  if (input.status) conditions.push(eq(threads.status, input.status));
   return ctx.db
     .select()
     .from(threads)
-    .where(eq(threads.groupId, input.groupId))
+    .where(and(...conditions))
     .orderBy(desc(threads.createdAt), desc(threads.id))
     .limit(limit)
     .all();
@@ -129,6 +136,50 @@ export function closeThread(
     });
     return db.select().from(threads).where(eq(threads.id, thread.id)).get()!;
   });
+}
+
+export interface ThreadDetail {
+  thread: ThreadRow;
+  sourceMessage: typeof messages.$inferSelect | null;
+  messageCount: number;
+  lastMessageAt: number | null;
+  task: TaskRow | null;
+}
+
+export function getThreadDetail(
+  ctx: RoomContext,
+  input: { threadId: string; viewer: Actor },
+): ThreadDetail {
+  const thread = getThread(ctx, input);
+  const sourceMessage =
+    ctx.db.select().from(messages).where(eq(messages.id, thread.sourceMessageId)).get() ?? null;
+  const count = ctx.db
+    .select({ value: sql<number>`count(*)` })
+    .from(messages)
+    .where(and(eq(messages.threadId, thread.id), isNull(messages.deletedAt)))
+    .get();
+  const last = ctx.db
+    .select({ createdAt: messages.createdAt })
+    .from(messages)
+    .where(and(eq(messages.threadId, thread.id), isNull(messages.deletedAt)))
+    .orderBy(desc(messages.createdAt), desc(messages.seq))
+    .limit(1)
+    .get();
+  const task =
+    ctx.db
+      .select()
+      .from(tasks)
+      .where(eq(tasks.threadId, thread.id))
+      .orderBy(desc(tasks.createdAt))
+      .limit(1)
+      .get() ?? null;
+  return {
+    thread,
+    sourceMessage,
+    messageCount: Number(count?.value ?? 0),
+    lastMessageAt: last?.createdAt ?? null,
+    task,
+  };
 }
 
 export function findOpenThreadForSource(

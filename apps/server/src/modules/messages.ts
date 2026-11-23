@@ -264,6 +264,40 @@ export function listMessages(
     .where(
       and(
         eq(messages.groupId, input.groupId),
+        isNull(messages.threadId),
+        gt(messages.seq, cursor),
+        isNull(messages.deletedAt),
+      ),
+    )
+    .orderBy(asc(messages.seq))
+    .limit(limit)
+    .all();
+  const last = items.at(-1);
+  return { items, nextCursor: items.length === limit && last ? last.seq : null };
+}
+
+export interface ListThreadMessagesInput {
+  threadId: string;
+  viewer: Actor;
+  limit?: number;
+  cursor?: number;
+}
+
+export function listThreadMessages(
+  ctx: RoomContext,
+  input: ListThreadMessagesInput,
+): { items: MessageRow[]; nextCursor: number | null } {
+  const limit = Math.min(Math.max(input.limit ?? 50, 1), 100);
+  const thread = ctx.db.select().from(threads).where(eq(threads.id, input.threadId)).get();
+  if (!thread) throw new NotFoundError(`thread ${input.threadId} not found`);
+  requireGroupMember(ctx.db, thread.groupId, input.viewer);
+  const cursor = input.cursor ?? 0;
+  const items = ctx.db
+    .select()
+    .from(messages)
+    .where(
+      and(
+        eq(messages.threadId, input.threadId),
         gt(messages.seq, cursor),
         isNull(messages.deletedAt),
       ),

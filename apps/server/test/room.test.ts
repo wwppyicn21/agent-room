@@ -364,6 +364,10 @@ function createTestRoomFromPath(path: string): TestRoom {
   return {
     ctx: createRoomContext(handle),
     handle,
+    path,
+    closeHandle() {
+      handle.close();
+    },
     close() {
       handle.close();
     },

@@ -1450,6 +1450,10 @@ Linux systemd 服务至少包含：
 - 完成结果和 Thread 链接回到父群组；
 - 失败任务也返回可理解的错误摘要。
 
+### 实现状态（M5，2026-11-24）
+
+M5 已实现并通过测试：Thread 创建 / 详情 / 独立消息流 / 事件日志（Group stream 不包含 Thread 消息）、Task 状态机（含 `waiting_approval` / `paused` / `cancelled`）、Task Run 与 Progress、Pause / Resume / Cancel（事件 + durable delivery）、Approval（请求 / 批准 / 拒绝 / 超时，权限与审计）、完成/失败摘要回流父群（含 Thread 引用）、REST API + `docs/openapi.yaml`、状态机与权限契约测试。验收清单见 `docs/PROGRESS.md` 的 M5 章节。
+
 ## M6：DSH Plugin
 
 ### 工作

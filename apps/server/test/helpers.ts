@@ -19,16 +19,23 @@ import { createUser } from "../src/modules/users.js";
 export interface TestRoom {
   ctx: RoomContext;
   handle: DatabaseHandle;
+  path: string;
+  closeHandle(): void;
   close(): void;
 }
 
 export function createTestRoom(now?: () => number): TestRoom {
   const dir = mkdtempSync(join(tmpdir(), "agent-room-test-"));
-  const handle = openDatabase({ path: join(dir, "room.db"), migrationsFolder });
+  const path = join(dir, "room.db");
+  const handle = openDatabase({ path, migrationsFolder });
   const ctx = createRoomContext(handle, now);
   return {
     ctx,
     handle,
+    path,
+    closeHandle() {
+      handle.close();
+    },
     close() {
       handle.close();
       rmSync(dir, { recursive: true, force: true });

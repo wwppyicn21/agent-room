@@ -520,3 +520,51 @@ $ pnpm build         # 全部 Done
 ```
 
 说明：本次任务只同步文档，测试数量与代码行为均未变化；上述结果为本轮实际复跑，不是引用历史记录。
+
+### M5：Thread / Task Engine（2026-11-24）
+
+按 `docs/ROADMAP.md` §4 与 `docs/PLAN.md` M5 实现，范围是服务层 + REST API；Web UI 仍属 M8，DSH/Codex 的 Session 映射属 M6/M7。
+
+实现：
+
+- **Thread**：`threads.ts` 新增 `getThreadDetail`（源消息、消息数、最后消息时间、关联 Task）、`listThreads` 支持 status 过滤；`messages.ts` 新增 `listThreadMessages`，并让群消息流排除 Thread 消息；`events.ts` 新增 `listThreadEvents`（keyset）。Thread 关闭 / 失败后不能写入。
+- **Task 状态机**：`tasks.ts` 的 `TASK_TRANSITIONS` 覆盖 queued → assigned → running → waiting_approval / paused / succeeded / failed / cancelled；所有转换由 Server 校验，非法转换 409。Task 新增 `started_at`、`result`、`summary`、`error`、`cancelled_at`、`workspace_id`；Task Run 新增 `paused`、progress 字段与 `updated_at`。
+- **Progress**：仅 assignee 在 running 时上报（percent 0–100、stage ≤ 200、message ≤ 2000），写 Task Run + `task.progress` 事件，不进入群聊。
+- **Approval**：新表 `approvals`（迁移 `0008`）与 `approvals.ts`：assignee 在 running 请求，Task → `waiting_approval`；审批人 = 群 owner/admin 或系统 owner/admin；approve → running，reject（必须 reason）/ expire → Task+Run+Thread failed 并在父群写失败摘要；决策幂等、反向决策 409、待审批唯一、审计 `task.approval_*`。
+- **Pause / Resume / Cancel**：群管理员操作，写 `task.paused` / `task.resumed` / `task.cancelled` 事件并给 assignee durable delivery；cancel 同时把 pending approval 置 cancelled、关闭 Thread；重复 cancel 409。
+- **摘要回流**：completeTask 仅在 running 时成功；成功摘要与失败摘要都写入父群（`client_message_id = task-summary:<taskId>`、`thread_id = null`、正文含 `Thread: <threadId>`），Thread 消息不进入 Group stream。
+- **REST API**：`apps/server/src/routes/room.ts` 覆盖 ROADMAP §4.9 的 groups / members / messages / threads / tasks / approvals / events；用户请求用现有 Dev/Access Principal，Task 执行端点（start / progress / complete / approvals）用 Agent Bearer 会话 token；`docs/openapi.yaml` 描述全部端点。
+- **权限**：所有写操作走既有 `requireWriteUser` / `requireGroupManager` / `requireActiveGroup`；Agent 执行端点额外校验 assignee 与成员关系。
+
+验收（ROADMAP §4.11，25 项）对照：
+
+| 验收项 | 结果 | 证据 |
+| --- | --- | --- |
+| 从 Group Message 创建 Thread | PASS | `task-engine.test.ts` 生命周期、`http-room.test.ts` |
+| Thread 消息不进入 Group Message Stream | PASS | `isolates thread messages from the group stream` |
+| Thread Detail / Logs | PASS | `getThreadDetail` / `GET /threads/:id` / `/events` |
+| 创建并分配 Task | PASS | `createTaskFromMessage` / `assignTask` / REST |
+| Agent 在独立 Thread 中执行 | PASS | Thread + Task 关联；执行事件带 `threadId` |
+| Task Progress | PASS | `reportTaskProgress` + `task.progress` 测试 |
+| Approval 请求 / 批准 / 拒绝 / 超时 | PASS | approvals 测试（含 expiry、权限、幂等、反向 409） |
+| Pause / Resume / Cancel | PASS | 生命周期 + 非法转换 + cancel 清理 pending approval |
+| 完成 / 失败摘要回流 | PASS | 摘要进入父群、`thread_id=null`、失败含拒绝原因 |
+| 服务器重启后状态保留 | PASS | 关闭并重新打开同一 SQLite 文件后 Task 仍为 paused |
+| REST API + OpenAPI | PASS | `apps/server/src/routes/room.ts`、`docs/openapi.yaml`、4 个 HTTP 契约测试 |
+
+验证（本轮实际执行）：
+
+```text
+$ pnpm lint          # exit 0
+$ pnpm typecheck     # exit 0
+$ pnpm format:check  # All matched files use Prettier code style!
+$ pnpm test          # 18 files / 143 tests passed
+$ pnpm build         # 全部 Done
+```
+
+已知偏差与后续：
+
+- Approval 超时没有后台定时器；`expireApproval` 由调用方显式推进（当前用于测试与后续调度器）。
+- Agent 自主 `request_task` 不在 M5 范围，留给 M6/M7 Plugin。
+- M4 的 skip 诊断事件仍未实现（PLAN 中保持未完成状态）。
+- REST 暂无附件与 OpenAPI 请求级 schema 校验；Web UI 属 M8。

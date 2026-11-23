@@ -1,0 +1,576 @@
+openapi: 3.1.0
+info:
+  title: Agent Room API
+  version: 0.5.0
+  description: |
+    M5 surface: groups, messages, threads, tasks, approvals and events.
+    User requests authenticate with Cloudflare Access (production) or the
+    development `x-dev-user-id` / `x-dev-user-email` headers. Task execution
+    endpoints accept an Agent bearer session token (`Authorization: Bearer agt_…`).
+servers:
+  - url: http://127.0.0.1:8787
+security:
+  - accessJWT: []
+  - devUser: []
+paths:
+  /api/v1/me:
+    get:
+      summary: Current user and server identity
+      responses:
+        "200": { description: Current principal }
+  /api/v1/groups:
+    get:
+      summary: List groups visible to the caller
+      responses:
+        "200":
+          description: Groups
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [groups]
+                properties:
+                  groups: { type: array, items: { $ref: "#/components/schemas/Group" } }
+    post:
+      summary: Create a group
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name]
+              properties:
+                name: { type: string, maxLength: 120 }
+                description: { type: string, maxLength: 2000, nullable: true }
+      responses:
+        "201":
+          description: Created
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  group: { $ref: "#/components/schemas/Group" }
+        "400": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+  /api/v1/groups/{groupId}:
+    parameters:
+      - $ref: "#/components/parameters/groupId"
+    get:
+      summary: Group detail (members only)
+      responses:
+        "200": { description: Group }
+        "403": { $ref: "#/components/responses/Error" }
+    patch:
+      summary: Update name, description or AI settings (group manager)
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                name: { type: string, maxLength: 120 }
+                description: { type: string, maxLength: 2000, nullable: true }
+                settings: { type: object }
+      responses:
+        "200": { description: Updated group }
+        "403": { $ref: "#/components/responses/Error" }
+  /api/v1/groups/{groupId}/members:
+    parameters:
+      - $ref: "#/components/parameters/groupId"
+    get:
+      summary: List members
+      responses:
+        "200": { description: Members }
+    post:
+      summary: Add a user or agent member (group manager)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [memberType, memberId]
+              properties:
+                memberType: { type: string, enum: [user, agent] }
+                memberId: { type: string }
+                memberRole: { type: string, enum: [owner, admin, member] }
+      responses:
+        "201": { description: Member added }
+        "403": { $ref: "#/components/responses/Error" }
+        "409": { $ref: "#/components/responses/Error" }
+  /api/v1/groups/{groupId}/members/{memberType}/{memberId}:
+    delete:
+      summary: Remove a member (group manager)
+      parameters:
+        - $ref: "#/components/parameters/groupId"
+        - name: memberType
+          in: path
+          required: true
+          schema: { type: string, enum: [user, agent] }
+        - name: memberId
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        "204": { description: Removed }
+        "403": { $ref: "#/components/responses/Error" }
+  /api/v1/groups/{groupId}/messages:
+    parameters:
+      - $ref: "#/components/parameters/groupId"
+    get:
+      summary: Group message stream (thread messages excluded)
+      parameters:
+        - $ref: "#/components/parameters/limit"
+        - $ref: "#/components/parameters/cursor"
+      responses:
+        "200":
+          description: Messages
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items: { type: array, items: { $ref: "#/components/schemas/Message" } }
+                  nextCursor: { type: integer, nullable: true }
+    post:
+      summary: Post a message
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [content]
+              properties:
+                content: { type: string, maxLength: 20000 }
+                replyToMessageId: { type: string, nullable: true }
+                clientMessageId: { type: string, maxLength: 120, nullable: true }
+      responses:
+        "201": { description: Created }
+        "403": { $ref: "#/components/responses/Error" }
+  /api/v1/messages/{messageId}:
+    get:
+      summary: Message detail (members only)
+      parameters:
+        - name: messageId
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        "200": { description: Message }
+        "404": { $ref: "#/components/responses/Error" }
+  /api/v1/groups/{groupId}/threads:
+    parameters:
+      - $ref: "#/components/parameters/groupId"
+    get:
+      summary: List threads (optional status filter)
+      parameters:
+        - name: status
+          in: query
+          schema: { type: string, enum: [open, closed, failed] }
+      responses:
+        "200": { description: Threads }
+    post:
+      summary: Create a thread from a group message
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [sourceMessageId, title]
+              properties:
+                sourceMessageId: { type: string }
+                title: { type: string, maxLength: 200 }
+      responses:
+        "201": { description: Thread created }
+        "403": { $ref: "#/components/responses/Error" }
+  /api/v1/threads/{threadId}:
+    get:
+      summary: Thread detail, source message and task link
+      parameters:
+        - $ref: "#/components/parameters/threadId"
+      responses:
+        "200": { description: Thread detail }
+    post:
+      summary: Close a thread
+      parameters:
+        - $ref: "#/components/parameters/threadId"
+      responses:
+        "200": { description: Closed thread }
+  /api/v1/threads/{threadId}/messages:
+    parameters:
+      - $ref: "#/components/parameters/threadId"
+    get:
+      summary: Thread message stream
+      responses:
+        "200": { description: Messages }
+    post:
+      summary: Post a message inside the thread (never enters the group stream)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [content]
+              properties:
+                content: { type: string }
+                replyToMessageId: { type: string, nullable: true }
+      responses:
+        "201": { description: Created }
+  /api/v1/threads/{threadId}/events:
+    get:
+      summary: Thread event log
+      parameters:
+        - $ref: "#/components/parameters/threadId"
+        - $ref: "#/components/parameters/limit"
+        - $ref: "#/components/parameters/cursorId"
+      responses:
+        "200": { description: Events }
+  /api/v1/groups/{groupId}/tasks:
+    parameters:
+      - $ref: "#/components/parameters/groupId"
+    get:
+      summary: List tasks (keyset)
+      parameters:
+        - name: status
+          in: query
+          schema: { type: string }
+        - $ref: "#/components/parameters/limit"
+        - $ref: "#/components/parameters/cursorId"
+      responses:
+        "200": { description: Tasks }
+    post:
+      summary: Create a task (and its thread) from a group message
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [sourceMessageId, title]
+              properties:
+                sourceMessageId: { type: string }
+                title: { type: string, maxLength: 200 }
+                description: { type: string, maxLength: 4000, nullable: true }
+                assignedAgentId: { type: string, nullable: true }
+                idempotencyKey: { type: string, maxLength: 120, nullable: true }
+      responses:
+        "201": { description: Task and thread }
+        "403": { $ref: "#/components/responses/Error" }
+  /api/v1/tasks/{taskId}:
+    get:
+      summary: Task detail
+      parameters:
+        - $ref: "#/components/parameters/taskId"
+      responses:
+        "200": { description: Task }
+  /api/v1/tasks/{taskId}/assign:
+    post:
+      summary: Assign a queued task to an agent (group manager)
+      parameters:
+        - $ref: "#/components/parameters/taskId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [agentId]
+              properties:
+                agentId: { type: string }
+      responses:
+        "200": { description: Assigned task }
+        "409": { $ref: "#/components/responses/Error" }
+  /api/v1/tasks/{taskId}/start:
+    post:
+      summary: Start the assigned task (agent bearer)
+      security:
+        - agentBearer: []
+      parameters:
+        - $ref: "#/components/parameters/taskId"
+      responses:
+        "200": { description: Running task and run }
+        "409": { $ref: "#/components/responses/Error" }
+  /api/v1/tasks/{taskId}/progress:
+    post:
+      summary: Report progress (agent bearer, running task)
+      security:
+        - agentBearer: []
+      parameters:
+        - $ref: "#/components/parameters/taskId"
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                percent: { type: integer, minimum: 0, maximum: 100 }
+                stage: { type: string, maxLength: 200 }
+                message: { type: string, maxLength: 2000 }
+      responses:
+        "200": { description: Task and run with progress }
+  /api/v1/tasks/{taskId}/complete:
+    post:
+      summary: Complete the running task (agent bearer)
+      security:
+        - agentBearer: []
+      parameters:
+        - $ref: "#/components/parameters/taskId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [outcome, summary]
+              properties:
+                outcome: { type: string, enum: [succeeded, failed] }
+                summary: { type: string, maxLength: 10000 }
+                result: { type: string, nullable: true }
+                error: { type: string, nullable: true }
+      responses:
+        "200": { description: Completed task }
+        "409": { $ref: "#/components/responses/Error" }
+  /api/v1/tasks/{taskId}/pause:
+    post:
+      summary: Pause a running task (group manager)
+      parameters:
+        - $ref: "#/components/parameters/taskId"
+      responses:
+        "200": { description: Paused task }
+        "409": { $ref: "#/components/responses/Error" }
+  /api/v1/tasks/{taskId}/resume:
+    post:
+      summary: Resume a paused task (group manager)
+      parameters:
+        - $ref: "#/components/parameters/taskId"
+      responses:
+        "200": { description: Running task }
+        "409": { $ref: "#/components/responses/Error" }
+  /api/v1/tasks/{taskId}/cancel:
+    post:
+      summary: Cancel a task (group manager)
+      parameters:
+        - $ref: "#/components/parameters/taskId"
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                reason: { type: string, maxLength: 2000, nullable: true }
+      responses:
+        "200": { description: Cancelled task }
+        "409": { $ref: "#/components/responses/Error" }
+  /api/v1/tasks/{taskId}/approvals:
+    parameters:
+      - $ref: "#/components/parameters/taskId"
+    get:
+      summary: List approvals for a task
+      responses:
+        "200": { description: Approvals }
+    post:
+      summary: Request approval (agent bearer, running task)
+      security:
+        - agentBearer: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [title]
+              properties:
+                title: { type: string, maxLength: 200 }
+                details: { type: string, maxLength: 4000, nullable: true }
+                expiresAt: { type: integer, nullable: true }
+      responses:
+        "201": { description: Approval requested, task waiting_approval }
+        "409": { $ref: "#/components/responses/Error" }
+  /api/v1/approvals/{approvalId}:
+    get:
+      summary: Approval detail
+      parameters:
+        - $ref: "#/components/parameters/approvalId"
+      responses:
+        "200": { description: Approval and task }
+  /api/v1/approvals/{approvalId}/approve:
+    post:
+      summary: Approve (group manager or system owner/admin)
+      parameters:
+        - $ref: "#/components/parameters/approvalId"
+      responses:
+        "200": { description: Approved; task returns to running }
+        "403": { $ref: "#/components/responses/Error" }
+        "409": { $ref: "#/components/responses/Error" }
+  /api/v1/approvals/{approvalId}/reject:
+    post:
+      summary: Reject with a reason (group manager or system owner/admin)
+      parameters:
+        - $ref: "#/components/parameters/approvalId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [reason]
+              properties:
+                reason: { type: string, maxLength: 2000 }
+      responses:
+        "200": { description: Rejected; task failed and summary posted }
+        "403": { $ref: "#/components/responses/Error" }
+  /api/v1/events:
+    get:
+      summary: Group event stream (keyset)
+      parameters:
+        - name: groupId
+          in: query
+          required: true
+          schema: { type: string }
+        - $ref: "#/components/parameters/limit"
+        - $ref: "#/components/parameters/cursorId"
+      responses:
+        "200": { description: Events }
+        "403": { $ref: "#/components/responses/Error" }
+components:
+  parameters:
+    groupId:
+      name: groupId
+      in: path
+      required: true
+      schema: { type: string }
+    threadId:
+      name: threadId
+      in: path
+      required: true
+      schema: { type: string }
+    taskId:
+      name: taskId
+      in: path
+      required: true
+      schema: { type: string }
+    approvalId:
+      name: approvalId
+      in: path
+      required: true
+      schema: { type: string }
+    limit:
+      name: limit
+      in: query
+      schema: { type: integer, minimum: 1, maximum: 200 }
+    cursor:
+      name: cursor
+      in: query
+      schema: { type: string }
+    cursorId:
+      name: cursor
+      in: query
+      schema: { type: string }
+  securitySchemes:
+    accessJWT:
+      type: apiKey
+      in: header
+      name: Cf-Access-Jwt-Assertion
+    devUser:
+      type: apiKey
+      in: header
+      name: x-dev-user-id
+    agentBearer:
+      type: http
+      scheme: bearer
+  responses:
+    Error:
+      description: Structured error
+      content:
+        application/json:
+          schema:
+            type: object
+            required: [error]
+            properties:
+              error:
+                type: object
+                required: [code, message]
+                properties:
+                  code: { type: string }
+                  message: { type: string }
+  schemas:
+    Group:
+      type: object
+      properties:
+        id: { type: string }
+        name: { type: string }
+        description: { type: string, nullable: true }
+        status: { type: string, enum: [active, archived] }
+        participationMode: { type: string, enum: [all, mention, disabled] }
+        allowAgentMessages: { type: boolean }
+        maxHops: { type: integer }
+        maxRepliesPerRoot: { type: integer }
+        maxAgentMessagesPerMinute: { type: integer }
+        createdAt: { type: integer }
+        updatedAt: { type: integer }
+    Message:
+      type: object
+      properties:
+        id: { type: string }
+        groupId: { type: string }
+        threadId: { type: string, nullable: true }
+        senderType: { type: string, enum: [user, agent, system] }
+        senderId: { type: string }
+        content: { type: string }
+        rootMessageId: { type: string, nullable: true }
+        replyToMessageId: { type: string, nullable: true }
+        hop: { type: integer }
+        seq: { type: integer }
+        createdAt: { type: integer }
+    Task:
+      type: object
+      properties:
+        id: { type: string }
+        groupId: { type: string }
+        threadId: { type: string, nullable: true }
+        title: { type: string }
+        description: { type: string, nullable: true }
+        status:
+          type: string
+          enum:
+            [queued, assigned, running, waiting_approval, paused, succeeded, failed, cancelled]
+        assignedAgentId: { type: string, nullable: true }
+        result: { type: string, nullable: true }
+        summary: { type: string, nullable: true }
+        error: { type: string, nullable: true }
+        startedAt: { type: integer, nullable: true }
+        completedAt: { type: integer, nullable: true }
+        createdAt: { type: integer }
+        updatedAt: { type: integer }
+    Approval:
+      type: object
+      properties:
+        id: { type: string }
+        taskId: { type: string }
+        runId: { type: string, nullable: true }
+        threadId: { type: string, nullable: true }
+        title: { type: string }
+        details: { type: string, nullable: true }
+        status:
+          type: string
+          enum: [pending, approved, rejected, expired, cancelled]
+        decidedByUserId: { type: string, nullable: true }
+        decidedAt: { type: integer, nullable: true }
+        reason: { type: string, nullable: true }
+        expiresAt: { type: integer, nullable: true }
+        createdAt: { type: integer }
+    Event:
+      type: object
+      properties:
+        id: { type: string }
+        type: { type: string }
+        groupId: { type: string, nullable: true }
+        threadId: { type: string, nullable: true }
+        taskId: { type: string, nullable: true }
+        payload: { type: object }
+        createdAt: { type: integer }

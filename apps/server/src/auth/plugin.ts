@@ -40,6 +40,10 @@ export async function registerAuth(
     // compatibility socket stay reachable so probes and tests are unaffected.
     if (!path.startsWith("/api/")) return;
     if (PUBLIC_PATHS.has(path)) return;
+    // Agent bearer tokens are validated by the route that handles them; they
+    // are never exchanged for a user principal.
+    const authorization = request.headers.authorization ?? "";
+    if (authorization.startsWith("Bearer agt_")) return;
     if (dependencies.config.authMode === "dev") {
       request.principal = resolveDevPrincipal(
         dependencies.ctx,

@@ -9,6 +9,7 @@ import { createRoomContext, type RoomContext } from "./modules/context.js";
 import { DomainError } from "./modules/errors.js";
 import { registerAgentRoutes } from "./routes/agent.js";
 import { registerHttpRoutes } from "./routes/http.js";
+import { registerRoomRoutes } from "./routes/room.js";
 
 /**
  * Access logs must never contain upgrade tickets (or any query string), so the
@@ -99,6 +100,7 @@ export async function buildApp({
   await registerAuth(app, { config, ctx, verifier: accessVerifier });
   registerAgentRoutes(app, { config, ctx, hub });
   registerHttpRoutes(app, { ctx, hub });
+  registerRoomRoutes(app, { ctx });
 
   // Legacy shell endpoint kept for compatibility; business traffic uses the
   // authenticated `/api/v1/agent/connect` socket.

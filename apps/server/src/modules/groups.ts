@@ -324,3 +324,42 @@ export function findAgent(ctx: RoomContext, agentId: string) {
 export function findUser(ctx: RoomContext, userId: string) {
   return ctx.db.select().from(users).where(eq(users.id, userId)).get();
 }
+
+export function updateGroup(
+  ctx: RoomContext,
+  input: {
+    groupId: string;
+    actorUserId: string;
+    name?: string;
+    description?: string | null;
+  },
+): GroupRow {
+  requireGroupManager(ctx.db, input.groupId, { type: "user", id: input.actorUserId });
+  requireWriteUser(ctx.db, input.actorUserId);
+  requireActiveGroup(ctx.db, input.groupId);
+  const patch: { name?: string; description?: string | null; updatedAt: number } = {
+    updatedAt: ctx.now(),
+  };
+  if (input.name !== undefined) patch.name = validateTitle(input.name, "name", 120);
+  if (input.description !== undefined) {
+    const description = input.description?.trim() || null;
+    if (description && description.length > 2000) {
+      throw new ValidationError("description must be at most 2000 characters");
+    }
+    patch.description = description;
+  }
+  return ctx.db.transaction((transaction) => {
+    const db = transaction as unknown as RoomDb;
+    db.update(groups).set(patch).where(eq(groups.id, input.groupId)).run();
+    recordAudit(db, {
+      actorType: "user",
+      actorId: input.actorUserId,
+      action: "group.updated",
+      targetType: "group",
+      targetId: input.groupId,
+      metadata: patch,
+      createdAt: ctx.now(),
+    });
+    return db.select().from(groups).where(eq(groups.id, input.groupId)).get()!;
+  });
+}

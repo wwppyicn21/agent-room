@@ -94,6 +94,21 @@ protocolVersion=1
 | POST | `/api/v1/agent/socket-ticket`               | 会话 token                 |
 | GET  | `/api/v1/agent/connect`（WebSocket）        | 一次性 ticket / 会话 token |
 
+M5 任务相关端点：
+
+| 方法     | 路径                                                                        | 权限                              |
+| -------- | --------------------------------------------------------------------------- | --------------------------------- |
+| GET/POST | `/api/v1/groups/:groupId/threads`、`/threads/:threadId/messages`、`/events` | 群成员                            |
+| POST     | `/api/v1/threads/:threadId/close`                                           | 创建者或群管理员                  |
+| GET/POST | `/api/v1/groups/:groupId/tasks`                                             | 成员读 / 写需可写用户             |
+| POST     | `/api/v1/tasks/:taskId/{assign,pause,resume,cancel}`                        | 群管理员                          |
+| POST     | `/api/v1/tasks/:taskId/{start,progress,complete}`                           | Agent Bearer（assignee）          |
+| GET/POST | `/api/v1/tasks/:taskId/approvals`                                           | 成员读 / Agent Bearer 请求        |
+| GET      | `/api/v1/approvals/:approvalId`                                             | 群成员                            |
+| POST     | `/api/v1/approvals/:approvalId/{approve,reject}`                            | 群 owner/admin 或系统 owner/admin |
+
+Agent Bearer（`Authorization: Bearer agt_…`）只在 Task 执行端点上替代用户 Principal；这些路由自行校验会话 token 与 assignee，其他 `/api/v1` 路由仍要求用户 Principal。
+
 `/healthz`、`/readyz` 与旧版 `/ws` 保持公开；其他路径必须先解析出 Principal。
 
 ## 7. 已知偏差与边界

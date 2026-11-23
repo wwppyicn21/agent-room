@@ -1,5 +1,13 @@
 import { and, desc, eq, lt, or, sql } from "drizzle-orm";
-import { taskRuns, type TaskRunRow, tasks, type TaskRow, threads, messages } from "@room/database";
+import {
+  approvals,
+  taskRuns,
+  type TaskRunRow,
+  tasks,
+  type TaskRow,
+  threads,
+  messages,
+} from "@room/database";
 import { newId } from "@room/protocol";
 import { messageContentSchema } from "@room/protocol";
 import type { RoomContext, RoomDb } from "./context.js";
@@ -19,6 +27,24 @@ import {
 } from "./permissions.js";
 
 export type TaskOutcome = "succeeded" | "failed";
+
+/** Server-owned task state machine (plan §4.2). Clients and plugins never set status directly. */
+export const TASK_TRANSITIONS: Record<TaskRow["status"], readonly TaskRow["status"][]> = {
+  queued: ["assigned", "cancelled"],
+  assigned: ["running", "assigned", "cancelled"],
+  running: ["waiting_approval", "paused", "succeeded", "failed", "cancelled"],
+  waiting_approval: ["running", "failed", "cancelled"],
+  paused: ["running", "cancelled"],
+  succeeded: [],
+  failed: [],
+  cancelled: [],
+};
+
+export function assertTaskTransition(from: TaskRow["status"], to: TaskRow["status"]): void {
+  if (!TASK_TRANSITIONS[from].includes(to)) {
+    throw new ConflictError(`task cannot transition from ${from} to ${to}`);
+  }
+}
 
 export function createTaskFromMessage(
   ctx: RoomContext,
@@ -207,11 +233,15 @@ export function startTask(
   if (task.status !== "assigned") {
     throw new ConflictError(`task ${task.id} is ${task.status} and cannot start`);
   }
+  assertTaskTransition(task.status, "running");
   const now = ctx.now();
   const runId = newId("run");
   return ctx.db.transaction((transaction) => {
     const db = transaction as unknown as RoomDb;
-    db.update(tasks).set({ status: "running", updatedAt: now }).where(eq(tasks.id, task.id)).run();
+    db.update(tasks)
+      .set({ status: "running", startedAt: now, updatedAt: now })
+      .where(eq(tasks.id, task.id))
+      .run();
     db.insert(taskRuns)
       .values({
         id: runId,
@@ -256,6 +286,7 @@ export function completeTask(
     agentId: string;
     outcome: TaskOutcome;
     summary: string;
+    result?: string | null;
     runId?: string | null;
     error?: string | null;
   },
@@ -267,9 +298,10 @@ export function completeTask(
   if (task.assignedAgentId !== input.agentId) {
     throw new ConflictError(`task ${task.id} is not assigned to agent ${input.agentId}`);
   }
-  if (task.status !== "running" && task.status !== "assigned") {
+  if (task.status !== "running") {
     throw new ConflictError(`task ${task.id} is ${task.status} and cannot complete`);
   }
+  assertTaskTransition(task.status, input.outcome);
   const summary = messageContentSchema.parse(input.summary);
   const now = ctx.now();
   return ctx.db.transaction((transaction) => {
@@ -289,18 +321,34 @@ export function completeTask(
       .set({
         status: input.outcome,
         finishedAt: now,
+        updatedAt: now,
         summary,
         error: input.error ?? null,
       })
       .where(eq(taskRuns.id, run.id))
       .run();
     db.update(tasks)
-      .set({ status: input.outcome, updatedAt: now, completedAt: now })
+      .set({
+        status: input.outcome,
+        updatedAt: now,
+        completedAt: now,
+        result: input.result ?? null,
+        summary,
+        error: input.error ?? null,
+      })
       .where(eq(tasks.id, task.id))
+      .run();
+    db.update(threads)
+      .set({
+        status: input.outcome === "succeeded" ? "closed" : "failed",
+        closedAt: now,
+        updatedAt: now,
+      })
+      .where(eq(threads.id, task.threadId!))
       .run();
 
     const header = input.outcome === "succeeded" ? "任务完成" : "任务失败";
-    const content = `${header}：${task.title}\n\n${summary}`;
+    const content = `${header}：${task.title}\n\n${summary}\n\nThread: ${task.threadId}`;
     const summaryMessageId = newId("msg");
     const maxSeq = db
       .select({ value: sql<number>`coalesce(max(${messages.seq}), 0)` })
@@ -312,7 +360,7 @@ export function completeTask(
       .values({
         id: summaryMessageId,
         groupId: task.groupId,
-        threadId: task.threadId,
+        threadId: null,
         senderType: "system",
         senderId: task.id,
         content,
@@ -328,7 +376,7 @@ export function completeTask(
       type: "message.created",
       actor: { type: "system", id: "system" },
       groupId: task.groupId,
-      threadId: task.threadId,
+      threadId: null,
       taskId: task.id,
       payload: {
         messageId: summaryMessageId,
@@ -352,7 +400,7 @@ export function completeTask(
       groupId: task.groupId,
       threadId: task.threadId,
       taskId: task.id,
-      payload: { taskId: task.id, runId: run.id, summaryMessageId },
+      payload: { taskId: task.id, runId: run.id, summaryMessageId, threadId: task.threadId },
       createdAt: now,
     });
     recordAudit(db, {
@@ -361,7 +409,7 @@ export function completeTask(
       action: input.outcome === "succeeded" ? "task.complete" : "task.fail",
       targetType: "task",
       targetId: task.id,
-      metadata: { runId: run.id, summaryMessageId },
+      metadata: { runId: run.id, summaryMessageId, threadId: task.threadId },
       createdAt: now,
     });
     return {
@@ -370,6 +418,257 @@ export function completeTask(
       summaryMessageId,
     };
   });
+}
+
+export function pauseTask(
+  ctx: RoomContext,
+  input: { taskId: string; actorUserId: string },
+): { task: TaskRow; run: TaskRunRow } {
+  const task = getTaskRow(ctx, input.taskId);
+  requireGroupManager(ctx.db, task.groupId, { type: "user", id: input.actorUserId });
+  requireWriteUser(ctx.db, input.actorUserId);
+  requireActiveGroup(ctx.db, task.groupId);
+  if (task.status !== "running") {
+    throw new ConflictError(`task ${task.id} is ${task.status} and cannot be paused`);
+  }
+  assertTaskTransition(task.status, "paused");
+  const now = ctx.now();
+  return ctx.db.transaction((transaction) => {
+    const db = transaction as unknown as RoomDb;
+    const run = latestRun(db, task.id, "running");
+    if (!run) throw new ConflictError(`task ${task.id} has no running task run`);
+    db.update(taskRuns)
+      .set({ status: "paused", updatedAt: now })
+      .where(eq(taskRuns.id, run.id))
+      .run();
+    db.update(tasks).set({ status: "paused", updatedAt: now }).where(eq(tasks.id, task.id)).run();
+    const event = appendEvent(db, {
+      type: "task.paused",
+      actor: { type: "user", id: input.actorUserId },
+      groupId: task.groupId,
+      threadId: task.threadId,
+      taskId: task.id,
+      payload: { taskId: task.id, runId: run.id },
+      createdAt: now,
+    });
+    if (task.assignedAgentId) {
+      enqueueDelivery(db, {
+        agentId: task.assignedAgentId,
+        eventId: event.id,
+        createdAt: now,
+      });
+    }
+    recordAudit(db, {
+      actorType: "user",
+      actorId: input.actorUserId,
+      action: "task.pause",
+      targetType: "task",
+      targetId: task.id,
+      metadata: { runId: run.id },
+      createdAt: now,
+    });
+    return {
+      task: db.select().from(tasks).where(eq(tasks.id, task.id)).get()!,
+      run: db.select().from(taskRuns).where(eq(taskRuns.id, run.id)).get()!,
+    };
+  });
+}
+
+export function resumeTask(
+  ctx: RoomContext,
+  input: { taskId: string; actorUserId: string },
+): { task: TaskRow; run: TaskRunRow } {
+  const task = getTaskRow(ctx, input.taskId);
+  requireGroupManager(ctx.db, task.groupId, { type: "user", id: input.actorUserId });
+  requireWriteUser(ctx.db, input.actorUserId);
+  requireActiveGroup(ctx.db, task.groupId);
+  if (task.status !== "paused") {
+    throw new ConflictError(`task ${task.id} is ${task.status} and cannot be resumed`);
+  }
+  assertTaskTransition(task.status, "running");
+  const now = ctx.now();
+  return ctx.db.transaction((transaction) => {
+    const db = transaction as unknown as RoomDb;
+    const run = latestRun(db, task.id, "paused");
+    if (!run) throw new ConflictError(`task ${task.id} has no paused task run`);
+    db.update(taskRuns)
+      .set({ status: "running", updatedAt: now })
+      .where(eq(taskRuns.id, run.id))
+      .run();
+    db.update(tasks).set({ status: "running", updatedAt: now }).where(eq(tasks.id, task.id)).run();
+    const event = appendEvent(db, {
+      type: "task.resumed",
+      actor: { type: "user", id: input.actorUserId },
+      groupId: task.groupId,
+      threadId: task.threadId,
+      taskId: task.id,
+      payload: { taskId: task.id, runId: run.id },
+      createdAt: now,
+    });
+    if (task.assignedAgentId) {
+      enqueueDelivery(db, {
+        agentId: task.assignedAgentId,
+        eventId: event.id,
+        createdAt: now,
+      });
+    }
+    recordAudit(db, {
+      actorType: "user",
+      actorId: input.actorUserId,
+      action: "task.resume",
+      targetType: "task",
+      targetId: task.id,
+      metadata: { runId: run.id },
+      createdAt: now,
+    });
+    return {
+      task: db.select().from(tasks).where(eq(tasks.id, task.id)).get()!,
+      run: db.select().from(taskRuns).where(eq(taskRuns.id, run.id)).get()!,
+    };
+  });
+}
+
+export function cancelTask(
+  ctx: RoomContext,
+  input: { taskId: string; actorUserId: string; reason?: string | null },
+): TaskRow {
+  const task = getTaskRow(ctx, input.taskId);
+  requireGroupManager(ctx.db, task.groupId, { type: "user", id: input.actorUserId });
+  requireWriteUser(ctx.db, input.actorUserId);
+  requireActiveGroup(ctx.db, task.groupId);
+  if (task.status === "succeeded" || task.status === "failed" || task.status === "cancelled") {
+    throw new ConflictError(`task ${task.id} is ${task.status} and cannot be cancelled`);
+  }
+  assertTaskTransition(task.status, "cancelled");
+  const reason = input.reason?.trim() || null;
+  const now = ctx.now();
+  return ctx.db.transaction((transaction) => {
+    const db = transaction as unknown as RoomDb;
+    const run = latestRun(db, task.id, "running") ?? latestRun(db, task.id, "paused");
+    if (run) {
+      db.update(taskRuns)
+        .set({ status: "cancelled", finishedAt: now, updatedAt: now, error: reason })
+        .where(eq(taskRuns.id, run.id))
+        .run();
+    }
+    db.update(approvals)
+      .set({ status: "cancelled", updatedAt: now, reason: reason ?? "task cancelled" })
+      .where(and(eq(approvals.taskId, task.id), eq(approvals.status, "pending")))
+      .run();
+    db.update(threads)
+      .set({ status: "closed", closedAt: now, updatedAt: now })
+      .where(eq(threads.id, task.threadId!))
+      .run();
+    db.update(tasks)
+      .set({ status: "cancelled", cancelledAt: now, updatedAt: now, error: reason })
+      .where(eq(tasks.id, task.id))
+      .run();
+    const event = appendEvent(db, {
+      type: "task.cancelled",
+      actor: { type: "user", id: input.actorUserId },
+      groupId: task.groupId,
+      threadId: task.threadId,
+      taskId: task.id,
+      payload: { taskId: task.id, runId: run?.id ?? null, reason },
+      createdAt: now,
+    });
+    if (task.assignedAgentId) {
+      enqueueDelivery(db, {
+        agentId: task.assignedAgentId,
+        eventId: event.id,
+        createdAt: now,
+      });
+    }
+    recordAudit(db, {
+      actorType: "user",
+      actorId: input.actorUserId,
+      action: "task.cancel",
+      targetType: "task",
+      targetId: task.id,
+      metadata: { runId: run?.id ?? null, reason },
+      createdAt: now,
+    });
+    return db.select().from(tasks).where(eq(tasks.id, task.id)).get()!;
+  });
+}
+
+export function reportTaskProgress(
+  ctx: RoomContext,
+  input: {
+    taskId: string;
+    agentId: string;
+    percent?: number | null;
+    stage?: string | null;
+    message?: string | null;
+  },
+): TaskRunRow {
+  const task = getTaskRow(ctx, input.taskId);
+  requireAgent(ctx.db, input.agentId);
+  requireGroupMember(ctx.db, task.groupId, agentActor(input.agentId));
+  requireActiveGroup(ctx.db, task.groupId);
+  if (task.assignedAgentId !== input.agentId) {
+    throw new ConflictError(`task ${task.id} is not assigned to agent ${input.agentId}`);
+  }
+  if (task.status !== "running") {
+    throw new ConflictError(`task ${task.id} is ${task.status} and cannot report progress`);
+  }
+  let percent: number | null = null;
+  if (input.percent !== undefined && input.percent !== null) {
+    if (!Number.isInteger(input.percent) || input.percent < 0 || input.percent > 100) {
+      throw new ValidationError("progress percent must be an integer between 0 and 100");
+    }
+    percent = input.percent;
+  }
+  const stage = input.stage?.trim() || null;
+  const progressMessage = input.message?.trim() || null;
+  if (stage && stage.length > 200) throw new ValidationError("progress stage is too long");
+  if (progressMessage && progressMessage.length > 2000) {
+    throw new ValidationError("progress message is too long");
+  }
+  const now = ctx.now();
+  return ctx.db.transaction((transaction) => {
+    const db = transaction as unknown as RoomDb;
+    const run = latestRun(db, task.id, "running");
+    if (!run) throw new ConflictError(`task ${task.id} has no running task run`);
+    db.update(taskRuns)
+      .set({
+        progressPercent: percent,
+        progressStage: stage,
+        progressMessage,
+        updatedAt: now,
+      })
+      .where(eq(taskRuns.id, run.id))
+      .run();
+    appendEvent(db, {
+      type: "task.progress",
+      actor: { type: "agent", id: input.agentId },
+      groupId: task.groupId,
+      threadId: task.threadId,
+      taskId: task.id,
+      payload: {
+        taskId: task.id,
+        runId: run.id,
+        percent,
+        stage,
+        message: progressMessage,
+      },
+      createdAt: now,
+    });
+    return db.select().from(taskRuns).where(eq(taskRuns.id, run.id)).get()!;
+  });
+}
+
+function latestRun(
+  db: RoomDb,
+  taskId: string,
+  status: TaskRunRow["status"],
+): TaskRunRow | undefined {
+  return db
+    .select()
+    .from(taskRuns)
+    .where(and(eq(taskRuns.taskId, taskId), eq(taskRuns.status, status)))
+    .orderBy(desc(taskRuns.startedAt))
+    .get();
 }
 
 export function getTask(
@@ -417,7 +716,7 @@ export function listTasks(
   return { items, nextCursor: items.length === limit && last ? last.id : null };
 }
 
-function getTaskRow(ctx: RoomContext, taskId: string): TaskRow {
+export function getTaskRow(ctx: RoomContext, taskId: string): TaskRow {
   const task = ctx.db.select().from(tasks).where(eq(tasks.id, taskId)).get();
   if (!task) throw new NotFoundError(`task ${taskId} not found`);
   return task;

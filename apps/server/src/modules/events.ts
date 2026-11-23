@@ -1,16 +1,17 @@
-import { and, asc, eq, isNull, lte, or } from "drizzle-orm";
+import { and, asc, eq, gt, isNull, lte, or } from "drizzle-orm";
 import {
   agentDeliveries,
   type AgentDeliveryRow,
   type EventRow,
   events,
   groupMembers,
+  threads,
 } from "@room/database";
 import { newId } from "@room/protocol";
 import { type EventType, eventPayloadSchema } from "@room/protocol";
 import type { RoomContext, RoomDb } from "./context.js";
 import { ConflictError, NotFoundError } from "./errors.js";
-import { requireAgent } from "./permissions.js";
+import { requireAgent, requireGroupMember } from "./permissions.js";
 import type { Actor } from "./permissions.js";
 
 export type SystemActor = { readonly type: "system"; readonly id: string };
@@ -282,4 +283,78 @@ export function requeueDelivery(
     .where(eq(agentDeliveries.id, delivery.id))
     .run();
   return { ...delivery, status: "pending", deliveredAt: null };
+}
+
+export interface ListThreadEventsInput {
+  threadId: string;
+  viewer: Actor;
+  limit?: number;
+  cursor?: string | null;
+}
+
+export function listThreadEvents(
+  ctx: RoomContext,
+  input: ListThreadEventsInput,
+): { items: EventRow[]; nextCursor: string | null } {
+  const thread = ctx.db.select().from(threads).where(eq(threads.id, input.threadId)).get();
+  if (!thread) throw new NotFoundError(`thread ${input.threadId} not found`);
+  requireGroupMember(ctx.db, thread.groupId, input.viewer);
+  const limit = Math.min(Math.max(input.limit ?? 50, 1), 200);
+  const conditions = [eq(events.threadId, thread.id), eq(events.groupId, thread.groupId)];
+  if (input.cursor) {
+    const cursor = ctx.db.select().from(events).where(eq(events.id, input.cursor)).get();
+    if (cursor && cursor.threadId === thread.id) {
+      conditions.push(
+        or(
+          gt(events.createdAt, cursor.createdAt),
+          and(eq(events.createdAt, cursor.createdAt), gt(events.id, cursor.id)),
+        )!,
+      );
+    }
+  }
+  const items = ctx.db
+    .select()
+    .from(events)
+    .where(and(...conditions))
+    .orderBy(asc(events.createdAt), asc(events.id))
+    .limit(limit)
+    .all();
+  const last = items.at(-1);
+  return { items, nextCursor: items.length === limit && last ? last.id : null };
+}
+
+export interface ListGroupEventsInput {
+  groupId: string;
+  viewer: Actor;
+  limit?: number;
+  cursor?: string | null;
+}
+
+export function listGroupEvents(
+  ctx: RoomContext,
+  input: ListGroupEventsInput,
+): { items: EventRow[]; nextCursor: string | null } {
+  requireGroupMember(ctx.db, input.groupId, input.viewer);
+  const limit = Math.min(Math.max(input.limit ?? 50, 1), 200);
+  const conditions = [eq(events.groupId, input.groupId)];
+  if (input.cursor) {
+    const cursor = ctx.db.select().from(events).where(eq(events.id, input.cursor)).get();
+    if (cursor && cursor.groupId === input.groupId) {
+      conditions.push(
+        or(
+          gt(events.createdAt, cursor.createdAt),
+          and(eq(events.createdAt, cursor.createdAt), gt(events.id, cursor.id)),
+        )!,
+      );
+    }
+  }
+  const items = ctx.db
+    .select()
+    .from(events)
+    .where(and(...conditions))
+    .orderBy(asc(events.createdAt), asc(events.id))
+    .limit(limit)
+    .all();
+  const last = items.at(-1);
+  return { items, nextCursor: items.length === limit && last ? last.id : null };
 }

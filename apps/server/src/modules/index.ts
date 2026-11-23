@@ -9,3 +9,4 @@ export * from "./agents.js";
 export * from "./messages.js";
 export * from "./threads.js";
 export * from "./tasks.js";
+export * from "./approvals.js";

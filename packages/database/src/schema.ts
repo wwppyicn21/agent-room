@@ -260,7 +260,7 @@ export const threads = sqliteTable(
       .references(() => groups.id, { onDelete: "cascade" }),
     sourceMessageId: text("source_message_id").notNull(),
     title: text("title").notNull(),
-    status: text("status", { enum: ["open", "closed"] })
+    status: text("status", { enum: ["open", "closed", "failed"] })
       .notNull()
       .default("open"),
     createdByUserId: text("created_by_user_id")
@@ -350,7 +350,13 @@ export const tasks = sqliteTable(
       .references(() => users.id),
     createdAt: integer("created_at").notNull(),
     updatedAt: integer("updated_at").notNull(),
+    startedAt: integer("started_at"),
     completedAt: integer("completed_at"),
+    cancelledAt: integer("cancelled_at"),
+    result: text("result"),
+    summary: text("summary"),
+    error: text("error"),
+    workspaceId: text("workspace_id"),
   },
   (table) => [
     index("tasks_group_idx").on(table.groupId, table.createdAt, table.id),
@@ -371,11 +377,15 @@ export const taskRuns = sqliteTable(
     agentId: text("agent_id")
       .notNull()
       .references(() => agents.id, { onDelete: "cascade" }),
-    status: text("status", { enum: ["running", "succeeded", "failed", "cancelled"] })
+    status: text("status", { enum: ["running", "paused", "succeeded", "failed", "cancelled"] })
       .notNull()
       .default("running"),
     startedAt: integer("started_at").notNull(),
+    updatedAt: integer("updated_at"),
     finishedAt: integer("finished_at"),
+    progressPercent: integer("progress_percent"),
+    progressStage: text("progress_stage"),
+    progressMessage: text("progress_message"),
     summary: text("summary"),
     error: text("error"),
   },
@@ -385,6 +395,38 @@ export const taskRuns = sqliteTable(
 // ---------------------------------------------------------------------------
 // Events, deliveries, audit
 // ---------------------------------------------------------------------------
+
+export const approvals = sqliteTable(
+  "approvals",
+  {
+    id: text("id").primaryKey(),
+    taskId: text("task_id")
+      .notNull()
+      .references(() => tasks.id, { onDelete: "cascade" }),
+    runId: text("run_id").references(() => taskRuns.id, { onDelete: "set null" }),
+    threadId: text("thread_id").references(() => threads.id, { onDelete: "set null" }),
+    requestedByAgentId: text("requested_by_agent_id")
+      .notNull()
+      .references(() => agents.id),
+    title: text("title").notNull(),
+    details: text("details"),
+    status: text("status", { enum: ["pending", "approved", "rejected", "expired", "cancelled"] })
+      .notNull()
+      .default("pending"),
+    decidedByUserId: text("decided_by_user_id").references(() => users.id, {
+      onDelete: "set null",
+    }),
+    decidedAt: integer("decided_at"),
+    reason: text("reason"),
+    expiresAt: integer("expires_at"),
+    createdAt: integer("created_at").notNull(),
+    updatedAt: integer("updated_at").notNull(),
+  },
+  (table) => [
+    index("approvals_task_idx").on(table.taskId, table.createdAt),
+    index("approvals_status_idx").on(table.status),
+  ],
+);
 
 export const events = sqliteTable(
   "events",
@@ -469,4 +511,5 @@ export type TaskRow = typeof tasks.$inferSelect;
 export type TaskRunRow = typeof taskRuns.$inferSelect;
 export type EventRow = typeof events.$inferSelect;
 export type AgentDeliveryRow = typeof agentDeliveries.$inferSelect;
+export type ApprovalRow = typeof approvals.$inferSelect;
 export type AuditLogRow = typeof auditLogs.$inferSelect;
