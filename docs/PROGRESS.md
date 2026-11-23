@@ -568,3 +568,4 @@ $ pnpm build         # 全部 Done
 - Agent 自主 `request_task` 不在 M5 范围，留给 M6/M7 Plugin。
 - M4 的 skip 诊断事件仍未实现（PLAN 中保持未完成状态）。
 - REST 暂无附件与 OpenAPI 请求级 schema 校验；Web UI 属 M8。
+- 提交：`bd25675`（实现 + 测试 + 文档，18 files / 143 tests）。

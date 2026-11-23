@@ -1822,7 +1822,7 @@ M9  Cloudflare + Mini PC 原生部署、SQLite 备份/恢复、JSON 数据导入
 | M2 | 完成（2026-11-22/23，含两轮评审修复 b79a580 + 7ce6437） | 7ce6437 | lint / typecheck / 47 tests / build 全过；权限分级、Task 幂等、Delivery 状态机、归档群组只读实测 | 设计见 docs/DATABASE.md，记录见 docs/PROGRESS.md「M2」「M2 Review Fix」「M2 Review Fix 2」 |
 | M3 | 完成（2026-11-23：认证 + Agent SDK，83 tests；含 M3 Review Fix） | de8ef4d | lint / typecheck / 83 tests / build 全过；dev/access、Challenge 重放、吊销断连、重连补齐、ticket 重放、活跃 TTL、邮箱唯一实测 | 设计见 docs/AUTH.md，记录见 docs/PROGRESS.md「M3」与「M3 Review Fix」 |
 | M4 | 完成（2026-11-23：服务端参与引擎 + SDK reply/skip；Review Fix 3 后 126 tests；skip 诊断未实现） | e52a355 | lint / typecheck / 111 tests / build 全过；双 Agent WSS、Root/Hop 服务端推导、Max Hop 零 fan-out、投递租约重试、Dev Auth Loopback、按群组限流实测 | 记录见 docs/PROGRESS.md「M4」「M4 Review Fix」「M4 Review Fix 2」「M4 Review Fix 3」；REST/Web UI 属 M8，每群组 Session 映射属 M6；skip 诊断列为未完成 |
-| M5 | 未开始 | | | |
+| M5 | 完成（2026-11-24：Thread / Task / Approval / 摘要回流 / REST；143 tests） | bd25675 | lint / typecheck / 143 tests / build 全过；Thread 隔离、状态机、审批、暂停恢复取消、摘要回流、重启恢复、REST 契约实测 | 记录见 docs/PROGRESS.md「M5」；Web UI 属 M8，DSH/Codex Plugin 属 M6/M7 |
 | M6 | 未开始 | | | |
 | M7 | 未开始 | | | |
 | M8 | 未开始 | | | |
