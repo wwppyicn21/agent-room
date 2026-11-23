@@ -343,3 +343,5 @@ SIGTERM → 正常退出
 - WSS 采用“HTTP challenge → HTTP connect → 带 token 升级”的握手；签名串与一次性消费语义不变，后续可在 WSS 内完成握手。
 - 群组/消息 HTTP API 在 M4；mock Agent 目前只能验证连接与事件接收，不能主动拉取群消息。
 - Agent 连接本身不逐条审计（状态变化写 `agent.status.changed` 事件）；会话 token 暂不轮换。
+
+提交：`d34d271`（实现 + 测试 + 文档），已推 `agent-room.git` main。
