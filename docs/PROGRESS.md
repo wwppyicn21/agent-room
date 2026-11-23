@@ -564,8 +564,39 @@ $ pnpm build         # 全部 Done
 
 已知偏差与后续：
 
-- Approval 超时没有后台定时器；`expireApproval` 由调用方显式推进（当前用于测试与后续调度器）。
+- Approval 超时已由 M5 Review Fix 接入 Server 启动 + 每 30 秒扫描（见下节）。
 - Agent 自主 `request_task` 不在 M5 范围，留给 M6/M7 Plugin。
 - M4 的 skip 诊断事件仍未实现（PLAN 中保持未完成状态）。
 - REST 暂无附件与 OpenAPI 请求级 schema 校验；Web UI 属 M8。
 - 提交：`bd25675`（实现 + 测试 + 文档，18 files / 143 tests）。
+
+
+### M5 Review Fix（2026-11-24）
+
+审查确认的 5 项问题全部修复；未改变 M5 架构与 API 风格，未开始 M6/M7/M8。
+
+| Fix | 状态 | 实现 | 主要文件 | 回归测试 |
+| --- | --- | --- | --- | --- |
+| FIX-01 Thread Cursor Pagination | PASS | `listThreads` keyset `(createdAt DESC, id DESC)` + `{ items, nextCursor }`；cursor 校验同 Group；limit 1–200 | `apps/server/src/modules/threads.ts`、`apps/server/src/routes/room.ts` | `m5-review-fix.test.ts` 分页 4 例；`http-room.test.ts` 分页契约 |
+| FIX-02 Thread Reply Isolation | PASS | Thread 内只允许回复同 Thread 或源群消息；群聊不可回复 Thread 消息 | `apps/server/src/modules/messages.ts` | `m5-review-fix.test.ts` 隔离 3 例 |
+| FIX-03 Active Task Thread Close Guard | PASS | 非终态 Task 关联 Thread 关闭 → 409，不写事件/审计 | `apps/server/src/modules/threads.ts` | `m5-review-fix.test.ts` 关闭保护 2 例；HTTP 409 契约 |
+| FIX-04 Approval Expiration Consistency | PASS | `task.approval_expired` + `approval.expire`；Task/Run/Thread failed + 摘要；启动/30s 扫描；重复幂等；已决策拒绝 | `apps/server/src/modules/approvals.ts`、`apps/server/src/main.ts`、`packages/protocol/src/schemas.ts` | `m5-review-fix.test.ts` 过期 4 例（含重启恢复） |
+| FIX-05 Idempotency Payload Conflict | PASS | 同 key 比较 source/title/description/assignee；不一致 409 且不写行 | `apps/server/src/modules/tasks.ts` | `m5-review-fix.test.ts` 幂等 3 例 |
+
+其他修改：`docs/openapi.yaml`（Thread 分页参数/响应、Task 创建 409）；`apps/server/test/http-room.test.ts`（分页 + Active Task Thread 关闭 409）。
+
+验证（实际执行）：
+
+```text
+$ pnpm lint          # exit 0
+$ pnpm typecheck     # exit 0
+$ pnpm format:check  # exit 0
+$ pnpm test          # 19 files / 160 tests passed
+$ pnpm build         # 全部 Done
+```
+
+未完成 / 后续：
+
+- Approval 过期扫描是进程内定时器；多实例部署需在 M9 评估单实例执行或数据库级调度。
+- `request_task` 仍属 M6/M7；M4 skip 诊断事件仍未实现；Web UI 属 M8。
+- 代码提交：`3ac5f64`（fix + tests + OpenAPI）；文档随本次 docs 提交更新。

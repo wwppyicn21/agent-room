@@ -1454,6 +1454,20 @@ Linux systemd 服务至少包含：
 
 M5 已实现并通过测试：Thread 创建 / 详情 / 独立消息流 / 事件日志（Group stream 不包含 Thread 消息）、Task 状态机（含 `waiting_approval` / `paused` / `cancelled`）、Task Run 与 Progress、Pause / Resume / Cancel（事件 + durable delivery）、Approval（请求 / 批准 / 拒绝 / 超时，权限与审计）、完成/失败摘要回流父群（含 Thread 引用）、REST API + `docs/openapi.yaml`、状态机与权限契约测试。验收清单见 `docs/PROGRESS.md` 的 M5 章节。
 
+### M5 Review Fix（2026-11-24）
+
+范围（5 项，均为最小修改，不改变 M5 架构）：
+
+- **FIX-01 Thread Cursor Pagination**：`listThreads` 返回 `{ items, nextCursor }`，按 `(createdAt DESC, id DESC)` keyset 分页；cursor 为上一页最后一个 Thread id，校验存在且属于同一 Group；`limit` 1–200（默认 50）；REST `GET /groups/:groupId/threads?status&limit&cursor`。
+- **FIX-02 Thread Reply Isolation**：Thread 消息只允许回复同 Thread 消息或该 Thread 的源群消息；群聊消息不能回复 Thread 消息；跨 Thread / 跨群 / 不存在分别返回 `400` / `404`。
+- **FIX-03 Active Task Thread Close Guard**：关联 Task 未进入终态（succeeded / failed / cancelled）时 `closeThread` 返回 `409`，且不写事件/审计；普通 Thread 与终态 Task Thread 可关闭。
+- **FIX-04 Approval Expiration Consistency**：过期统一为 Approval `expired` + Task/Run/Thread `failed` + 父群失败摘要，写 `task.approval_expired` 事件与 `approval.expire` 审计；Server 启动时与每 30 秒扫描（`expireDueApprovals`），重复过期幂等；已批准/已拒绝/已取消拒绝过期；不新增用户可调用的过期 API。
+- **FIX-05 Idempotency Payload Conflict**：同一 `(group, idempotencyKey)` 的 sourceMessageId / title / description / assignedAgentId 与原请求不一致时返回 `409`，不产生额外 Task / Thread / Event / Message。
+
+测试：新增 `apps/server/test/m5-review-fix.test.ts` 16 例；`http-room.test.ts` 增加 Thread 分页与 Active Task Thread 关闭 409 契约；总计 19 files / 160 tests。
+
+剩余：过期扫描目前是进程内定时器，多实例部署需在 M9 评估单实例执行或数据库级调度；`request_task` 仍属 M6/M7。
+
 ## M6：DSH Plugin
 
 ### 工作
@@ -1822,7 +1836,7 @@ M9  Cloudflare + Mini PC 原生部署、SQLite 备份/恢复、JSON 数据导入
 | M2 | 完成（2026-11-22/23，含两轮评审修复 b79a580 + 7ce6437） | 7ce6437 | lint / typecheck / 47 tests / build 全过；权限分级、Task 幂等、Delivery 状态机、归档群组只读实测 | 设计见 docs/DATABASE.md，记录见 docs/PROGRESS.md「M2」「M2 Review Fix」「M2 Review Fix 2」 |
 | M3 | 完成（2026-11-23：认证 + Agent SDK，83 tests；含 M3 Review Fix） | de8ef4d | lint / typecheck / 83 tests / build 全过；dev/access、Challenge 重放、吊销断连、重连补齐、ticket 重放、活跃 TTL、邮箱唯一实测 | 设计见 docs/AUTH.md，记录见 docs/PROGRESS.md「M3」与「M3 Review Fix」 |
 | M4 | 完成（2026-11-23：服务端参与引擎 + SDK reply/skip；Review Fix 3 后 126 tests；skip 诊断未实现） | e52a355 | lint / typecheck / 111 tests / build 全过；双 Agent WSS、Root/Hop 服务端推导、Max Hop 零 fan-out、投递租约重试、Dev Auth Loopback、按群组限流实测 | 记录见 docs/PROGRESS.md「M4」「M4 Review Fix」「M4 Review Fix 2」「M4 Review Fix 3」；REST/Web UI 属 M8，每群组 Session 映射属 M6；skip 诊断列为未完成 |
-| M5 | 完成（2026-11-24：Thread / Task / Approval / 摘要回流 / REST；143 tests） | bd25675 | lint / typecheck / 143 tests / build 全过；Thread 隔离、状态机、审批、暂停恢复取消、摘要回流、重启恢复、REST 契约实测 | 记录见 docs/PROGRESS.md「M5」；Web UI 属 M8，DSH/Codex Plugin 属 M6/M7 |
+| M5 | 完成（2026-11-24：Thread / Task / Approval / 摘要回流 / REST + Review Fix 5 项；160 tests） | 3ac5f64 | lint / typecheck / 143 tests / build 全过；Thread 隔离、状态机、审批、暂停恢复取消、摘要回流、重启恢复、REST 契约实测 | 记录见 docs/PROGRESS.md「M5」；Web UI 属 M8，DSH/Codex Plugin 属 M6/M7 |
 | M6 | 未开始 | | | |
 | M7 | 未开始 | | | |
 | M8 | 未开始 | | | |

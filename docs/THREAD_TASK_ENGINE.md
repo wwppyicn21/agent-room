@@ -66,7 +66,7 @@ queued ──► assigned ──► running ──► succeeded
 - 只有 `pending` 可 approve/reject；重复 approve 返回已决定结果，不改变状态；
 - reject 必须给 `reason`；Task → `failed`，Run → `failed`，摘要写回群组；
 - Approval 状态、决策人、时间、原因持久化；写 `audit_logs` 与 `task.approval_decided` 事件；
-- `expiresAt` 可选；过期只标记 `expired`，不自动改动 Task 状态（M5 不做定时清理）。
+- `expiresAt` 可选；Server 启动时和每 30 秒扫描 `pending` 且到期的 Approval，事务内置 `expired`、Task/Run/Thread → `failed`、写失败摘要、`task.approval_expired` 事件与 `approval.expire` 审计；重复过期幂等（不重复摘要/事件/审计），已批准/已拒绝/已取消拒绝过期；扫描入口 `expireDueApprovals`，不暴露用户 API（Server Authority）。
 
 ## 5. Progress
 
@@ -96,6 +96,9 @@ queued ──► assigned ──► running ──► succeeded
 - Thread Logs：该 Thread 的 Events（时间倒序，仅成员）；
 - **Thread 消息不进入 Parent Group 消息流**：`listMessages(groupId)` 默认只返回 `threadId IS NULL`；
 - Thread 消息不能跨群组；关闭 / 失败的 Thread 不能写入；
+- Thread 列表使用 keyset 分页（`createdAt DESC, id DESC`），返回 `{ items, nextCursor }`；cursor 是上一页最后一个 Thread id，必须属于同一 Group，否则 `400`；
+- Thread 回复隔离：Thread 内消息只能回复同 Thread 的消息或该 Thread 的源群消息；群聊消息不能回复 Thread 消息；跨 Thread / 跨群 / 不存在均拒绝；
+- 手动关闭保护：关联 Task 未进入终态（succeeded / failed / cancelled）时 `closeThread` 返回 `409`，且不写事件/审计；普通 Thread 与终态 Task Thread 可关闭；
 - 权限：群成员读取；写需 `requireWriteUser`（与 M2 一致）。
 
 ## 9. REST API（M5 实现）
@@ -143,7 +146,7 @@ GET             /api/v1/events?groupId=&cursor=&limit=
 - Agent：`Authorization: Bearer agt_...`（M3 session token），只能操作分配给自己的 Task；
 - 所有路由在应用层校验资源权限；Group Isolation 必须由 Server 保证。
 
-错误契约沿用 `{ error: { code, message } }`；分页使用 `{ items, nextCursor }`；创建接口支持 `clientMessageId` / `idempotencyKey`。
+错误契约沿用 `{ error: { code, message } }`；分页使用 `{ items, nextCursor }`；Thread 列表为 `GET /groups/:groupId/threads?status&limit&cursor`（limit 1–200，默认 50）；创建接口支持 `clientMessageId` / `idempotencyKey`，同一 `idempotencyKey` 的 payload（source / title / description / assignee）不一致返回 `409` 且不写任何行。
 
 ## 10. 恢复
 
@@ -163,7 +166,7 @@ M5 只定义边界，不实现执行环境：
 
 ## 12. 事件与诊断
 
-新增事件：`task.progress`、`task.paused`、`task.resumed`、`task.cancelled`、`task.approval_requested`、`task.approval_decided`。事件 payload 不含密钥；Summary 进群聊，Progress 只进事件。
+新增事件：`task.progress`、`task.paused`、`task.resumed`、`task.cancelled`、`task.approval_requested`、`task.approval_decided`、`task.approval_expired`。事件 payload 不含密钥；Summary 进群聊，Progress 只进事件。
 
 ## 13. 验收映射
 

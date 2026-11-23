@@ -149,7 +149,7 @@ Agent Room 是独立的 Agent 协作中心。
 | M2 | Room Core | Completed |
 | M3 | Identity & Agent SDK | Completed |
 | M4 | Autonomous Group Chat | Completed |
-| M5 | Thread / Task Engine | Next |
+| M5 | Thread / Task Engine | Completed (M5 Review Fix, 2026-11-24) |
 | M6 | DSH Plugin | Planned |
 | M7 | Codex Plugin | Planned |
 | M8 | Web Client | Planned |
