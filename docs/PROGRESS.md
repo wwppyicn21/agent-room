@@ -385,4 +385,4 @@ pnpm build       # packages/protocol, packages/database, apps/server build Done
 
 评审补充（2026-11-23）：`ack.ok` 到达后删除 `deliveryAttempts` 中对应 `deliveryId`，避免长时间运行的无界增长；新增 `clears attempt tracking once the server confirms the ack`。
 
-提交：`de8ef4d`（实现 + 测试 + 文档），已推 `agent-room.git` main。
+提交：`de8ef4d`（实现 + 测试 + 文档）、`f54de8b`（`ack.ok` 清理计数），已推 `agent-room.git` main。
