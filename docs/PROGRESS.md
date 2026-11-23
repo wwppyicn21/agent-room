@@ -430,3 +430,4 @@ $ pnpm build       # packages/protocol, packages/database, packages/agent-sdk, a
 - skip 只 ack、不写诊断事件（plan 允许写脱敏内部事件，暂未实现）。
 - 离线 Agent 在消息发生时不会收到 delivery（plan §9.1 只对在线 Agent 建立 delivery）；历史补拉依赖 M8 的 REST API。
 - 结论：M4 服务端验收全部通过，建议进入 M5；Web UI 与 REST API 在 M8 补齐。
+- 提交：`e059403`（实现 + 测试 + 文档），记录提交见下方；未重启 dsh-web。
