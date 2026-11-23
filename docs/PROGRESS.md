@@ -163,7 +163,7 @@ SIGTERM → exit 0
 
 - Users / groups / memberships / agents / agent keys 的 schema 与 service
 - Messages、Threads、Tasks / Task Runs、Events / Outbox、Audit logs
-- 权限规则与 Dev Auth Provider；事务内不发起 AI/网络调用
+- 权限规则（Dev Auth Provider 原计划在 M2，按 M0 决策调整到 M3 先实现）；事务内不发起 AI/网络调用
 
 ### M2：数据库与 Room Core（2026-11-22）
 
