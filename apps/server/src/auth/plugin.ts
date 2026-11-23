@@ -13,6 +13,7 @@ const PUBLIC_PATHS = new Set([
   "/ws",
   "/api/v1/agent/challenge",
   "/api/v1/agent/connect",
+  "/api/v1/agent/socket-ticket",
 ]);
 
 export interface AuthDependencies {

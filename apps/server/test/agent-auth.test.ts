@@ -2,7 +2,7 @@ import { generateKeyPairSync, sign, type KeyObject } from "node:crypto";
 import { eq } from "drizzle-orm";
 import type { FastifyInstance } from "fastify";
 import { loadConfig } from "@room/config";
-import { agentDeliveries, agents, users } from "@room/database";
+import { agentDeliveries, agents, events, messages, users } from "@room/database";
 import { buildAgentChallengeString } from "@room/protocol";
 import { afterEach, describe, expect, it } from "vitest";
 import { buildApp } from "../src/app.js";
@@ -72,11 +72,12 @@ const baseUrls = new WeakMap<FastifyInstance, string>();
 
 const open: Harness[] = [];
 
-async function setup(): Promise<Harness> {
-  const room = createTestRoom();
+async function setup(now?: () => number): Promise<Harness> {
+  const room = createTestRoom(now);
   const app = await buildApp({
-    config: loadConfig({ LOG_LEVEL: "silent" }),
+    config: loadConfig({ LOG_LEVEL: "silent", AGENT_SESSION_TTL_MS: "60000" }),
     database: room.handle,
+    now,
   });
   await app.listen({ host: "127.0.0.1", port: 0 });
   const address = app.server.address();
@@ -151,18 +152,29 @@ type WebSocketConstructor = new (url: string) => TestSocket & {
   addEventListener(type: "error", listener: () => void): void;
 };
 
-async function openSocket(app: FastifyInstance, token: string): Promise<Frames> {
+async function openSocketWithQuery(app: FastifyInstance, query: string): Promise<Frames> {
   const baseUrl = baseUrls.get(app);
   if (!baseUrl) throw new Error("test app has no base url");
   const Constructor = (globalThis as unknown as { WebSocket: WebSocketConstructor }).WebSocket;
-  const socket = new Constructor(
-    `${baseUrl}/api/v1/agent/connect?token=${encodeURIComponent(token)}`,
-  );
+  const socket = new Constructor(`${baseUrl}/api/v1/agent/connect?${query}`);
   await new Promise<void>((resolve, reject) => {
     socket.addEventListener("open", () => resolve());
     socket.addEventListener("error", () => reject(new Error("websocket failed to open")));
   });
   return new Frames(socket);
+}
+
+async function openSocket(app: FastifyInstance, token: string): Promise<Frames> {
+  const ticketResponse = await app.inject({
+    method: "POST",
+    url: "/api/v1/agent/socket-ticket",
+    headers: { authorization: `Bearer ${token}` },
+  });
+  if (ticketResponse.statusCode !== 200) {
+    throw new Error(`ticket request failed (${ticketResponse.statusCode})`);
+  }
+  const ticket = String(ticketResponse.json().ticket);
+  return openSocketWithQuery(app, `ticket=${encodeURIComponent(ticket)}`);
 }
 
 describe("dev auth and agent registration", () => {
@@ -362,7 +374,7 @@ describe("agent websocket deliveries", () => {
     expect(pending.map((row) => row.status)).toEqual(["acked"]);
   }, 20_000);
 
-  it("posts a message as the agent over the socket", async () => {
+  it("refuses agent group messages while the M4 participation limits are missing", async () => {
     const { room, app } = await setup();
     const owner = seedUser(room.ctx, "owner", "owner");
     const groupId = seedGroup(room.ctx, owner);
@@ -378,23 +390,116 @@ describe("agent websocket deliveries", () => {
     const frames = await openSocket(app, String(connected.body.sessionToken));
     await frames.nextOf("hello");
 
+    const counts = () => ({
+      messages: room.ctx.db.select().from(messages).where(eq(messages.groupId, groupId)).all()
+        .length,
+      events: room.ctx.db.select().from(events).where(eq(events.groupId, groupId)).all().length,
+      deliveries: room.ctx.db
+        .select()
+        .from(agentDeliveries)
+        .where(eq(agentDeliveries.agentId, agent.id))
+        .all().length,
+    });
+    const before = counts();
+
     frames.send({
       type: "message.send",
       groupId,
       content: "hello from the agent",
       clientMessageId: "client-1",
     });
-    const sent = await frames.nextOf("message.sent");
-    expect(sent.clientMessageId).toBe("client-1");
-    frames.close();
+    const rejected = await frames.nextOf("error");
+    expect(rejected.code).toBe("agent_messages_disabled");
 
-    const stored = room.ctx.db
-      .select()
-      .from(agentDeliveries)
-      .where(eq(agentDeliveries.agentId, agent.id))
-      .all();
-    // The agent's own message must not be delivered back to itself.
-    expect(stored).toHaveLength(0);
+    // A rejected send must not leave a message, event or delivery behind.
+    expect(counts()).toEqual(before);
+    frames.close();
+  }, 20_000);
+
+  it("refuses the session token in the websocket URL and reuse of a ticket", async () => {
+    const { room, app } = await setup();
+    const owner = seedUser(room.ctx, "owner", "owner");
+    const keys = pair();
+    const { key } = registerAgentWithKey(room.ctx, {
+      displayName: "dsh",
+      runtime: "dsh",
+      publicKey: keys.pem,
+      actorUserId: owner,
+    });
+    const connected = await completeConnect(app, keys, key.fingerprint);
+    const token = String(connected.body.sessionToken);
+
+    // ?token= is gone: the long-lived credential is never a URL parameter.
+    const byToken = await openSocketWithQuery(app, `token=${encodeURIComponent(token)}`);
+    expect(await byToken.next()).toMatchObject({ type: "error", code: "unauthorized" });
+
+    const ticketResponse = await app.inject({
+      method: "POST",
+      url: "/api/v1/agent/socket-ticket",
+      headers: { authorization: `Bearer ${token}` },
+    });
+    expect(ticketResponse.statusCode).toBe(200);
+    const ticket = String(ticketResponse.json().ticket);
+    const first = await openSocketWithQuery(app, `ticket=${encodeURIComponent(ticket)}`);
+    await first.nextOf("hello");
+    first.close();
+
+    const replay = await openSocketWithQuery(app, `ticket=${encodeURIComponent(ticket)}`);
+    expect(await replay.next()).toMatchObject({ type: "error", code: "unauthorized" });
+  }, 20_000);
+
+  it("rejects an expired upgrade ticket", async () => {
+    let clock = Date.now();
+    const { room, app } = await setup(() => clock);
+    const owner = seedUser(room.ctx, "owner", "owner");
+    const keys = pair();
+    const { key } = registerAgentWithKey(room.ctx, {
+      displayName: "dsh",
+      runtime: "dsh",
+      publicKey: keys.pem,
+      actorUserId: owner,
+    });
+    const connected = await completeConnect(app, keys, key.fingerprint);
+    const token = String(connected.body.sessionToken);
+    const ticketResponse = await app.inject({
+      method: "POST",
+      url: "/api/v1/agent/socket-ticket",
+      headers: { authorization: `Bearer ${token}` },
+    });
+    const ticket = String(ticketResponse.json().ticket);
+
+    clock += 120_000;
+    const expired = await openSocketWithQuery(app, `ticket=${encodeURIComponent(ticket)}`);
+    expect(await expired.next()).toMatchObject({ type: "error", code: "unauthorized" });
+  }, 20_000);
+
+  it("closes a live socket when the session TTL elapses and refuses reconnection", async () => {
+    let clock = Date.now();
+    const { room, app } = await setup(() => clock);
+    const owner = seedUser(room.ctx, "owner", "owner");
+    const keys = pair();
+    const { agent, key } = registerAgentWithKey(room.ctx, {
+      displayName: "dsh",
+      runtime: "dsh",
+      publicKey: keys.pem,
+      actorUserId: owner,
+    });
+    const connected = await completeConnect(app, keys, key.fingerprint);
+    const token = String(connected.body.sessionToken);
+    const frames = await openSocket(app, token);
+    await frames.nextOf("hello");
+
+    clock += 61_000; // session TTL is 60s in this harness
+    const expired = await frames.next(6_000);
+    expect(expired).toMatchObject({ type: "error", code: "session_expired" });
+    await waitFor(() => statusOf(room, agent.id) === "offline");
+
+    const reconnect = await app.inject({
+      method: "POST",
+      url: "/api/v1/agent/socket-ticket",
+      headers: { authorization: `Bearer ${token}` },
+    });
+    expect(reconnect.statusCode).toBe(401);
   }, 20_000);
 
   it("marks the agent offline on disconnect and after a stale lease", async () => {
@@ -425,9 +530,9 @@ describe("agent websocket deliveries", () => {
     expect(offline).toContain(agent.id);
   }, 20_000);
 
-  it("rejects a socket without a valid session token", async () => {
+  it("rejects a socket without a valid ticket", async () => {
     const { app } = await setup();
-    const frames = await openSocket(app, "not-a-token");
+    const frames = await openSocketWithQuery(app, "ticket=not-a-ticket");
     const frame = await frames.next();
     expect(frame).toMatchObject({ type: "error", code: "unauthorized" });
   }, 10_000);

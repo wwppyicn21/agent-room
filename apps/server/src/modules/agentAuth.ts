@@ -1,10 +1,11 @@
 import { createHash, createPublicKey, randomBytes, verify as verifySignature } from "node:crypto";
-import { and, eq, gt, inArray, isNull, lt } from "drizzle-orm";
+import { and, eq, gt, inArray, isNull, isNotNull, lt, lte, or } from "drizzle-orm";
 import {
   agentChallenges,
   agentDeliveries,
   agentKeys,
   agentSessions,
+  agentSocketTickets,
   agents,
   type AgentKeyRow,
   type AgentRow,
@@ -18,11 +19,14 @@ import {
   newId,
 } from "@room/protocol";
 import type { RoomContext, RoomDb } from "./context.js";
-import { UnauthorizedError } from "./errors.js";
+import { RateLimitError, UnauthorizedError } from "./errors.js";
 import { appendEvent } from "./events.js";
 import { requireAgent } from "./permissions.js";
 
 const SERVER_ID_KEY = "server_id";
+
+/** Public challenge endpoint writes rows; cap open challenges per key. */
+export const MAX_ACTIVE_CHALLENGES_PER_KEY = 5;
 
 /** Stable per-database server identity, bound into every signed challenge. */
 export function getServerId(ctx: RoomContext): string {
@@ -138,6 +142,22 @@ export function createAgentChallenge(
     throw new UnauthorizedError("agentId does not match the registered key");
   }
   const now = ctx.now();
+  const active = ctx.db
+    .select({ id: agentChallenges.id })
+    .from(agentChallenges)
+    .where(
+      and(
+        eq(agentChallenges.keyId, key.id),
+        isNull(agentChallenges.usedAt),
+        gt(agentChallenges.expiresAt, now),
+      ),
+    )
+    .all().length;
+  if (active >= MAX_ACTIVE_CHALLENGES_PER_KEY) {
+    throw new RateLimitError(
+      `too many open challenges for this key (max ${MAX_ACTIVE_CHALLENGES_PER_KEY}); retry after the open ones expire`,
+    );
+  }
   const challenge = {
     id: newId("chl"),
     agentId: agent.id,
@@ -151,6 +171,24 @@ export function createAgentChallenge(
   };
   ctx.db.insert(agentChallenges).values(challenge).run();
   return challengeView(ctx, challenge);
+}
+
+/** Removes used or expired challenges; valid, unconsumed ones are kept. */
+export function cleanupExpiredChallenges(ctx: RoomContext, now = ctx.now()): number {
+  const removed = ctx.db
+    .delete(agentChallenges)
+    .where(or(isNotNull(agentChallenges.usedAt), lte(agentChallenges.expiresAt, now)))
+    .run();
+  return removed.changes;
+}
+
+/** Used or expired upgrade tickets are useless; deleting them bounds the table. */
+export function cleanupExpiredSocketTickets(ctx: RoomContext, now = ctx.now()): number {
+  const removed = ctx.db
+    .delete(agentSocketTickets)
+    .where(or(isNotNull(agentSocketTickets.usedAt), lte(agentSocketTickets.expiresAt, now)))
+    .run();
+  return removed.changes;
 }
 
 export function hashSessionToken(token: string): string {
@@ -245,17 +283,10 @@ export function connectAgent(
   });
 }
 
-/** Resolves a WS bearer token; disabled agents and revoked keys are rejected. */
-export function requireAgentSession(
+function validateSession(
   ctx: RoomContext,
-  token: string,
+  session: AgentSessionRow,
 ): { agent: AgentRow; session: AgentSessionRow; key: AgentKeyRow } {
-  const session = ctx.db
-    .select()
-    .from(agentSessions)
-    .where(eq(agentSessions.tokenHash, hashSessionToken(token)))
-    .get();
-  if (!session) throw new UnauthorizedError("invalid agent session token");
   if (session.closedAt !== null) throw new UnauthorizedError("agent session is closed");
   const now = ctx.now();
   if (session.expiresAt <= now) {
@@ -268,9 +299,89 @@ export function requireAgentSession(
   } catch {
     throw new UnauthorizedError("agent is disabled");
   }
-  const key = ctx.db.select().from(agentKeys).where(eq(agentKeys.id, session.keyId)).get()!;
+  const key = ctx.db.select().from(agentKeys).where(eq(agentKeys.id, session.keyId)).get();
   if (!key || key.status !== "active") throw new UnauthorizedError("agent key is revoked");
   return { agent, session, key };
+}
+
+export function isSessionExpired(session: AgentSessionRow, now: number): boolean {
+  return session.expiresAt <= now;
+}
+
+/** Resolves a session row by id; disabled agents and revoked keys are rejected. */
+export function requireAgentSessionById(
+  ctx: RoomContext,
+  sessionId: string,
+): { agent: AgentRow; session: AgentSessionRow; key: AgentKeyRow } {
+  const session = ctx.db.select().from(agentSessions).where(eq(agentSessions.id, sessionId)).get();
+  if (!session) throw new UnauthorizedError("unknown agent session");
+  return validateSession(ctx, session);
+}
+
+/** Resolves a WS bearer token; disabled agents and revoked keys are rejected. */
+export function requireAgentSession(
+  ctx: RoomContext,
+  token: string,
+): { agent: AgentRow; session: AgentSessionRow; key: AgentKeyRow } {
+  const session = ctx.db
+    .select()
+    .from(agentSessions)
+    .where(eq(agentSessions.tokenHash, hashSessionToken(token)))
+    .get();
+  if (!session) throw new UnauthorizedError("invalid agent session token");
+  return validateSession(ctx, session);
+}
+
+/**
+ * Issues a short-lived, single-use ticket for the WebSocket upgrade. The
+ * long-lived session token stays in the Authorization header of the POST; a
+ * browser-style WebSocket cannot set headers, so only this ticket is in the URL.
+ */
+export function issueSocketTicket(
+  ctx: RoomContext,
+  input: { sessionId: string; ttlMs: number },
+): { token: string; expiresAt: number } {
+  const { session } = requireAgentSessionById(ctx, input.sessionId);
+  const token = randomBytes(32).toString("base64url");
+  const now = ctx.now();
+  const expiresAt = now + input.ttlMs;
+  ctx.db
+    .insert(agentSocketTickets)
+    .values({
+      id: newId("tkt"),
+      sessionId: session.id,
+      ticketHash: hashSessionToken(token),
+      expiresAt,
+      createdAt: now,
+    })
+    .run();
+  return { token, expiresAt };
+}
+
+/** Atomically consumes an upgrade ticket exactly once and returns its session. */
+export function consumeSocketTicket(ctx: RoomContext, token: string): string {
+  const ticket = ctx.db
+    .select()
+    .from(agentSocketTickets)
+    .where(eq(agentSocketTickets.ticketHash, hashSessionToken(token)))
+    .get();
+  if (!ticket) throw new UnauthorizedError("invalid socket ticket");
+  const now = ctx.now();
+  if (ticket.usedAt !== null) throw new UnauthorizedError("socket ticket has already been used");
+  if (ticket.expiresAt <= now) throw new UnauthorizedError("socket ticket has expired");
+  const consumed = ctx.db
+    .update(agentSocketTickets)
+    .set({ usedAt: now })
+    .where(
+      and(
+        eq(agentSocketTickets.id, ticket.id),
+        isNull(agentSocketTickets.usedAt),
+        gt(agentSocketTickets.expiresAt, now),
+      ),
+    )
+    .run();
+  if (consumed.changes !== 1) throw new UnauthorizedError("socket ticket is no longer valid");
+  return ticket.sessionId;
 }
 
 export function touchAgentSession(ctx: RoomContext, sessionId: string): void {

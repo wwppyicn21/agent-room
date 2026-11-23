@@ -1,3 +1,4 @@
+import { sql } from "drizzle-orm";
 import {
   type AnySQLiteColumn,
   index,
@@ -35,7 +36,11 @@ export const users = sqliteTable(
     createdAt: integer("created_at").notNull(),
     updatedAt: integer("updated_at").notNull(),
   },
-  (table) => [index("users_role_idx").on(table.role), index("users_status_idx").on(table.status)],
+  (table) => [
+    index("users_role_idx").on(table.role),
+    index("users_status_idx").on(table.status),
+    uniqueIndex("users_email_lower_uq").on(sql`lower(${table.email})`),
+  ],
 );
 
 export const externalIdentities = sqliteTable(
@@ -227,6 +232,25 @@ export const agentSessions = sqliteTable(
  * source message exists and belongs to the same group; the UNIQUE group/seq
  * indexes keep the relation consistent.
  */
+export const agentSocketTickets = sqliteTable(
+  "agent_socket_tickets",
+  {
+    id: text("id").primaryKey(),
+    sessionId: text("session_id")
+      .notNull()
+      .references(() => agentSessions.id, { onDelete: "cascade" }),
+    ticketHash: text("ticket_hash").notNull(),
+    expiresAt: integer("expires_at").notNull(),
+    usedAt: integer("used_at"),
+    createdAt: integer("created_at").notNull(),
+  },
+  (table) => [
+    uniqueIndex("agent_socket_tickets_hash_uq").on(table.ticketHash),
+    index("agent_socket_tickets_expiry_idx").on(table.expiresAt),
+    index("agent_socket_tickets_session_idx").on(table.sessionId),
+  ],
+);
+
 export const threads = sqliteTable(
   "threads",
   {
@@ -435,6 +459,7 @@ export type AgentRow = typeof agents.$inferSelect;
 export type AgentKeyRow = typeof agentKeys.$inferSelect;
 export type AgentChallengeRow = typeof agentChallenges.$inferSelect;
 export type AgentSessionRow = typeof agentSessions.$inferSelect;
+export type AgentSocketTicketRow = typeof agentSocketTickets.$inferSelect;
 export type ThreadRow = typeof threads.$inferSelect;
 export type MessageRow = typeof messages.$inferSelect;
 export type TaskRow = typeof tasks.$inferSelect;

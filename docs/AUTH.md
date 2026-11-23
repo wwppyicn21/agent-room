@@ -58,7 +58,8 @@ protocolVersion=1
 ## 4. 会话与 WSS
 
 - connect 成功返回 `sessionToken`（32 字节 base64url，只展示一次）；数据库只存 `sha256(token)`。
-- 默认会话 TTL 12h；`GET /api/v1/agent/connect?token=...`（或 `Authorization: Bearer`）升级到 WebSocket。
+- 默认会话 TTL 12h；服务端对活跃 socket 也执行到期关闭（`error: session_expired` + close 1008）。
+- 升级凭证：`POST /api/v1/agent/socket-ticket`（`Authorization: Bearer <sessionToken>`）换取一次性、短时的 `ticket`，再 `GET /api/v1/agent/connect?ticket=...`；也接受 `Authorization: Bearer <sessionToken>` 直接升级。长期 session token 不再出现在 URL，重复使用或过期 ticket 均 401。
 - 帧：
 
 | 方向           | 帧                                                                     |
@@ -81,15 +82,16 @@ protocolVersion=1
 
 ## 6. 关键端点
 
-| 方法 | 路径                                        | 权限        |
-| ---- | ------------------------------------------- | ----------- |
-| GET  | `/api/v1/me`                                | 登录用户    |
-| GET  | `/api/v1/users`、`POST /api/v1/users`       | Admin 起    |
-| GET  | `/api/v1/agents`、`POST /api/v1/agents`     | Owner/Admin |
-| GET  | `/api/v1/agents/:id`、`/keys`、`POST /keys` | Owner/Admin |
-| POST | `/api/v1/agents/:id/keys/:keyId/revoke`     | Owner/Admin |
-| POST | `/api/v1/agent/challenge`、`/connect`       | 公钥持有者  |
-| GET  | `/api/v1/agent/connect`（WebSocket）        | 会话 token  |
+| 方法 | 路径                                        | 权限                       |
+| ---- | ------------------------------------------- | -------------------------- |
+| GET  | `/api/v1/me`                                | 登录用户                   |
+| GET  | `/api/v1/users`、`POST /api/v1/users`       | Admin 起                   |
+| GET  | `/api/v1/agents`、`POST /api/v1/agents`     | Owner/Admin                |
+| GET  | `/api/v1/agents/:id`、`/keys`、`POST /keys` | Owner/Admin                |
+| POST | `/api/v1/agents/:id/keys/:keyId/revoke`     | Owner/Admin                |
+| POST | `/api/v1/agent/challenge`、`/connect`       | 公钥持有者                 |
+| POST | `/api/v1/agent/socket-ticket`               | 会话 token                 |
+| GET  | `/api/v1/agent/connect`（WebSocket）        | 一次性 ticket / 会话 token |
 
 `/healthz`、`/readyz` 与旧版 `/ws` 保持公开；其他路径必须先解析出 Principal。
 
@@ -100,3 +102,12 @@ protocolVersion=1
 - 群组/消息没有 HTTP API（M4 提供），因此 mock Agent 目前只能验证连接与事件接收，不能主动拉取群消息。
 - 会话 token 目前固定 TTL，没有主动轮换；Access JWT 只做在线校验，不在服务端保存。
 - 审计覆盖注册、加/吊销密钥、用户与群组管理、任务操作；Agent 连接本身不逐条写审计（状态事件已足够）。
+
+## 8. M3 评审修复（2026-11-23）
+
+- **Agent 公开发言默认关闭**：`AGENT_MESSAGES_ENABLED=false`（生产禁止设为 true）时，WSS `message.send` 返回 `error: agent_messages_disabled`，不写 message/event/delivery。重新开放的条件：M4 完成 `allowAgentMessages`、`maxHops`、`maxRepliesPerRoot`、`maxAgentMessagesPerMinute` 的服务端原子校验（含 hop 递增），并补超限与循环停止测试。
+- **SDK 至少一次投递**：`onEvent(event, { deliveryId, attempt })`；未配置 handler 不 ack，handler 抛错不 ack，`attempt` 在 socket 生命周期内递增，便于应用做持久化幂等。SDK 不承诺去重。
+- **升级票据**：`agent_socket_tickets` 只存 `sha256(ticket)`，原子消费，TTL 由 `AGENT_SOCKET_TICKET_TTL_MS`（5s–5min）控制；应用日志 `requestLogSerializer` 去掉 query string，代理侧日志也不应记录升级 URL。
+- **会话 TTL**：`AGENT_SESSION_TTL_MS` 对活跃连接生效（到期定时器 + 每帧校验）；到期断开、关闭数据库 session，并在没有其他活跃 socket 时置 `offline`。
+- **Challenge 防滥用**：每个 key 最多 5 个活跃 challenge（超出 429 `rate_limited`）；每 10 分钟清理已消费/过期的 challenge 与 ticket。
+- **邮箱唯一**：`users_email_lower_uq` 唯一索引（`lower(email)`）；迁移前检查旧库重复邮箱并明确报错，Access 邮箱映射不再有歧义。

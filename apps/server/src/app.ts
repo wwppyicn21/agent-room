@@ -10,6 +10,20 @@ import { DomainError } from "./modules/errors.js";
 import { registerAgentRoutes } from "./routes/agent.js";
 import { registerHttpRoutes } from "./routes/http.js";
 
+/**
+ * Access logs must never contain upgrade tickets (or any query string), so the
+ * request serializer keeps only the path.
+ */
+export function requestLogSerializer(request: { method?: string; url?: string }): {
+  method: string | undefined;
+  url: string | undefined;
+} {
+  return {
+    method: request.method,
+    url: typeof request.url === "string" ? request.url.split("?")[0] : request.url,
+  };
+}
+
 export interface BuildAppOptions {
   config: Config;
   database: DatabaseHandle;
@@ -38,6 +52,7 @@ export async function buildApp({
     logger: {
       level: config.logLevel,
       redact: ["req.headers.authorization", "req.headers.cookie", "res.headers['set-cookie']"],
+      serializers: { req: requestLogSerializer },
     },
   });
   const ctx = createRoomContext(database, now);

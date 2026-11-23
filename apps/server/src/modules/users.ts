@@ -14,6 +14,12 @@ import { recordAudit } from "./audit.js";
 import { appendEvent } from "./events.js";
 import { requireSystemAdmin, requireUser } from "./permissions.js";
 
+/** Emails are compared and stored lowercase so Access mapping is unambiguous. */
+export function normalizeEmail(email: string | null | undefined): string | null {
+  const normalized = email?.trim().toLowerCase();
+  return normalized ? normalized : null;
+}
+
 export function createUser(
   ctx: RoomContext,
   input: { displayName: string; email?: string | null; role?: RbacRole; actorUserId?: string },
@@ -21,6 +27,10 @@ export function createUser(
   const displayName = input.displayName.trim();
   if (displayName.length === 0 || displayName.length > 120) {
     throw new ValidationError("displayName must be 1-120 characters");
+  }
+  const email = normalizeEmail(input.email);
+  if (email && findUserByEmail(ctx, email)) {
+    throw new ConflictError(`email ${email} is already registered to another user`);
   }
   const hasUsers = ctx.db.select({ id: users.id }).from(users).limit(1).get() !== undefined;
   const role = rbacRoleSchema.parse(input.role ?? (hasUsers ? "member" : "owner"));
@@ -43,36 +53,43 @@ export function createUser(
   }
   const now = ctx.now();
   const id = newId("usr");
-  return ctx.db.transaction((transaction) => {
-    const db = transaction as unknown as RoomDb;
-    db.insert(users)
-      .values({
-        id,
-        displayName,
-        email: input.email ?? null,
-        role,
-        status: "active",
+  try {
+    return ctx.db.transaction((transaction) => {
+      const db = transaction as unknown as RoomDb;
+      db.insert(users)
+        .values({
+          id,
+          displayName,
+          email,
+          role,
+          status: "active",
+          createdAt: now,
+          updatedAt: now,
+        })
+        .run();
+      appendEvent(db, {
+        type: "user.created",
+        actor: { type: "system", id: "system" },
+        payload: { userId: id, role },
         createdAt: now,
-        updatedAt: now,
-      })
-      .run();
-    appendEvent(db, {
-      type: "user.created",
-      actor: { type: "system", id: "system" },
-      payload: { userId: id, role },
-      createdAt: now,
+      });
+      recordAudit(db, {
+        actorType: input.actorUserId ? "user" : "system",
+        actorId: input.actorUserId ?? "system",
+        action: "user.create",
+        targetType: "user",
+        targetId: id,
+        metadata: { role },
+        createdAt: now,
+      });
+      return db.select().from(users).where(eq(users.id, id)).get()!;
     });
-    recordAudit(db, {
-      actorType: input.actorUserId ? "user" : "system",
-      actorId: input.actorUserId ?? "system",
-      action: "user.create",
-      targetType: "user",
-      targetId: id,
-      metadata: { role },
-      createdAt: now,
-    });
-    return db.select().from(users).where(eq(users.id, id)).get()!;
-  });
+  } catch (error) {
+    if (isUniqueViolation(error)) {
+      throw new ConflictError(`email ${email ?? "unknown"} is already registered to another user`);
+    }
+    throw error;
+  }
 }
 
 export function getUser(ctx: RoomContext, userId: string): UserRow {

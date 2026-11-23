@@ -13,10 +13,14 @@ import {
 import {
   closeAgentSession,
   connectAgent,
+  consumeSocketTicket,
   getServerId,
   createAgentChallenge,
+  isSessionExpired,
+  issueSocketTicket,
   liveSessionAgentIds,
   requireAgentSession,
+  requireAgentSessionById,
   setAgentStatus,
   touchAgentSession,
 } from "../modules/agentAuth.js";
@@ -48,13 +52,17 @@ function parseBody<T>(schema: ZodType<T>, body: unknown): T {
   return result.data;
 }
 
-function bearerToken(request: FastifyRequest): string | undefined {
+/**
+ * Session tokens only travel in the Authorization header. WebSocket upgrades
+ * use a short-lived single-use ticket instead, so long-lived credentials never
+ * end up in URLs (and therefore never in access logs).
+ */
+function sessionTokenFromHeader(request: FastifyRequest): string | undefined {
   const header = request.headers.authorization;
   if (typeof header === "string" && header.toLowerCase().startsWith("bearer ")) {
     return header.slice(7).trim() || undefined;
   }
-  const url = new URL(request.url, "http://localhost");
-  return url.searchParams.get("token") ?? undefined;
+  return undefined;
 }
 
 function send(socket: AgentSocket, message: unknown): void {
@@ -110,12 +118,30 @@ export function registerAgentRoutes(app: FastifyInstance, deps: AgentRouteDepend
     };
   });
 
+  app.post("/api/v1/agent/socket-ticket", async (request) => {
+    const token = sessionTokenFromHeader(request);
+    if (!token) throw new UnauthorizedError("missing agent session token");
+    const identity = requireAgentSession(ctx, token);
+    const ticket = issueSocketTicket(ctx, {
+      sessionId: identity.session.id,
+      ttlMs: config.agentSocketTicketTtlMs,
+    });
+    return { ticket: ticket.token, expiresAt: toIso(ticket.expiresAt) };
+  });
+
   app.get("/api/v1/agent/connect", { websocket: true }, (socket, request) => {
-    const token = bearerToken(request);
+    const url = new URL(request.url, "http://localhost");
+    const ticket = url.searchParams.get("ticket");
+    const headerToken = sessionTokenFromHeader(request);
     let identity: ReturnType<typeof requireAgentSession>;
     try {
-      if (!token) throw new UnauthorizedError("missing agent session token");
-      identity = requireAgentSession(ctx, token);
+      if (headerToken) {
+        identity = requireAgentSession(ctx, headerToken);
+      } else if (ticket) {
+        identity = requireAgentSessionById(ctx, consumeSocketTicket(ctx, ticket));
+      } else {
+        throw new UnauthorizedError("missing agent session ticket");
+      }
     } catch (error) {
       send(socket, {
         type: "error",
@@ -129,6 +155,39 @@ export function registerAgentRoutes(app: FastifyInstance, deps: AgentRouteDepend
     const { agent, session } = identity;
     const capabilities = JSON.parse(agent.capabilities) as string[];
     const sent = new Set<string>();
+    const timers: { poll?: NodeJS.Timeout; expiryTimer?: NodeJS.Timeout } = {};
+    let closed = false;
+
+    const sessionExpired = (): boolean => isSessionExpired(session, ctx.now());
+
+    /**
+     * TTL is enforced on live connections, not only at upgrade time: the timer
+     * closes idle sockets and every inbound frame re-checks the deadline.
+     */
+    const closeForExpiry = (): void => {
+      if (closed) return;
+      closed = true;
+      if (timers.poll) clearInterval(timers.poll);
+      if (timers.expiryTimer) clearTimeout(timers.expiryTimer);
+      send(socket, {
+        type: "error",
+        code: "session_expired",
+        message: "agent session has expired",
+      });
+      try {
+        closeAgentSession(ctx, session.id, "expired");
+        if (!liveSessionAgentIds(ctx, config.agentPresenceTtlMs).has(agent.id)) {
+          setAgentStatus(ctx, agent.id, "offline", "session-expired");
+        }
+      } catch (error) {
+        app.log.warn({ err: error, agentId: agent.id }, "expired session cleanup failed");
+      }
+      try {
+        socket.close(1008, "session expired");
+      } catch {
+        // already closing
+      }
+    };
     hub.register(agent.id, socket as unknown as AgentSocket);
     touchAgentSession(ctx, session.id);
     setAgentStatus(ctx, agent.id, "online", "connected");
@@ -184,16 +243,29 @@ export function registerAgentRoutes(app: FastifyInstance, deps: AgentRouteDepend
     });
     deliverOutstanding();
 
-    const poll = setInterval(() => {
+    timers.poll = setInterval(() => {
+      if (closed) return;
       try {
+        if (sessionExpired()) {
+          closeForExpiry();
+          return;
+        }
         deliverOutstanding();
       } catch (error) {
         app.log.warn({ err: error, agentId: agent.id }, "delivery poll failed");
       }
     }, 1_000);
-    poll.unref();
+    timers.poll.unref();
+
+    timers.expiryTimer = setTimeout(closeForExpiry, Math.max(0, session.expiresAt - ctx.now()));
+    timers.expiryTimer.unref();
 
     socket.on("message", (raw: Buffer) => {
+      if (closed) return;
+      if (sessionExpired()) {
+        closeForExpiry();
+        return;
+      }
       let parsed: unknown;
       try {
         parsed = JSON.parse(raw.toString());
@@ -236,6 +308,17 @@ export function registerAgentRoutes(app: FastifyInstance, deps: AgentRouteDepend
           return;
         }
         if (message.type === "message.send") {
+          // M4 participation limits (hop, per-root replies, rate) are not
+          // implemented yet, so agent-authored group messages stay off.
+          if (!config.agentMessagesEnabled) {
+            send(socket, {
+              type: "error",
+              code: "agent_messages_disabled",
+              message:
+                "agent group messages are disabled until the M4 participation limits are implemented",
+            });
+            return;
+          }
           const posted = postMessage(ctx, {
             groupId: message.groupId,
             actor: { type: "agent", id: agent.id },
@@ -271,7 +354,9 @@ export function registerAgentRoutes(app: FastifyInstance, deps: AgentRouteDepend
     });
 
     socket.on("close", () => {
-      clearInterval(poll);
+      closed = true;
+      if (timers.poll) clearInterval(timers.poll);
+      if (timers.expiryTimer) clearTimeout(timers.expiryTimer);
       // Cleanup can race with a server shutdown that already closed the
       // database; failing to persist "offline" must never crash the process.
       try {

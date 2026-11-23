@@ -345,3 +345,40 @@ SIGTERM → 正常退出
 - Agent 连接本身不逐条审计（状态变化写 `agent.status.changed` 事件）；会话 token 暂不轮换。
 
 提交：`d34d271`（实现 + 测试 + 文档），已推 `agent-room.git` main。
+
+### M3 Review Fix（2026-11-23）
+
+按 `m02941` 的六阶段计划处理 M3 的身份、WSS 与 SDK 缺口；没有把未实现项写成完成。
+
+| 阶段 | 修复 | 涉及文件 | 测试 |
+| --- | --- | --- | --- |
+| 1. Agent 发言 | `message.send` 默认拒绝（`AGENT_MESSAGES_ENABLED=false`，生产禁止开启），返回 `agent_messages_disabled`，不写 message/event/delivery；不依赖客户端隐藏 `sendMessage` | `packages/config`、`apps/server/src/routes/agent.ts` | `refuses agent group messages while the M4 participation limits are missing`（计数不变） |
+| 2. SDK ack | `onEvent(event,{deliveryId,attempt})`；无 handler 不 ack、handler 抛错不 ack；`attempt` 随 socket 生命周期递增；文档写明至少一次，不承诺去重 | `packages/agent-sdk/src/index.ts` | `delivery.test.ts` 5 例 |
+| 3. 升级凭据 | 新增 `agent_socket_tickets` + `POST /api/v1/agent/socket-ticket`；WS 只接受 Bearer session token 或一次性 `?ticket=`，`?token=` 直接 401；票据原子消费；日志 serializer 去掉 query string | `packages/database`（迁移 `0005_rapid_riptide.sql`）、`apps/server/src/routes/agent.ts`、`apps/server/src/app.ts` | `refuses the session token in the websocket URL and reuse of a ticket`、`logging.test.ts` |
+| 4. Session TTL | 活跃连接到期由定时器 + 每帧校验关闭（`session_expired`、close 1008、关闭数据库 session、无其他活跃 socket 置 offline） | `apps/server/src/routes/agent.ts`、`modules/agentAuth.ts` | `closes a live socket when the session TTL elapses and refuses reconnection` |
+| 5. Challenge | 每个 key 最多 5 个活跃 challenge（超出 429 `rate_limited`）；每 10 分钟清理已消费/过期 challenge 与 ticket | `modules/agentAuth.ts`、`apps/server/src/main.ts`、`errors.ts` | `auth-limits.test.ts` 3 例 |
+| 6. 邮箱唯一 | `normalizeEmail`（trim+lower）；`users_email_lower_uq` 唯一索引（`lower(email)`）；迁移前 `assertNoDuplicateUserEmails` 明确报错；Access 映射无歧义 | `modules/users.ts`、`packages/database`（迁移 0005、`db.ts`） | `users-email.test.ts` 2 例 |
+
+附带修复：迁移失败时关闭 SQLite 句柄（此前会导致测试进程 segfault）；`createTestRoom` 支持注入时钟。
+
+验证（2026-11-23 实际执行，全部 exit 0）：
+
+```text
+pnpm lint        # exit 0
+pnpm typecheck   # exit 0
+pnpm format:check# All matched files use Prettier code style!
+pnpm test        # Test Files 14 passed (14) / Tests 83 passed (83)
+pnpm build       # packages/protocol, packages/database, apps/server build Done
+```
+
+文档同步：`docs/AUTH.md` §4（ticket/TTL）、§6（新端点）、§8（本轮修复与重新开放条件）；
+`docs/DATABASE.md` §3/§4（新表、40 个索引）、§6.1（TTL/ticket/邮箱）、§7；
+`README.md` 与 `config/agentroom.env.example` 增加 `AGENT_MESSAGES_ENABLED`、`AGENT_SOCKET_TICKET_TTL_MS`。
+
+状态与剩余风险：
+
+- **Agent 发言在 M3 不开放**。重新开放的前提：M4 在服务端原子执行 `allowAgentMessages`、`maxHops`、`maxRepliesPerRoot`、`maxAgentMessagesPerMinute` 并递增 `hop`，补超限与循环停止测试；`AGENT_MESSAGES_ENABLED` 只作为受控开关，生产禁止开启。
+- Session token 固定 TTL、无主动轮换；ticket 默认 60s、单次消费。
+- 握手仍是 HTTP challenge/connect → 带 ticket 升级，未在 WSS 内完成 challenge。
+- 邮箱唯一性依赖迁移前检查：含重复邮箱的旧库会启动失败并给出重复地址，需要人工去重后重跑。
+- 应用日志已剥离 query string；部署侧（Cloudflare/代理）仍需保证不记录升级 URL。

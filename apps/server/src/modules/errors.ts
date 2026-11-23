@@ -1,5 +1,11 @@
 export type ErrorCode =
-  "validation_error" | "unauthorized" | "forbidden" | "not_found" | "conflict" | "internal_error";
+  | "validation_error"
+  | "unauthorized"
+  | "forbidden"
+  | "not_found"
+  | "conflict"
+  | "rate_limited"
+  | "internal_error";
 
 export class DomainError extends Error {
   readonly code: ErrorCode;
@@ -34,6 +40,12 @@ export class NotFoundError extends DomainError {
 export class ForbiddenError extends DomainError {
   constructor(message: string) {
     super(message, "forbidden", 403);
+  }
+}
+
+export class RateLimitError extends DomainError {
+  constructor(message: string) {
+    super(message, "rate_limited", 429);
   }
 }
 

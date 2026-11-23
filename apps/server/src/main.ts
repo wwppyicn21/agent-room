@@ -2,7 +2,11 @@ import { fileURLToPath } from "node:url";
 import { loadConfig } from "@room/config";
 import { acquireInstanceLock, InstanceLockError, openDatabase } from "@room/database";
 import { ensureBootstrapOwner } from "./auth/bootstrap.js";
-import { sweepStaleSessions } from "./modules/agentAuth.js";
+import {
+  cleanupExpiredChallenges,
+  cleanupExpiredSocketTickets,
+  sweepStaleSessions,
+} from "./modules/agentAuth.js";
 import { buildApp } from "./app.js";
 
 const config = loadConfig();
@@ -52,8 +56,26 @@ const presenceTimer = setInterval(() => {
   }
 }, 10_000);
 presenceTimer.unref();
+
+// Public challenge/connect endpoints write rows; bound both tables without
+// touching challenges that are still valid and unconsumed.
+const authCleanupTimer = setInterval(() => {
+  try {
+    const now = roomContext.now();
+    const challenges = cleanupExpiredChallenges(roomContext, now);
+    const tickets = cleanupExpiredSocketTickets(roomContext, now);
+    if (challenges > 0 || tickets > 0) {
+      app.log.info({ challenges, tickets }, "expired auth artifacts removed");
+    }
+  } catch (error) {
+    app.log.warn({ err: error }, "auth artifact cleanup failed");
+  }
+}, 600_000);
+authCleanupTimer.unref();
+
 app.addHook("onClose", async () => {
   clearInterval(presenceTimer);
+  clearInterval(authCleanupTimer);
 });
 
 try {

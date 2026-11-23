@@ -40,8 +40,21 @@ export interface AgentClientOptions {
   publicKey: KeyObject;
   fetchImpl?: typeof fetch;
   WebSocketImpl?: new (url: string) => WebSocketLike;
-  onEvent?: (event: AgentEvent) => void | Promise<void>;
-  /** Acknowledge deliveries after `onEvent` resolves (default true). */
+  /**
+   * Delivery handler. Delivery is at-least-once: the same `deliveryId` can be
+   * redelivered after a missing ack or a reconnect, and `attempt` counts the
+   * deliveries observed by this client. Applications must be idempotent per
+   * `deliveryId` if they perform side effects.
+   */
+  onEvent?: (
+    event: AgentEvent,
+    context: { deliveryId: string; attempt: number },
+  ) => void | Promise<void>;
+  /**
+   * Acknowledge deliveries after `onEvent` resolves (default true). Without an
+   * `onEvent` handler nothing is acknowledged, so events are never silently
+   * dropped and the server keeps redelivering them.
+   */
   autoAck?: boolean;
 }
 
@@ -90,6 +103,7 @@ export class AgentClient {
   private token: string | undefined;
   private heartbeatTimer: ReturnType<typeof setInterval> | undefined;
   private readonly fingerprint: string;
+  private readonly deliveryAttempts = new Map<string, number>();
 
   constructor(options: AgentClientOptions) {
     this.options = options;
@@ -163,12 +177,25 @@ export class AgentClient {
     };
   }
 
-  /** Opens the authenticated socket; resolves after the server `hello`. */
-  open(): Promise<{ agentId: string; heartbeatMs: number; outstanding: number }> {
-    if (!this.token) return Promise.reject(new Error("connect() first"));
-    const wsBase = this.options.baseUrl.replace(/^http/, "ws").replace(/\/+$/, "");
+  /**
+   * Opens the authenticated socket; resolves after the server `hello`. The
+   * long-lived session token never enters the URL: it is exchanged over HTTPS
+   * for a short-lived, single-use upgrade ticket.
+   */
+  async open(): Promise<{ agentId: string; heartbeatMs: number; outstanding: number }> {
+    if (!this.token) throw new Error("connect() first");
+    const base = this.options.baseUrl.replace(/\/+$/, "");
+    const ticketResponse = await this.fetchImpl(`${base}/api/v1/agent/socket-ticket`, {
+      method: "POST",
+      headers: { authorization: `Bearer ${this.token}` },
+    });
+    if (!ticketResponse.ok) {
+      throw new Error(`socket ticket failed (${ticketResponse.status})`);
+    }
+    const { ticket } = (await ticketResponse.json()) as { ticket: string };
+    const wsBase = base.replace(/^http/, "ws");
     const socket = new this.WebSocketImpl(
-      `${wsBase}/api/v1/agent/connect?token=${encodeURIComponent(this.token)}`,
+      `${wsBase}/api/v1/agent/connect?ticket=${encodeURIComponent(ticket)}`,
     );
     this.socket = socket;
     return new Promise((resolve, reject) => {
@@ -213,15 +240,25 @@ export class AgentClient {
   }
 
   private async handleDelivery(frame: Record<string, unknown>): Promise<void> {
-    const event = frame.event as AgentEvent;
+    const deliveryId = String(frame.deliveryId);
+    const handler = this.options.onEvent;
+    if (!handler) {
+      // No handler means nobody has seen the event: leave it unacked so the
+      // server redelivers it instead of losing it silently.
+      return;
+    }
+    const attempt = (this.deliveryAttempts.get(deliveryId) ?? 0) + 1;
+    this.deliveryAttempts.set(deliveryId, attempt);
     try {
-      await this.options.onEvent?.(event);
+      await handler(frame.event as AgentEvent, { deliveryId, attempt });
       if (this.options.autoAck !== false) {
-        this.ack([String(frame.deliveryId)]);
+        this.ack([deliveryId]);
       }
+      // Attempts are kept for the socket lifetime: if the ack is lost and the
+      // server redelivers, the handler still sees attempt 2 and can ignore it.
     } catch {
       // A failed handler leaves the delivery unacked; the server redelivers on
-      // reconnect. Reporting the failure is the application's job.
+      // reconnect. The attempt count only resets after a successful ack.
     }
   }
 

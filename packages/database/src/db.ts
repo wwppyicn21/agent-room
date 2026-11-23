@@ -41,7 +41,14 @@ export function openDatabase({ path, migrationsFolder }: OpenDatabaseOptions): D
 
   const db = drizzle(sqlite, { schema });
   if (migrationsFolder) {
-    migrate(db, { migrationsFolder });
+    try {
+      assertNoDuplicateUserEmails(sqlite);
+      migrate(db, { migrationsFolder });
+    } catch (error) {
+      // Never leak an open handle when a pre-migration check or migration fails.
+      if (sqlite.open) sqlite.close();
+      throw error;
+    }
   }
 
   return {
@@ -52,6 +59,34 @@ export function openDatabase({ path, migrationsFolder }: OpenDatabaseOptions): D
       if (sqlite.open) sqlite.close();
     },
   };
+}
+
+/**
+ * The unique index on `lower(email)` is created by a migration; pre-existing
+ * duplicates would make that migration fail with an opaque SQLite error, so we
+ * check first and tell the operator exactly which address conflicts.
+ */
+function assertNoDuplicateUserEmails(sqlite: Database.Database): void {
+  const table = sqlite
+    .prepare("select name from sqlite_master where type = 'table' and name = 'users'")
+    .get();
+  if (!table) return;
+  const duplicate = sqlite
+    .prepare(
+      `select lower(email) as email, count(*) as count
+         from users
+        where email is not null
+        group by lower(email)
+       having count(*) > 1
+        limit 1`,
+    )
+    .get() as { email: string; count: number } | undefined;
+  if (duplicate) {
+    throw new Error(
+      `duplicate user email ${duplicate.email} (${duplicate.count} users); ` +
+        "deduplicate the users table before starting the server so the unique email index can be created",
+    );
+  }
 }
 
 export function readPragmas(sqlite: Database.Database): PragmaSnapshot {

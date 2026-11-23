@@ -15,10 +15,10 @@ export interface TestRoom {
   close(): void;
 }
 
-export function createTestRoom(): TestRoom {
+export function createTestRoom(now?: () => number): TestRoom {
   const dir = mkdtempSync(join(tmpdir(), "agent-room-test-"));
   const handle = openDatabase({ path: join(dir, "room.db"), migrationsFolder });
-  const ctx = createRoomContext(handle);
+  const ctx = createRoomContext(handle, now);
   return {
     ctx,
     handle,
