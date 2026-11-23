@@ -453,3 +453,4 @@ $ pnpm build       # packages/protocol, database, agent-sdk, apps/server Done
 
 - 新增/更新测试：`apps/server/test/participation.test.ts`（mention 邮箱边界、预算耗尽后幂等重试、限流后幂等重试）、`packages/agent-sdk/test/delivery.test.ts`（ack 等待 message.sent、等待期间不重发、可重试错误退避、终止错误 ack）。
 - 结论：审查报告中的优先项与 mention 边界已修复；M4 仍标完成，Session 映射归 M6、前端归 M8 已在计划中同步。
+- 提交：`6515983`（修复 + 测试 + 文档）。
