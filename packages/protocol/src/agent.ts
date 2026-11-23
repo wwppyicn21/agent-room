@@ -157,6 +157,7 @@ export const agentClientMessageSchema = z.discriminatedUnion("type", [
     content: z.string().trim().min(1).max(20_000),
     threadId: z.string().nullable().optional(),
     rootMessageId: z.string().nullable().optional(),
+    replyToMessageId: z.string().nullable().optional(),
     clientMessageId: z.string().trim().max(200).nullable().optional(),
   }),
   z.object({

@@ -2,8 +2,15 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { eq } from "drizzle-orm";
-import { type DatabaseHandle, migrationsFolder, openDatabase, users } from "@room/database";
-import type { RbacRole } from "@room/protocol";
+import {
+  agentKeys,
+  agentSessions,
+  type DatabaseHandle,
+  migrationsFolder,
+  openDatabase,
+  users,
+} from "@room/database";
+import { type RbacRole, newId } from "@room/protocol";
 import { type RoomContext, createRoomContext } from "../src/modules/context.js";
 import { registerAgent } from "../src/modules/agents.js";
 import { createGroup } from "../src/modules/groups.js";
@@ -46,4 +53,35 @@ export function seedAgent(ctx: RoomContext, adminUserId: string, displayName: st
     runtime: "test",
     actorUserId: adminUserId,
   }).id;
+}
+
+/**
+ * Gives the agent an active key and a live session so the participation engine
+ * treats it as online. M4 delivers group messages only to online agents.
+ */
+export function markAgentOnline(ctx: RoomContext, agentId: string): void {
+  const now = ctx.now();
+  const keyId = newId("key");
+  ctx.db
+    .insert(agentKeys)
+    .values({
+      id: keyId,
+      agentId,
+      publicKey: `pem-${keyId}`,
+      fingerprint: `fp-${keyId}`,
+      createdAt: now,
+    })
+    .run();
+  ctx.db
+    .insert(agentSessions)
+    .values({
+      id: newId("ses"),
+      agentId,
+      keyId,
+      tokenHash: `hash-${keyId}`,
+      createdAt: now,
+      expiresAt: now + 3_600_000,
+      lastSeenAt: now,
+    })
+    .run();
 }

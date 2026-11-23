@@ -386,3 +386,47 @@ pnpm build       # packages/protocol, packages/database, apps/server build Done
 评审补充（2026-11-23）：`ack.ok` 到达后删除 `deliveryAttempts` 中对应 `deliveryId`，避免长时间运行的无界增长；新增 `clears attempt tracking once the server confirms the ack`。
 
 提交：`de8ef4d`（实现 + 测试 + 文档）、`f54de8b`（`ack.ok` 清理计数），已推 `agent-room.git` main。
+
+### M4：AI 自主群聊（2026-11-23）
+
+按 `docs/PLAN.md` M4 实现服务端参与引擎、Agent 回复预算与 SDK 决策；REST/Web UI 与 Adapter 侧 Session 映射按里程碑归属记录为偏差。
+
+实现：
+
+- **参与模式**：新增 `apps/server/src/modules/participation.ts`。`decideParticipation` 依次检查 thread 消息、system 发送者、`participationMode=disabled`、Agent 发送时 `allowAgentMessages`、`hop > maxHops`、每 root 的 Agent 回复数 `>= maxRepliesPerRoot`，再取「群成员 ∩ Agent 未 disabled ∩ 有 presence TTL 内的存活 session」并排除发送者；`mention` 模式只保留内容里出现 `@displayName`（大小写不敏感、非字母数字边界）的 Agent。
+- **投递**：`postMessage` 在同一事务内先写 message、event，再按上述结果逐 Agent 写 delivery；离线 Agent 不建 delivery（plan §9.1 的“在线”约束），发送者自己永远不接收。
+- **Agent 发送约束**：Agent 必须指定同群的 `rootMessageId` 或 `replyToMessageId`；服务端用父消息计算 `hop = parent.hop + 1`（不信任客户端），并校验 root 与 reply 一致。超 `maxHops`、超每 root 回复预算抛 `ConflictError`；每分钟超过 `maxAgentMessagesPerMinute` 抛 `RateLimitError`（429）。所有检查都在插入之前，失败不产生 message/event/delivery。
+- **限流索引**：`messages_root_idx (root_message_id, created_at)`、`messages_sender_created_idx (sender_type, sender_id, created_at)`，迁移 `0006_faithful_chat.sql`；显式索引 40 → 42。
+- **WSS**：删除 M3 的 `AGENT_MESSAGES_ENABLED` 全局开关；`message.send` 直接走 `postMessage`，`DomainError` 映射为 `error` 帧（`conflict` / `rate_limited` / `forbidden` / `validation_error`）。
+- **SDK**：`ParticipationResult = {action:"reply", text} | {action:"skip", reason?}`；`onEvent` 返回 reply 时 SDK 自动发送 `message.send`（带事件里的 `messageId`/`rootMessageId`），返回 skip 或空文本时只 ack；`sendMessage` 增加 `replyToMessageId`。
+- **测试**：`apps/server/test/participation.test.ts` 12 例；`agent-auth.test.ts` 新增两 Agent WSS 端到端（用户消息两人都收到、A 回复只到 B、hop=1、DB 投递只有 B）；`agent-sdk/test/delivery.test.ts` 新增 reply/skip 决策 2 例。总计 15 文件 / 97 tests。
+- **配置**：移除 `AGENT_MESSAGES_ENABLED`（config schema/tests、README、env example、AUTH、DATABASE 同步）。
+
+验收对照：
+
+| 验收项 | 结果 | 证据 |
+|---|---|---|
+| 两个 Mock Agent 加入同一群组 | PASS | `participation.test.ts` setup；`agent-auth.test.ts` 双 WS |
+| 用户消息两个 Agent 都收到 | PASS | `fans a user message out to two connected agents and chains one reply` |
+| 一个 Agent 可以 skip，不产生公开回复 | PASS | `does not send a message when the handler decides to skip` |
+| 两个 Agent 在限制内交流 | PASS | `chains agent replies with an incremented hop and never notifies the sender` |
+| 自己的消息不会触发自己 | PASS | 同上（A 的回复只投递给 B） |
+| 超 hop / reply / rate 后停止 | PASS | `stops the chain once the hop limit is reached` / `... per-root reply budget is spent` / `rate limits an agent across groups` |
+| 群组 A 消息不进群组 B | PASS | `keeps groups isolated: a message in A never reaches a member of B` |
+
+```text
+$ pnpm lint        # exit 0
+$ pnpm typecheck   # exit 0
+$ pnpm format:check# All matched files use Prettier code style!
+$ pnpm test        # Test Files 15 passed (15) / Tests 97 passed (97)
+$ pnpm build       # packages/protocol, packages/database, packages/agent-sdk, apps/server Done
+```
+
+偏差与后续：
+
+- 群组/消息 REST API 与 React Web UI 属 M8（仓库目前只有 `apps/server`），因此“前端显示 Agent 发言和在线状态”未在本轮实现。
+- 每个群组独立的 DSH Session 映射属 M6 Adapter；服务端已保证事件带 `groupId` 且群组隔离有测试。
+- `request_task` 决策属 M5；当前 SDK 只实现 reply/skip。
+- skip 只 ack、不写诊断事件（plan 允许写脱敏内部事件，暂未实现）。
+- 离线 Agent 在消息发生时不会收到 delivery（plan §9.1 只对在线 Agent 建立 delivery）；历史补拉依赖 M8 的 REST API。
+- 结论：M4 服务端验收全部通过，建议进入 M5；Web UI 与 REST API 在 M8 补齐。

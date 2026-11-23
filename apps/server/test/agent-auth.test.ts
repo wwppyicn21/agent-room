@@ -2,7 +2,7 @@ import { generateKeyPairSync, sign, type KeyObject } from "node:crypto";
 import { eq } from "drizzle-orm";
 import type { FastifyInstance } from "fastify";
 import { loadConfig } from "@room/config";
-import { agentDeliveries, agents, events, messages, users } from "@room/database";
+import { agentDeliveries, agents, events, users } from "@room/database";
 import { buildAgentChallengeString } from "@room/protocol";
 import { afterEach, describe, expect, it } from "vitest";
 import { buildApp } from "../src/app.js";
@@ -342,12 +342,12 @@ describe("agent websocket deliveries", () => {
       actorUserId: owner,
     });
     addMember(room.ctx, { groupId, actorUserId: owner, memberType: "agent", memberId: agent.id });
-    postMessage(room.ctx, { groupId, actor: { type: "user", id: owner }, content: "first" });
 
     const first = await completeConnect(app, keys, key.fingerprint);
     const frames = await openSocket(app, String(first.body.sessionToken));
     const hello = await frames.nextOf("hello");
-    expect(hello.outstanding).toBe(1);
+    expect(hello.outstanding).toBe(0);
+    postMessage(room.ctx, { groupId, actor: { type: "user", id: owner }, content: "first" });
     const delivery = await frames.nextOf("event.deliver");
     expect((delivery.event as Record<string, unknown>).eventType).toBe("message.created");
     const deliveryId = delivery.deliveryId as string;
@@ -372,48 +372,6 @@ describe("agent websocket deliveries", () => {
       .where(eq(agentDeliveries.agentId, agent.id))
       .all();
     expect(pending.map((row) => row.status)).toEqual(["acked"]);
-  }, 20_000);
-
-  it("refuses agent group messages while the M4 participation limits are missing", async () => {
-    const { room, app } = await setup();
-    const owner = seedUser(room.ctx, "owner", "owner");
-    const groupId = seedGroup(room.ctx, owner);
-    const keys = pair();
-    const { agent, key } = registerAgentWithKey(room.ctx, {
-      displayName: "dsh",
-      runtime: "dsh",
-      publicKey: keys.pem,
-      actorUserId: owner,
-    });
-    addMember(room.ctx, { groupId, actorUserId: owner, memberType: "agent", memberId: agent.id });
-    const connected = await completeConnect(app, keys, key.fingerprint);
-    const frames = await openSocket(app, String(connected.body.sessionToken));
-    await frames.nextOf("hello");
-
-    const counts = () => ({
-      messages: room.ctx.db.select().from(messages).where(eq(messages.groupId, groupId)).all()
-        .length,
-      events: room.ctx.db.select().from(events).where(eq(events.groupId, groupId)).all().length,
-      deliveries: room.ctx.db
-        .select()
-        .from(agentDeliveries)
-        .where(eq(agentDeliveries.agentId, agent.id))
-        .all().length,
-    });
-    const before = counts();
-
-    frames.send({
-      type: "message.send",
-      groupId,
-      content: "hello from the agent",
-      clientMessageId: "client-1",
-    });
-    const rejected = await frames.nextOf("error");
-    expect(rejected.code).toBe("agent_messages_disabled");
-
-    // A rejected send must not leave a message, event or delivery behind.
-    expect(counts()).toEqual(before);
-    frames.close();
   }, 20_000);
 
   it("refuses the session token in the websocket URL and reuse of a ticket", async () => {
@@ -536,6 +494,89 @@ describe("agent websocket deliveries", () => {
     const frame = await frames.next();
     expect(frame).toMatchObject({ type: "error", code: "unauthorized" });
   }, 10_000);
+
+  it("fans a user message out to two connected agents and chains one reply", async () => {
+    const { room, app } = await setup();
+    const owner = seedUser(room.ctx, "owner", "owner");
+    const groupId = seedGroup(room.ctx, owner);
+    const keysA = pair();
+    const keysB = pair();
+    const a = registerAgentWithKey(room.ctx, {
+      displayName: "AgentA",
+      runtime: "test",
+      publicKey: keysA.pem,
+      actorUserId: owner,
+    });
+    const b = registerAgentWithKey(room.ctx, {
+      displayName: "AgentB",
+      runtime: "test",
+      publicKey: keysB.pem,
+      actorUserId: owner,
+    });
+    addMember(room.ctx, { groupId, actorUserId: owner, memberType: "agent", memberId: a.agent.id });
+    addMember(room.ctx, { groupId, actorUserId: owner, memberType: "agent", memberId: b.agent.id });
+
+    const connectedA = await completeConnect(app, keysA, a.key.fingerprint);
+    const connectedB = await completeConnect(app, keysB, b.key.fingerprint);
+    expect(connectedA.statusCode).toBe(200);
+    expect(connectedB.statusCode).toBe(200);
+    const socketA = await openSocket(app, String(connectedA.body.sessionToken));
+    const socketB = await openSocket(app, String(connectedB.body.sessionToken));
+    expect((await socketA.next()).type).toBe("hello");
+    expect((await socketB.next()).type).toBe("hello");
+
+    const source = postMessage(room.ctx, {
+      groupId,
+      actor: { type: "user", id: owner },
+      content: "hello team",
+    });
+    const frameA = await socketA.next();
+    const frameB = await socketB.next();
+    expect(frameA.type).toBe("event.deliver");
+    expect(frameB.type).toBe("event.deliver");
+    expect((frameA.event as Record<string, unknown>).payload).toMatchObject({
+      messageId: source.id,
+    });
+    expect((frameB.event as Record<string, unknown>).payload).toMatchObject({
+      messageId: source.id,
+    });
+    socketA.send({ type: "event.ack", deliveryIds: [frameA.deliveryId] });
+    socketB.send({ type: "event.ack", deliveryIds: [frameB.deliveryId] });
+
+    socketA.send({
+      type: "message.send",
+      groupId,
+      content: "AgentA here",
+      rootMessageId: source.id,
+      replyToMessageId: source.id,
+    });
+    const sent = await socketA.nextOf("message.sent");
+    expect(sent).toMatchObject({ type: "message.sent" });
+    const replyId = String(sent.messageId);
+
+    const replyFrame = await socketB.nextOf("event.deliver");
+    expect(replyFrame.type).toBe("event.deliver");
+    expect((replyFrame.event as Record<string, unknown>).payload).toMatchObject({
+      messageId: replyId,
+      content: "AgentA here",
+      hop: 1,
+      rootMessageId: source.id,
+    });
+
+    const replyEvent = room.ctx.db
+      .select()
+      .from(events)
+      .where(eq(events.groupId, groupId))
+      .all()
+      .find((event) => event.payload.includes(replyId));
+    expect(replyEvent).toBeDefined();
+    const replyDeliveries = room.ctx.db
+      .select()
+      .from(agentDeliveries)
+      .where(eq(agentDeliveries.eventId, replyEvent!.id))
+      .all();
+    expect(replyDeliveries.map((row) => row.agentId)).toEqual([b.agent.id]);
+  }, 20_000);
 });
 
 function statusOf(room: TestRoom, agentId: string): string | undefined {

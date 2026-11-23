@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import {
   AgentClient,
   type AgentEvent,
+  type ParticipationResult,
   type WebSocketLike,
   publicKeyFingerprint,
 } from "../src/index.js";
@@ -51,7 +52,10 @@ interface Harness {
 }
 
 function createHarness(
-  onEvent?: (event: AgentEvent, context: { deliveryId: string; attempt: number }) => void,
+  onEvent?: (
+    event: AgentEvent,
+    context: { deliveryId: string; attempt: number },
+  ) => void | ParticipationResult,
 ): Harness {
   const keys = generateKeyPairSync("ed25519");
   const fingerprint = publicKeyFingerprint(keys.publicKey);
@@ -97,7 +101,10 @@ function createHarness(
 }
 
 async function openClient(
-  onEvent?: (event: AgentEvent, context: { deliveryId: string; attempt: number }) => void,
+  onEvent?: (
+    event: AgentEvent,
+    context: { deliveryId: string; attempt: number },
+  ) => void | ParticipationResult,
 ): Promise<{ client: AgentClient; socket: FakeSocket; harness: Harness }> {
   const harness = createHarness(onEvent);
   await harness.client.connect();
@@ -161,6 +168,32 @@ describe("agent sdk delivery handling", () => {
     const acks = ackFrames(socket);
     expect(acks).toHaveLength(1);
     expect(acks[0]!.deliveryIds).toEqual(["evd_1"]);
+  });
+
+  it("sends a reply frame when the handler decides to reply", async () => {
+    const { socket } = await openClient((event) => {
+      event.payload = { messageId: "msg_1", rootMessageId: "msg_root" };
+      return { action: "reply", text: "hello back" };
+    });
+    socket.emit(eventFrame());
+    await flush();
+    const sends = socket.frames().filter((frame) => frame.type === "message.send");
+    expect(sends).toHaveLength(1);
+    expect(sends[0]).toMatchObject({
+      groupId: "grp_1",
+      content: "hello back",
+      replyToMessageId: "msg_1",
+      rootMessageId: "msg_root",
+    });
+    expect(ackFrames(socket)).toHaveLength(1);
+  });
+
+  it("does not send a message when the handler decides to skip", async () => {
+    const { socket } = await openClient(() => ({ action: "skip", reason: "nothing to add" }));
+    socket.emit(eventFrame());
+    await flush();
+    expect(socket.frames().filter((frame) => frame.type === "message.send")).toHaveLength(0);
+    expect(ackFrames(socket)).toHaveLength(1);
   });
 
   it("passes the delivery id and increments attempts on redelivery", async () => {

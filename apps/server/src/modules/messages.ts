@@ -1,10 +1,22 @@
 import { and, asc, eq, gt, isNull, sql } from "drizzle-orm";
 import { messages, type MessageRow, threads } from "@room/database";
-import { newId } from "@room/protocol";
+import { AGENT_PRESENCE_TTL_MS, newId } from "@room/protocol";
 import { messageContentSchema } from "@room/protocol";
 import type { RoomContext, RoomDb } from "./context.js";
-import { ConflictError, NotFoundError, ValidationError, isUniqueViolation } from "./errors.js";
-import { appendEvent, enqueueGroupAgentDeliveries } from "./events.js";
+import {
+  ConflictError,
+  ForbiddenError,
+  NotFoundError,
+  ValidationError,
+  isUniqueViolation,
+} from "./errors.js";
+import { appendEvent, enqueueDelivery } from "./events.js";
+import {
+  assertAgentRateLimit,
+  countAgentRepliesForRoot,
+  decideParticipation,
+  rootMessageIdOf,
+} from "./participation.js";
 import {
   type Actor,
   requireActiveGroup,
@@ -19,8 +31,9 @@ export interface PostMessageInput {
   threadId?: string | null;
   rootMessageId?: string | null;
   replyToMessageId?: string | null;
-  hop?: number;
   clientMessageId?: string | null;
+  /** Presence lease used to pick online Agents (default 60s, plan §9.1). */
+  presenceTtlMs?: number;
 }
 
 export function postMessage(ctx: RoomContext, input: PostMessageInput): MessageRow {
@@ -30,10 +43,8 @@ export function postMessage(ctx: RoomContext, input: PostMessageInput): MessageR
     requireWritableActor(db, input.actor);
     requireGroupMember(db, input.groupId, input.actor);
     const content = messageContentSchema.parse(input.content);
-    const hop = input.hop ?? 0;
-    if (!Number.isInteger(hop) || hop < 0 || hop > group.maxHops) {
-      throw new ValidationError(`hop must be an integer between 0 and ${group.maxHops}`);
-    }
+    let hop = 0;
+    let effectiveRoot: string | null = input.rootMessageId ?? null;
 
     if (input.threadId) {
       const thread = db.select().from(threads).where(eq(threads.id, input.threadId)).get();
@@ -55,6 +66,36 @@ export function postMessage(ctx: RoomContext, input: PostMessageInput): MessageR
       if (parent.groupId !== input.groupId) {
         throw new ValidationError(`${field} belongs to a different group`);
       }
+    }
+
+    if (input.actor.type === "agent") {
+      if (!group.allowAgentMessages) {
+        throw new ForbiddenError(`group ${input.groupId} does not allow agent messages`);
+      }
+      const parentId = input.replyToMessageId ?? input.rootMessageId;
+      if (!parentId) {
+        throw new ValidationError("agent messages must reply to a group message");
+      }
+      const parent = db.select().from(messages).where(eq(messages.id, parentId)).get()!;
+      const replyTo = input.replyToMessageId
+        ? db.select().from(messages).where(eq(messages.id, input.replyToMessageId)).get()
+        : null;
+      if (replyTo && input.rootMessageId && rootMessageIdOf(replyTo) !== input.rootMessageId) {
+        throw new ValidationError("rootMessageId does not match the reply target");
+      }
+      effectiveRoot = rootMessageIdOf(parent);
+      hop = parent.hop + 1;
+      if (hop > group.maxHops) {
+        throw new ConflictError(
+          `hop ${hop} exceeds the group limit of ${group.maxHops}; the discussion chain stopped`,
+        );
+      }
+      if (countAgentRepliesForRoot(db, effectiveRoot) >= group.maxRepliesPerRoot) {
+        throw new ConflictError(
+          `root ${effectiveRoot} already has ${group.maxRepliesPerRoot} agent replies`,
+        );
+      }
+      assertAgentRateLimit(db, input.actor.id, group.maxAgentMessagesPerMinute, ctx.now());
     }
 
     const clientMessageId = input.clientMessageId?.trim() || null;
@@ -86,7 +127,7 @@ export function postMessage(ctx: RoomContext, input: PostMessageInput): MessageR
           senderType: input.actor.type,
           senderId: input.actor.id,
           content,
-          rootMessageId: input.rootMessageId ?? null,
+          rootMessageId: effectiveRoot,
           replyToMessageId: input.replyToMessageId ?? null,
           hop,
           clientMessageId,
@@ -118,18 +159,23 @@ export function postMessage(ctx: RoomContext, input: PostMessageInput): MessageR
         senderType: input.actor.type,
         senderId: input.actor.id,
         content,
-        rootMessageId: input.rootMessageId ?? null,
+        rootMessageId: effectiveRoot,
+        replyToMessageId: input.replyToMessageId ?? null,
         hop,
+        seq,
       },
       createdAt: now,
     });
-    enqueueGroupAgentDeliveries(db, {
-      groupId: input.groupId,
-      eventId: event.id,
-      createdAt: now,
-      excludeAgentId: input.actor.type === "agent" ? input.actor.id : null,
+    const saved = db.select().from(messages).where(eq(messages.id, id)).get()!;
+    const decision = decideParticipation(ctx, db, {
+      group,
+      message: saved,
+      presenceTtlMs: input.presenceTtlMs ?? AGENT_PRESENCE_TTL_MS,
     });
-    return db.select().from(messages).where(eq(messages.id, id)).get()!;
+    for (const agentId of decision.agentIds) {
+      enqueueDelivery(db, { agentId, eventId: event.id, createdAt: now });
+    }
+    return saved;
   });
 }
 

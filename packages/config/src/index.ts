@@ -39,11 +39,6 @@ export const configSchema = z
     agentChallengeTtlMs: z.coerce.number().int().min(10_000).default(60_000),
     agentPresenceTtlMs: z.coerce.number().int().min(1_000).default(60_000),
     agentHeartbeatMs: z.coerce.number().int().min(1_000).default(20_000),
-    /**
-     * Temporary kill-switch: agent group chat stays off until the M4
-     * participation limits (hop, per-root replies, rate) are implemented.
-     */
-    agentMessagesEnabled: z.boolean().default(false),
     /** One-time WebSocket upgrade ticket; session tokens never go into a URL. */
     agentSocketTicketTtlMs: z.coerce.number().int().min(5_000).max(300_000).default(60_000),
   })
@@ -69,22 +64,7 @@ export const configSchema = z
         message: "is required when AUTH_MODE=access",
       });
     }
-    if (config.nodeEnv === "production" && config.agentMessagesEnabled) {
-      ctx.addIssue({
-        code: "custom",
-        path: ["agentMessagesEnabled"],
-        message:
-          "agent group messages stay disabled until the M4 participation limits are implemented",
-      });
-    }
   });
-
-function parseBoolean(value: string): boolean {
-  const normalized = value.trim().toLowerCase();
-  if (["1", "true", "yes", "on"].includes(normalized)) return true;
-  if (["0", "false", "no", "off"].includes(normalized)) return false;
-  throw new ConfigError(`invalid boolean value "${value}"`);
-}
 
 export type Config = Readonly<z.infer<typeof configSchema>>;
 
@@ -104,8 +84,6 @@ function collect(env: NodeJS.ProcessEnv): Record<string, unknown> {
   if (env.AGENT_CHALLENGE_TTL_MS) input.agentChallengeTtlMs = env.AGENT_CHALLENGE_TTL_MS;
   if (env.AGENT_PRESENCE_TTL_MS) input.agentPresenceTtlMs = env.AGENT_PRESENCE_TTL_MS;
   if (env.AGENT_HEARTBEAT_MS) input.agentHeartbeatMs = env.AGENT_HEARTBEAT_MS;
-  if (env.AGENT_MESSAGES_ENABLED)
-    input.agentMessagesEnabled = parseBoolean(env.AGENT_MESSAGES_ENABLED);
   if (env.AGENT_SOCKET_TICKET_TTL_MS) {
     input.agentSocketTicketTtlMs = env.AGENT_SOCKET_TICKET_TTL_MS;
   }

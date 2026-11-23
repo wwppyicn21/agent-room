@@ -76,31 +76,35 @@ erDiagram
 | `agent_deliveries`     | 每个 Agent 的投递队列            | `(agent_id, event_id)` 唯一、`status`                                            |
 | `audit_logs`           | 审计                             | `actor_type/actor_id`、`action`、`target_type/target_id`                         |
 
-## 4. 索引（40 个显式索引）
+## 4. 索引（42 个显式索引）
 
-| 表                     | 索引                                                                                                         | 用途                                   |
-| ---------------------- | ------------------------------------------------------------------------------------------------------------ | -------------------------------------- |
-| `users`                | `users_role_idx`、`users_status_idx`、`users_email_lower_uq`                                                 | 管理员筛选、邮箱唯一映射               |
-| `external_identities`  | `external_identities_issuer_subject_uq`、`external_identities_user_idx`                                      | 登录映射、按用户查                     |
-| `groups`               | `groups_status_idx`、`groups_created_by_idx`                                                                 | 归档筛选、创建者                       |
-| `group_members`        | `group_members_member_uq`、`group_members_lookup_idx`、`group_members_group_idx`                             | 权限判定、反查用户/Agent 所在群        |
-| `agents`               | `agents_status_idx`                                                                                          | 在线/离线                              |
-| `agent_keys`           | `agent_keys_fingerprint_uq`、`agent_keys_agent_idx`                                                          | 公钥查找、某 Agent 的 key              |
-| `agent_challenges`     | `agent_challenges_nonce_uq`、`agent_challenges_expiry_idx`                                                   | 一次性消费、过期清理                   |
-| `agent_sessions`       | `agent_sessions_token_uq`、`agent_sessions_agent_idx`、`agent_sessions_expiry_idx`                           | token 校验、在线租约、过期清扫         |
-| `agent_socket_tickets` | `agent_socket_tickets_hash_uq`、`agent_socket_tickets_expiry_idx`、`agent_socket_tickets_session_idx`        | 票据校验、过期清理、按会话查           |
-| `threads`              | `threads_group_idx`、`threads_source_message_idx`                                                            | 群内时间线、源消息 → Thread            |
-| `messages`             | `messages_group_seq_uq`、`messages_group_client_uq`、`messages_thread_seq_idx`、`messages_group_created_idx` | 分页、幂等、Thread 时间线、按时间      |
-| `tasks`                | `tasks_group_idx`、`tasks_status_idx`、`tasks_thread_idx`、`tasks_assignee_idx`                              | 群内任务分页、状态、Thread、Agent 队列 |
-| `task_runs`            | `task_runs_task_idx`                                                                                         | 任务执行历史                           |
-| `events`               | `events_group_seq_idx`、`events_type_created_idx`、`events_id_unique`                                        | 群内增量、类型检索、按事件 id          |
-| `agent_deliveries`     | `agent_deliveries_event_uq`、`agent_deliveries_pending_idx`                                                  | 去重、待投递队列                       |
-| `audit_logs`           | `audit_logs_created_idx`、`audit_logs_actor_idx`                                                             | 时间线、按操作者                       |
+| 表                     | 索引                                                                                                                                                             | 用途                                                            |
+| ---------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------- |
+| `users`                | `users_role_idx`、`users_status_idx`、`users_email_lower_uq`                                                                                                     | 管理员筛选、邮箱唯一映射                                        |
+| `external_identities`  | `external_identities_issuer_subject_uq`、`external_identities_user_idx`                                                                                          | 登录映射、按用户查                                              |
+| `groups`               | `groups_status_idx`、`groups_created_by_idx`                                                                                                                     | 归档筛选、创建者                                                |
+| `group_members`        | `group_members_member_uq`、`group_members_lookup_idx`、`group_members_group_idx`                                                                                 | 权限判定、反查用户/Agent 所在群                                 |
+| `agents`               | `agents_status_idx`                                                                                                                                              | 在线/离线                                                       |
+| `agent_keys`           | `agent_keys_fingerprint_uq`、`agent_keys_agent_idx`                                                                                                              | 公钥查找、某 Agent 的 key                                       |
+| `agent_challenges`     | `agent_challenges_nonce_uq`、`agent_challenges_expiry_idx`                                                                                                       | 一次性消费、过期清理                                            |
+| `agent_sessions`       | `agent_sessions_token_uq`、`agent_sessions_agent_idx`、`agent_sessions_expiry_idx`                                                                               | token 校验、在线租约、过期清扫                                  |
+| `agent_socket_tickets` | `agent_socket_tickets_hash_uq`、`agent_socket_tickets_expiry_idx`、`agent_socket_tickets_session_idx`                                                            | 票据校验、过期清理、按会话查                                    |
+| `threads`              | `threads_group_idx`、`threads_source_message_idx`                                                                                                                | 群内时间线、源消息 → Thread                                     |
+| `messages`             | `messages_group_seq_uq`、`messages_group_client_uq`、`messages_thread_seq_idx`、`messages_group_created_idx`、`messages_root_idx`、`messages_sender_created_idx` | 分页、幂等、Thread 时间线、按时间、每 root 回复计数、每分钟限流 |
+| `tasks`                | `tasks_group_idx`、`tasks_status_idx`、`tasks_thread_idx`、`tasks_assignee_idx`                                                                                  | 群内任务分页、状态、Thread、Agent 队列                          |
+| `task_runs`            | `task_runs_task_idx`                                                                                                                                             | 任务执行历史                                                    |
+| `events`               | `events_group_seq_idx`、`events_type_created_idx`、`events_id_unique`                                                                                            | 群内增量、类型检索、按事件 id                                   |
+| `agent_deliveries`     | `agent_deliveries_event_uq`、`agent_deliveries_pending_idx`                                                                                                      | 去重、待投递队列                                                |
+| `audit_logs`           | `audit_logs_created_idx`、`audit_logs_actor_idx`                                                                                                                 | 时间线、按操作者                                                |
 
 `agent_challenges` 的 `used_at` 以 `UPDATE ... WHERE used_at IS NULL` 原子消费；`agent_sessions` 只存 token 的 SHA-256。
 
 `tasks_group_idx (group_id, created_at, id)` 与 `agent_deliveries_pending_idx
 (agent_id, status, created_at)` 把排序键并入索引，避免 keyset 分页时出现临时 B-tree。
+
+M4 新增 `messages_root_idx (root_message_id, created_at)` 与
+`messages_sender_created_idx (sender_type, sender_id, created_at)`，分别支撑每个 root
+的 Agent 回复预算计数与单 Agent 每分钟限流；两者都在 `postMessage` 事务内查询。
 
 ## 5. 关键查询计划
 
@@ -114,7 +118,7 @@ tasks by group: SEARCH tasks USING INDEX tasks_group_idx (group_id=?)
 pending deliveries: SEARCH agent_deliveries USING INDEX agent_deliveries_pending_idx (agent_id=? AND status=?)
 events by group: SEARCH events USING INDEX events_group_seq_idx (group_id=? AND seq>?)
 message idempotency: SEARCH messages USING INDEX messages_group_client_uq (group_id=? AND client_message_id=?)
-explicit indexes: 40
+explicit indexes: 42
 ```
 
 消息分页使用 `WHERE group_id = ? AND seq > ? ORDER BY seq LIMIT 50`，命中
@@ -159,7 +163,7 @@ pending ──deliver──▶ delivered ──ack──▶ acked
 - `group_members.member_id` 是多态列、`threads.source_message_id` 因循环依赖无硬外键，均由服务层校验。
 - Task 状态机只实现 `queued/assigned/running/succeeded/failed`；`waiting_approval/paused/cancelled` 属 M5。
 - 长连接投递与在线租约已在 M3 实现；M2 只提供状态机与恢复查询。
-- Agent 公开发言（`message.send`）在 M4 风控完成前默认关闭；`AGENT_MESSAGES_ENABLED` 只作为受控开关，生产禁止开启。
+- M4 起 Agent 发言与参与规则在 `postMessage` 事务内原子执行（allowAgentMessages / hop / maxRepliesPerRoot / maxAgentMessagesPerMinute）；消息只投递给在线 Agent。
 
 ## 8. 常用命令
 

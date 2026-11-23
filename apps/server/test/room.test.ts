@@ -11,7 +11,14 @@ import {
   createTaskFromMessage,
   startTask,
 } from "../src/modules/tasks.js";
-import { createTestRoom, type TestRoom, seedAgent, seedGroup, seedUser } from "./helpers.js";
+import {
+  createTestRoom,
+  markAgentOnline,
+  type TestRoom,
+  seedAgent,
+  seedGroup,
+  seedUser,
+} from "./helpers.js";
 import { openDatabase } from "@room/database";
 import { createRoomContext } from "../src/modules/context.js";
 
@@ -220,6 +227,7 @@ describe("Room Core: transactional outbox and idempotency", () => {
     const groupId = seedGroup(ctx, owner);
     const agentId = seedAgent(ctx, owner, "worker");
     addMember(ctx, { groupId, actorUserId: owner, memberType: "agent", memberId: agentId });
+    markAgentOnline(ctx, agentId);
 
     const message = postMessage(ctx, {
       groupId,
@@ -254,6 +262,7 @@ describe("Room Core: transactional outbox and idempotency", () => {
     const groupId = seedGroup(ctx, owner);
     const agentId = seedAgent(ctx, owner, "worker");
     addMember(ctx, { groupId, actorUserId: owner, memberType: "agent", memberId: agentId });
+    markAgentOnline(ctx, agentId);
 
     const first = postMessage(ctx, {
       groupId,

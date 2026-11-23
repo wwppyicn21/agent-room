@@ -304,6 +304,8 @@ export const messages = sqliteTable(
     uniqueIndex("messages_group_client_uq").on(table.groupId, table.clientMessageId),
     index("messages_thread_seq_idx").on(table.threadId, table.seq),
     index("messages_group_created_idx").on(table.groupId, table.createdAt),
+    index("messages_root_idx").on(table.rootMessageId, table.createdAt),
+    index("messages_sender_created_idx").on(table.senderType, table.senderId, table.createdAt),
   ],
 );
 

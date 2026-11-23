@@ -34,6 +34,13 @@ export interface AgentSessionInfo {
   expiresAt: string;
 }
 
+/**
+ * What the Agent decided for a delivered group message (plan §5.5):
+ * `reply` posts a public message, `skip` consumes the delivery without one.
+ */
+export type ParticipationResult =
+  { action: "reply"; text: string } | { action: "skip"; reason?: string };
+
 export interface AgentClientOptions {
   baseUrl: string;
   privateKey: KeyObject;
@@ -49,7 +56,7 @@ export interface AgentClientOptions {
   onEvent?: (
     event: AgentEvent,
     context: { deliveryId: string; attempt: number },
-  ) => void | Promise<void>;
+  ) => void | ParticipationResult | Promise<void | ParticipationResult>;
   /**
    * Acknowledge deliveries after `onEvent` resolves (default true). Without an
    * `onEvent` handler nothing is acknowledged, so events are never silently
@@ -260,7 +267,21 @@ export class AgentClient {
     const attempt = (this.deliveryAttempts.get(deliveryId) ?? 0) + 1;
     this.deliveryAttempts.set(deliveryId, attempt);
     try {
-      await handler(frame.event as AgentEvent, { deliveryId, attempt });
+      const result = await handler(frame.event as AgentEvent, { deliveryId, attempt });
+      if (result && result.action === "reply" && result.text.trim()) {
+        const event = frame.event as AgentEvent;
+        const messageId =
+          typeof event.payload.messageId === "string" ? event.payload.messageId : null;
+        const rootId =
+          typeof event.payload.rootMessageId === "string" ? event.payload.rootMessageId : null;
+        if (event.groupId) {
+          this.sendMessage(event.groupId, result.text, {
+            threadId: event.threadId ?? undefined,
+            rootMessageId: rootId ?? messageId ?? undefined,
+            replyToMessageId: messageId ?? undefined,
+          });
+        }
+      }
       if (this.options.autoAck !== false) {
         this.ack([deliveryId]);
       }
@@ -279,7 +300,12 @@ export class AgentClient {
   sendMessage(
     groupId: string,
     content: string,
-    options: { threadId?: string; rootMessageId?: string; clientMessageId?: string } = {},
+    options: {
+      threadId?: string;
+      rootMessageId?: string;
+      replyToMessageId?: string;
+      clientMessageId?: string;
+    } = {},
   ): void {
     this.send({
       type: "message.send",
@@ -287,6 +313,7 @@ export class AgentClient {
       content,
       threadId: options.threadId ?? null,
       rootMessageId: options.rootMessageId ?? null,
+      replyToMessageId: options.replyToMessageId ?? null,
       clientMessageId: options.clientMessageId ?? null,
     });
   }

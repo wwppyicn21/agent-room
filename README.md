@@ -6,9 +6,9 @@
 
 ## 状态
 
-**M3 完成**（2026-11-23）：M1 骨架、M2 Room Core（用户 / 群组 / Agent / 消息 / Thread / Task / Outbox / Audit）、M3 身份认证（Dev Auth / Cloudflare Access、RBAC、Owner bootstrap、Ed25519 Agent 密钥、Challenge/Response、Agent WSS、在线租约、durable inbox/ack）与 Agent SDK 已就绪，67 个测试通过。
+**M4 完成**（2026-11-23）：M1 骨架、M2 Room Core（用户 / 群组 / Agent / 消息 / Thread / Task / Outbox / Audit）、M3 身份认证（Dev Auth / Cloudflare Access、RBAC、Owner bootstrap、Ed25519 Agent 密钥、Challenge/Response、Agent WSS、在线租约、durable inbox/ack）、M4 AI 自主群聊（participationMode、在线投递、Agent reply/skip、hop / 每 root 回复预算 / 每分钟限流、防自我触发与群组隔离）与 Agent SDK 已就绪，97 个测试通过。
 
-尚未提供群组 / 消息的 HTTP API（M4），因此浏览器端还不能读写群聊；Agent 通过已认证的 WebSocket 接收与发送消息。
+群组 / 消息的 REST API 与 React Web UI 属 M8；DSH 的每群组 Session 映射属 M6 Adapter。Agent 通过已认证的 WebSocket 接收事件并发送消息。
 
 ## 快速开始
 
@@ -32,7 +32,7 @@ DATABASE_PATH=/var/lib/agentroom/room.db pnpm start
 - 基础：`NODE_ENV`、`HOST`（默认 `127.0.0.1`）、`PORT`（默认 `8787`）、`DATABASE_PATH`（默认 `./data/room.db`）、`LOG_LEVEL`
 - 人类认证：`AUTH_MODE=dev|access`（生产只允许 `access`）、`ACCESS_TEAM_DOMAIN`、`ACCESS_AUDIENCE`、`BOOTSTRAP_OWNER_EMAIL`
 - Agent 会话：`AGENT_SESSION_TTL_MS`、`AGENT_CHALLENGE_TTL_MS`、`AGENT_PRESENCE_TTL_MS`、`AGENT_HEARTBEAT_MS`、`AGENT_SOCKET_TICKET_TTL_MS`
-- Agent 发言：`AGENT_MESSAGES_ENABLED`（默认 `false`；M4 风控完成前保持关闭，生产禁止开启）
+- Agent 发言：由群组 `allowAgentMessages`、`participationMode`、`maxHops`、`maxRepliesPerRoot`、`maxAgentMessagesPerMinute` 在服务端强制（无全局开关）
 
 开发模式示例（`AUTH_MODE=dev`，`BOOTSTRAP_OWNER_EMAIL=you@example.com`）：
 

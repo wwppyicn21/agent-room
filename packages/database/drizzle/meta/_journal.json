@@ -43,6 +43,13 @@
       "when": 1795433491026,
       "tag": "0005_rapid_riptide",
       "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "6",
+      "when": 1795445347007,
+      "tag": "0006_faithful_chat",
+      "breakpoints": true
     }
   ]
 }

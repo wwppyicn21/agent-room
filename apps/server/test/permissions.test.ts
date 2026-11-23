@@ -25,7 +25,14 @@ import {
   markDeliveryDelivered,
   requeueDelivery,
 } from "../src/modules/events.js";
-import { createTestRoom, type TestRoom, seedAgent, seedGroup, seedUser } from "./helpers.js";
+import {
+  createTestRoom,
+  markAgentOnline,
+  type TestRoom,
+  seedAgent,
+  seedGroup,
+  seedUser,
+} from "./helpers.js";
 
 let room: TestRoom;
 
@@ -359,6 +366,7 @@ describe("identity, idempotency and delivery state machine", () => {
       memberId: agentId,
       memberRole: "member",
     });
+    markAgentOnline(ctx, agentId);
     postMessage(ctx, { groupId, actor: { type: "user", id: owner }, content: "hi" });
 
     const [pending] = listPendingDeliveries(ctx, { agentId });

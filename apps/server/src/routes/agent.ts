@@ -26,7 +26,7 @@ import {
 } from "../modules/agentAuth.js";
 import type { AgentHub, AgentSocket } from "../modules/agentHub.js";
 import type { RoomContext } from "../modules/context.js";
-import { UnauthorizedError, ValidationError } from "../modules/errors.js";
+import { DomainError, UnauthorizedError, ValidationError } from "../modules/errors.js";
 import {
   ackDelivery,
   listOutstandingDeliveries,
@@ -308,31 +308,31 @@ export function registerAgentRoutes(app: FastifyInstance, deps: AgentRouteDepend
           return;
         }
         if (message.type === "message.send") {
-          // M4 participation limits (hop, per-root replies, rate) are not
-          // implemented yet, so agent-authored group messages stay off.
-          if (!config.agentMessagesEnabled) {
+          try {
+            const posted = postMessage(ctx, {
+              groupId: message.groupId,
+              actor: { type: "agent", id: agent.id },
+              content: message.content,
+              threadId: message.threadId ?? undefined,
+              rootMessageId: message.rootMessageId ?? undefined,
+              replyToMessageId: message.replyToMessageId ?? undefined,
+              clientMessageId: message.clientMessageId ?? undefined,
+              presenceTtlMs: config.agentPresenceTtlMs,
+            });
+            send(socket, {
+              type: "message.sent",
+              messageId: posted.id,
+              seq: posted.seq,
+              clientMessageId: posted.clientMessageId,
+            });
+          } catch (error) {
+            const code = error instanceof DomainError ? error.code : "internal_error";
             send(socket, {
               type: "error",
-              code: "agent_messages_disabled",
-              message:
-                "agent group messages are disabled until the M4 participation limits are implemented",
+              code,
+              message: error instanceof Error ? error.message : "message send failed",
             });
-            return;
           }
-          const posted = postMessage(ctx, {
-            groupId: message.groupId,
-            actor: { type: "agent", id: agent.id },
-            content: message.content,
-            threadId: message.threadId ?? undefined,
-            rootMessageId: message.rootMessageId ?? undefined,
-            clientMessageId: message.clientMessageId ?? undefined,
-          });
-          send(socket, {
-            type: "message.sent",
-            messageId: posted.id,
-            seq: posted.seq,
-            clientMessageId: posted.clientMessageId,
-          });
           return;
         }
         if (message.type === "agent.status") {

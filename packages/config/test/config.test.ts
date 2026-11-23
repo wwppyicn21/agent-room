@@ -72,17 +72,6 @@ describe("loadConfig", () => {
     );
   });
 
-  it("keeps agent group messages off by default and refuses them in production", () => {
-    expect(loadConfig({}).agentMessagesEnabled).toBe(false);
-    expect(loadConfig({ AGENT_MESSAGES_ENABLED: "true" }).agentMessagesEnabled).toBe(true);
-    expect(() =>
-      loadConfig({
-        NODE_ENV: "production",
-        AGENT_MESSAGES_ENABLED: "true",
-      }),
-    ).toThrow(ConfigError);
-  });
-
   it("caps the one-time socket ticket lifetime", () => {
     expect(loadConfig({}).agentSocketTicketTtlMs).toBe(60_000);
     expect(loadConfig({ AGENT_SOCKET_TICKET_TTL_MS: "30000" }).agentSocketTicketTtlMs).toBe(30_000);
