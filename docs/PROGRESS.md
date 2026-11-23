@@ -283,3 +283,5 @@ $ pnpm build       # packages/protocol, packages/database, apps/server build Don
 - 已知 P3 偏差（事件 payload 通用 schema、状态枚举无 DB CHECK、`group_members` 多态无单 FK、`threads.source_message_id` 无硬 FK）保持不变，已在 `docs/DATABASE.md` §7 记录。
 
 结论：建议将 M2 Review Fix 标记为完成（47 tests，五项检查全过）；M4 风控与 M3 认证按计划后续实现。
+
+提交：`7ce6437`（代码 + 测试 + 文档），已推 `agent-room.git` main。
