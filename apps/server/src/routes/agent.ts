@@ -331,6 +331,7 @@ export function registerAgentRoutes(app: FastifyInstance, deps: AgentRouteDepend
               type: "error",
               code,
               message: error instanceof Error ? error.message : "message send failed",
+              clientMessageId: message.clientMessageId ?? null,
             });
           }
           return;

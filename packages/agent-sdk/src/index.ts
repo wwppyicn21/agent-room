@@ -58,11 +58,16 @@ export interface AgentClientOptions {
     context: { deliveryId: string; attempt: number },
   ) => void | ParticipationResult | Promise<void | ParticipationResult>;
   /**
-   * Acknowledge deliveries after `onEvent` resolves (default true). Without an
-   * `onEvent` handler nothing is acknowledged, so events are never silently
-   * dropped and the server keeps redelivering them.
+   * Acknowledge deliveries after the handler resolves (default true). Automatic
+   * replies are acknowledged only after the server confirms `message.sent` for
+   * the derived `clientMessageId`; terminal rejections end the delivery, while
+   * retryable errors keep it unacked with a backoff.
    */
   autoAck?: boolean;
+  /** How long to wait for `message.sent` before leaving a reply unacked (default 10s). */
+  replyAckTimeoutMs?: number;
+  /** Backoff before retrying a reply after a retryable error (default 5s). */
+  replyRetryBackoffMs?: number;
 }
 
 export function publicKeyFingerprint(publicKey: KeyObject): string {
@@ -111,6 +116,11 @@ export class AgentClient {
   private heartbeatTimer: ReturnType<typeof setInterval> | undefined;
   private readonly fingerprint: string;
   private readonly deliveryAttempts = new Map<string, number>();
+  private readonly pendingReplies = new Map<
+    string,
+    { deliveryId: string; timer: ReturnType<typeof setTimeout> }
+  >();
+  private readonly replyBackoffUntil = new Map<string, number>();
 
   constructor(options: AgentClientOptions) {
     this.options = options;
@@ -227,7 +237,16 @@ export class AgentClient {
           this.forgetAcknowledged(frame.deliveryIds);
           return;
         }
+        if (frame.type === "message.sent") {
+          const clientMessageId =
+            typeof frame.clientMessageId === "string" ? frame.clientMessageId : null;
+          if (clientMessageId) this.confirmReply(clientMessageId);
+          return;
+        }
         if (frame.type === "error") {
+          const clientMessageId =
+            typeof frame.clientMessageId === "string" ? frame.clientMessageId : null;
+          if (clientMessageId) this.failReply(clientMessageId, String(frame.code));
           if (!settled) {
             settled = true;
             reject(new Error(String(frame.message ?? frame.code)));
@@ -269,6 +288,15 @@ export class AgentClient {
     try {
       const result = await handler(frame.event as AgentEvent, { deliveryId, attempt });
       if (result && result.action === "reply" && result.text.trim()) {
+        const clientMessageId = `sdk-reply-${deliveryId}`;
+        if (
+          this.pendingReplies.has(clientMessageId) ||
+          Date.now() < (this.replyBackoffUntil.get(clientMessageId) ?? 0)
+        ) {
+          // The first attempt is still waiting for `message.sent` or backing off
+          // after a retryable error; keep the redelivery unacked.
+          return;
+        }
         const event = frame.event as AgentEvent;
         const messageId =
           typeof event.payload.messageId === "string" ? event.payload.messageId : null;
@@ -279,8 +307,14 @@ export class AgentClient {
             threadId: event.threadId ?? undefined,
             rootMessageId: rootId ?? messageId ?? undefined,
             replyToMessageId: messageId ?? undefined,
+            clientMessageId,
           });
+          if (this.options.autoAck !== false) this.armReplyAck(clientMessageId, deliveryId);
+        } else if (this.options.autoAck !== false) {
+          // An event without a group cannot be answered; consume it.
+          this.ack([deliveryId]);
         }
+        return;
       }
       if (this.options.autoAck !== false) {
         this.ack([deliveryId]);
@@ -291,6 +325,45 @@ export class AgentClient {
       // A failed handler leaves the delivery unacked; the server redelivers on
       // reconnect. The attempt count only resets after a successful ack.
     }
+  }
+
+  /** Waits for `message.sent` before acking the delivery behind an auto reply. */
+  private armReplyAck(clientMessageId: string, deliveryId: string): void {
+    const existing = this.pendingReplies.get(clientMessageId);
+    if (existing) clearTimeout(existing.timer);
+    const timer = setTimeout(() => {
+      this.pendingReplies.delete(clientMessageId);
+    }, this.options.replyAckTimeoutMs ?? 10_000);
+    (timer as { unref?: () => void }).unref?.();
+    this.pendingReplies.set(clientMessageId, { deliveryId, timer });
+  }
+
+  private confirmReply(clientMessageId: string): void {
+    const pending = this.pendingReplies.get(clientMessageId);
+    if (!pending) return;
+    clearTimeout(pending.timer);
+    this.pendingReplies.delete(clientMessageId);
+    this.replyBackoffUntil.delete(clientMessageId);
+    if (this.options.autoAck !== false) this.ack([pending.deliveryId]);
+  }
+
+  private failReply(clientMessageId: string, code: string): void {
+    const pending = this.pendingReplies.get(clientMessageId);
+    if (!pending) return;
+    clearTimeout(pending.timer);
+    this.pendingReplies.delete(clientMessageId);
+    if (["conflict", "forbidden", "validation_error", "not_found"].includes(code)) {
+      // The discussion chain is over or the request can never succeed: stop the
+      // redelivery loop instead of retrying the same rejected reply.
+      if (this.options.autoAck !== false) this.ack([pending.deliveryId]);
+      return;
+    }
+    // Retryable (rate_limited, internal_error, ...): keep the delivery unacked
+    // but back off so every redelivery does not hammer the server.
+    this.replyBackoffUntil.set(
+      clientMessageId,
+      Date.now() + (this.options.replyRetryBackoffMs ?? 5_000),
+    );
   }
 
   ack(deliveryIds: string[]): void {
@@ -324,6 +397,9 @@ export class AgentClient {
 
   close(): void {
     this.stopHeartbeat();
+    for (const pending of this.pendingReplies.values()) clearTimeout(pending.timer);
+    this.pendingReplies.clear();
+    this.replyBackoffUntil.clear();
     this.socket?.close();
     this.socket = undefined;
   }

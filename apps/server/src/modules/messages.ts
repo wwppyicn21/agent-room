@@ -68,6 +68,18 @@ export function postMessage(ctx: RoomContext, input: PostMessageInput): MessageR
       }
     }
 
+    const clientMessageId = input.clientMessageId?.trim() || null;
+    if (clientMessageId) {
+      const existing = db
+        .select()
+        .from(messages)
+        .where(
+          and(eq(messages.groupId, input.groupId), eq(messages.clientMessageId, clientMessageId)),
+        )
+        .get();
+      if (existing) return existing;
+    }
+
     if (input.actor.type === "agent") {
       if (!group.allowAgentMessages) {
         throw new ForbiddenError(`group ${input.groupId} does not allow agent messages`);
@@ -96,18 +108,6 @@ export function postMessage(ctx: RoomContext, input: PostMessageInput): MessageR
         );
       }
       assertAgentRateLimit(db, input.actor.id, group.maxAgentMessagesPerMinute, ctx.now());
-    }
-
-    const clientMessageId = input.clientMessageId?.trim() || null;
-    if (clientMessageId) {
-      const existing = db
-        .select()
-        .from(messages)
-        .where(
-          and(eq(messages.groupId, input.groupId), eq(messages.clientMessageId, clientMessageId)),
-        )
-        .get();
-      if (existing) return existing;
     }
 
     const maxSeq = db

@@ -66,6 +66,10 @@ describe("AI participation engine", () => {
     return agentId;
   }
 
+  function messagesForGroup(groupId: string): MessageRow[] {
+    return room.ctx.db.select().from(messages).where(eq(messages.groupId, groupId)).all();
+  }
+
   function setup(overrides: Record<string, unknown> = {}): {
     groupId: string;
     a: string;
@@ -110,6 +114,61 @@ describe("AI participation engine", () => {
       content: "please look @agentB",
     });
     expect(deliveredAgentIds(groupId)).toEqual([b]);
+  });
+
+  it("does not treat an email-like string as a mention", () => {
+    const { groupId } = setup({ participationMode: "mention" });
+    postMessage(room.ctx, {
+      groupId,
+      actor: { type: "user", id: owner },
+      content: "contact user@agentA for details",
+    });
+    expect(deliveredAgentIds(groupId)).toEqual([]);
+  });
+
+  it("returns the original agent message when a retry arrives after the reply budget is spent", () => {
+    const { groupId, a } = setup({ maxRepliesPerRoot: 1 });
+    const source = postMessage(room.ctx, {
+      groupId,
+      actor: { type: "user", id: owner },
+      content: "root",
+    });
+    const reply = (clientMessageId: string) =>
+      postMessage(room.ctx, {
+        groupId,
+        actor: { type: "agent", id: a },
+        content: "first reply",
+        rootMessageId: source.id,
+        replyToMessageId: source.id,
+        clientMessageId,
+      });
+    const first = reply("retry-after-budget");
+    const retry = reply("retry-after-budget");
+    expect(retry.id).toBe(first.id);
+    expect(messagesForGroup(groupId)).toHaveLength(2);
+  });
+
+  it("returns the original message when a retry arrives after the rate limit is reached", () => {
+    const { groupId, a } = setup({ maxAgentMessagesPerMinute: 1 });
+    const source = postMessage(room.ctx, {
+      groupId,
+      actor: { type: "user", id: owner },
+      content: "root",
+    });
+    const send = (clientMessageId: string) =>
+      postMessage(room.ctx, {
+        groupId,
+        actor: { type: "agent", id: a },
+        content: "hello",
+        rootMessageId: source.id,
+        replyToMessageId: source.id,
+        clientMessageId,
+      });
+    const first = send("retry-after-rate-limit");
+    const retry = send("retry-after-rate-limit");
+    expect(retry.id).toBe(first.id);
+    expect(messagesForGroup(groupId)).toHaveLength(2);
+    expect(() => send("new-message")).toThrow(RateLimitError);
   });
 
   it("ignores unmentioned agents in mention mode", () => {

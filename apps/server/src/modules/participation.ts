@@ -76,7 +76,7 @@ export function assertAgentRateLimit(
 
 function mentions(content: string, displayName: string): boolean {
   const escaped = displayName.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  return new RegExp(`@${escaped}(?![\\p{L}\\p{N}_])`, "iu").test(content);
+  return new RegExp(`(?<![\\p{L}\\p{N}_])@${escaped}(?![\\p{L}\\p{N}_])`, "iu").test(content);
 }
 
 export function decideParticipation(

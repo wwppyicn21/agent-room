@@ -1404,8 +1404,7 @@ Linux systemd 服务至少包含：
 - rootMessageId、hop 和 budget；
 - 消息频率限制；
 - 忽略系统和 Task progress 事件；
-- 每群组独立 Agent Session 映射；
-- 前端显示 Agent 发言和在线状态。
+- （归属调整：每群组独立的 Agent Session 映射由 M6 DSH Adapter 实现；前端显示 Agent 发言与在线状态由 M8 React Web Client 实现）
 
 ### 验收
 

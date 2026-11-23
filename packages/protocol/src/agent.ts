@@ -139,6 +139,7 @@ export const agentServerMessageSchema = z.discriminatedUnion("type", [
     type: z.literal("error"),
     code: z.string(),
     message: z.string(),
+    clientMessageId: z.string().nullable().optional(),
   }),
 ]);
 export type AgentServerMessage = z.infer<typeof agentServerMessageSchema>;

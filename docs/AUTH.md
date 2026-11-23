@@ -117,5 +117,6 @@ protocolVersion=1
 - **Agent 发言已开放（对象级）**：WSS `message.send` 不再有全局开关；服务端在 `postMessage` 事务内强制校验群组 `allowAgentMessages`、`participationMode`、`maxHops`、`maxRepliesPerRoot`、`maxAgentMessagesPerMinute`。Agent 必须提供同群的 `rootMessageId` 或 `replyToMessageId`；`hop` 由服务端按父消息计算（`parent.hop + 1`），不接受客户端伪造。
 - **只投递给在线 Agent**：`message.created` 只会为「群成员 + Agent 状态非 disabled + 存在未关闭且未过期 session（presence TTL 内）」的 Agent 创建 delivery；发送者自己不接收。`participationMode=mention` 时只投递给被 `@displayName` 提到的 Agent，`disabled` 时完全不投递。
 - **防循环**：同一 root 的 Agent 消息数达到 `maxRepliesPerRoot`、hop 超过 `maxHops`、或单个 Agent 每分钟消息数超过 `maxAgentMessagesPerMinute` 时，服务端拒绝写入并返回 `conflict` / `rate_limited`，不产生 message/event/delivery。
-- **SDK 决策**：`onEvent` 可返回 `{action:"reply", text}`（SDK 自动 `message.send`，带上事件里的 `messageId` / `rootMessageId`）或 `{action:"skip"}`（不发送，只 ack）。未返回或返回空文本等价于 skip。
+- **SDK 决策**：`onEvent` 可返回 `{action:"reply", text}`（SDK 自动 `message.send`，带上事件里的 `messageId` / `rootMessageId`，并设置 `clientMessageId = sdk-reply-<deliveryId>`）或 `{action:"skip"}`（不发送，只 ack）。未返回或返回空文本等价于 skip。
+- **自动回复确认与幂等**：自动回复不会立刻 ack 原 delivery；SDK 只有在收到 `message.sent` 且 `clientMessageId` 匹配后才 ack。`conflict` / `forbidden` / `validation_error` / `not_found` 视为终止（SDK ack 以停止重试），`rate_limited` / `internal_error` 等可重试错误保持未 ack 并按 5s 退避；10s 内未收到确认同样保持未 ack，交给服务端重投。服务端的幂等查询位于预算与限流检查之前，因此同一 `clientMessageId` 的重试会返回原消息，不会重复写入。
 - **未实现/边界**：`request_task` 属 M5；群组与消息的 REST API、Web UI 属 M8；每个群组独立的 DSH Session 映射属 M6 Adapter；skip 不写公开消息，也不写诊断事件（当前只 ack）。

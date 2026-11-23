@@ -2,6 +2,7 @@ import { generateKeyPairSync } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import {
   AgentClient,
+  type AgentClientOptions,
   type AgentEvent,
   type ParticipationResult,
   type WebSocketLike,
@@ -56,6 +57,7 @@ function createHarness(
     event: AgentEvent,
     context: { deliveryId: string; attempt: number },
   ) => void | ParticipationResult,
+  overrides: Partial<AgentClientOptions> = {},
 ): Harness {
   const keys = generateKeyPairSync("ed25519");
   const fingerprint = publicKeyFingerprint(keys.publicKey);
@@ -96,6 +98,7 @@ function createHarness(
     fetchImpl,
     WebSocketImpl: FakeSocket as unknown as new (url: string) => WebSocketLike,
     onEvent,
+    ...overrides,
   });
   return { client, ticketRequests };
 }
@@ -105,8 +108,9 @@ async function openClient(
     event: AgentEvent,
     context: { deliveryId: string; attempt: number },
   ) => void | ParticipationResult,
+  overrides: Partial<AgentClientOptions> = {},
 ): Promise<{ client: AgentClient; socket: FakeSocket; harness: Harness }> {
-  const harness = createHarness(onEvent);
+  const harness = createHarness(onEvent, overrides);
   await harness.client.connect();
   const opened = harness.client.open();
   await flush();
@@ -170,7 +174,7 @@ describe("agent sdk delivery handling", () => {
     expect(acks[0]!.deliveryIds).toEqual(["evd_1"]);
   });
 
-  it("sends a reply frame when the handler decides to reply", async () => {
+  it("sends a delivery-derived client id and only acks after message.sent", async () => {
     const { socket } = await openClient((event) => {
       event.payload = { messageId: "msg_1", rootMessageId: "msg_root" };
       return { action: "reply", text: "hello back" };
@@ -184,7 +188,56 @@ describe("agent sdk delivery handling", () => {
       content: "hello back",
       replyToMessageId: "msg_1",
       rootMessageId: "msg_root",
+      clientMessageId: "sdk-reply-evd_1",
     });
+    expect(ackFrames(socket)).toHaveLength(0);
+    socket.emit({
+      type: "message.sent",
+      messageId: "msg_2",
+      seq: 2,
+      clientMessageId: "sdk-reply-evd_1",
+    });
+    await flush();
+    expect(ackFrames(socket)).toHaveLength(1);
+  });
+
+  it("does not send a second reply while the first awaits confirmation", async () => {
+    const { socket } = await openClient(() => ({ action: "reply", text: "hello back" }));
+    socket.emit(eventFrame());
+    socket.emit(eventFrame());
+    await flush();
+    expect(socket.frames().filter((frame) => frame.type === "message.send")).toHaveLength(1);
+    expect(ackFrames(socket)).toHaveLength(0);
+  });
+
+  it("keeps the delivery unacked and backs off after a retryable reply error", async () => {
+    const { socket } = await openClient(() => ({ action: "reply", text: "hello back" }));
+    socket.emit(eventFrame());
+    await flush();
+    socket.emit({
+      type: "error",
+      code: "rate_limited",
+      message: "slow down",
+      clientMessageId: "sdk-reply-evd_1",
+    });
+    await flush();
+    expect(ackFrames(socket)).toHaveLength(0);
+    socket.emit(eventFrame());
+    await flush();
+    expect(socket.frames().filter((frame) => frame.type === "message.send")).toHaveLength(1);
+  });
+
+  it("acks the delivery after a terminal reply error so the chain stops", async () => {
+    const { socket } = await openClient(() => ({ action: "reply", text: "hello back" }));
+    socket.emit(eventFrame());
+    await flush();
+    socket.emit({
+      type: "error",
+      code: "conflict",
+      message: "reply budget spent",
+      clientMessageId: "sdk-reply-evd_1",
+    });
+    await flush();
     expect(ackFrames(socket)).toHaveLength(1);
   });
 

@@ -431,3 +431,25 @@ $ pnpm build       # packages/protocol, packages/database, packages/agent-sdk, a
 - 离线 Agent 在消息发生时不会收到 delivery（plan §9.1 只对在线 Agent 建立 delivery）；历史补拉依赖 M8 的 REST API。
 - 结论：M4 服务端验收全部通过，建议进入 M5；Web UI 与 REST API 在 M8 补齐。
 - 提交：`e059403`（实现 + 测试 + 文档），记录提交见下方；未重启 dsh-web。
+
+### M4 Review Fix（2026-11-23）
+
+按审查报告修复 SDK 自动回复的确认/幂等语义、服务端幂等查询顺序、mention 边界，并同步阶段归属。
+
+- **SDK 自动回复幂等**（`packages/agent-sdk/src/index.ts`）：自动回复使用稳定 `clientMessageId = sdk-reply-<deliveryId>`；同一 delivery 无论重放多少次，服务端 `(group_id, client_message_id)` 唯一约束最多创建一条消息。等待确认期间同一 delivery 重投不会再次发送（新增测试 `does not send a second reply while the first awaits confirmation`）。
+- **ack 语义**：自动回复只在收到 `message.sent` 且 `clientMessageId` 匹配后 ack（`armReplyAck` / `confirmReply`）。`conflict` / `forbidden` / `validation_error` / `not_found` 视为终止并 ack（`acks the delivery after a terminal reply error so the chain stops`）；`rate_limited` / `internal_error` 等可重试错误保持未 ack 并记录 5s 退避（`keeps the delivery unacked and backs off after a retryable reply error`）；10s（`replyAckTimeoutMs`）未确认也会保持未 ack，由服务端重投后重试。SDK 关闭时清理所有定时器。
+- **服务端幂等顺序**（`apps/server/src/modules/messages.ts`）：在身份 / 群组 / 成员 / thread / root / reply 目标校验之后、Agent 预算与速率检查之前查询 `clientMessageId`。因此预算或每 root 回复数已耗尽时，用原 `clientMessageId` 重试仍返回原消息，不新增 message/event/delivery（新增 `returns the original agent message when a retry arrives after the reply budget is spent` 与 `... after the rate limit is reached`）。
+- **错误帧关联**：`agentServerMessage` 的 `error` 帧增加可选 `clientMessageId`；WSS `message.send` 失败时回传该字段，SDK 用它确认终止或退避（`packages/protocol/src/agent.ts`、`apps/server/src/routes/agent.ts`）。
+- **mention 边界**（`apps/server/src/modules/participation.ts`）：正则改为两侧边界 `(?<![\p{L}\p{N}_])@name(?![\p{L}\p{N}_])`；新增 `does not treat an email-like string as a mention`（`user@agentA` 不触发）。
+- **计划同步**（`docs/PLAN.md`）：M4 工作项移除“每群组独立 Agent Session 映射”（注为 M6）与“前端显示”（注为 M8），M4 验收仍全部为服务端行为。
+
+```text
+$ pnpm lint        # exit 0
+$ pnpm typecheck   # exit 0
+$ pnpm format:check# All matched files use Prettier code style!
+$ pnpm test        # Test Files 15 passed (15) / Tests 103 passed (103)
+$ pnpm build       # packages/protocol, database, agent-sdk, apps/server Done
+```
+
+- 新增/更新测试：`apps/server/test/participation.test.ts`（mention 邮箱边界、预算耗尽后幂等重试、限流后幂等重试）、`packages/agent-sdk/test/delivery.test.ts`（ack 等待 message.sent、等待期间不重发、可重试错误退避、终止错误 ack）。
+- 结论：审查报告中的优先项与 mention 边界已修复；M4 仍标完成，Session 映射归 M6、前端归 M8 已在计划中同步。
