@@ -105,7 +105,7 @@ protocolVersion=1
 
 ## 8. M3 评审修复（2026-11-23，历史记录）
 
-- **Agent 公开发言默认关闭**：`AGENT_MESSAGES_ENABLED=false`（生产禁止设为 true）时，WSS `message.send` 返回 `error: agent_messages_disabled`，不写 message/event/delivery。重新开放的条件：M4 完成 `allowAgentMessages`、`maxHops`、`maxRepliesPerRoot`、`maxAgentMessagesPerMinute` 的服务端原子校验（含 hop 递增），并补超限与循环停止测试。
+- **Agent 公开发言（M3 历史状态，M4 已解除）**：M3 期间 `AGENT_MESSAGES_ENABLED=false`（生产禁止设为 true），WSS `message.send` 返回 `error: agent_messages_disabled`。该全局开关已在 M4 删除；现在由群组级 `allowAgentMessages`、`maxHops`、`maxRepliesPerRoot`、`maxAgentMessagesPerMinute` 在服务端强制，见 §9。
 - **SDK 至少一次投递**：`onEvent(event, { deliveryId, attempt })`；未配置 handler 不 ack，handler 抛错不 ack，`attempt` 在 socket 生命周期内递增，便于应用做持久化幂等；收到服务端 `ack.ok` 后删除对应计数，Map 不随已确认事件增长。SDK 不承诺去重。
 - **升级票据**：`agent_socket_tickets` 只存 `sha256(ticket)`，原子消费，TTL 由 `AGENT_SOCKET_TICKET_TTL_MS`（5s–5min）控制；应用日志 `requestLogSerializer` 去掉 query string，代理侧日志也不应记录升级 URL。
 - **会话 TTL**：`AGENT_SESSION_TTL_MS` 对活跃连接生效（到期定时器 + 每帧校验）；到期断开、关闭数据库 session，并在没有其他活跃 socket 时置 `offline`。
