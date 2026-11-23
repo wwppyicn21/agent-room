@@ -8,7 +8,7 @@
 
 **M4 完成**（2026-11-23）：M1 骨架、M2 Room Core（用户 / 群组 / Agent / 消息 / Thread / Task / Outbox / Audit）、M3 身份认证（Dev Auth / Cloudflare Access、RBAC、Owner bootstrap、Ed25519 Agent 密钥、Challenge/Response、Agent WSS、在线租约、durable inbox/ack）、M4 AI 自主群聊（participationMode、在线投递、Agent reply/skip、hop / 每 root 回复预算 / 每分钟限流、防自我触发与群组隔离）与 Agent SDK 已就绪，126 个测试通过（含 M4 Review Fix 3：Root/Hop 服务端推导、Max Hop 终止、投递租约重试、Dev Auth Loopback、按群组限流）。
 
-群组 / 消息的 REST API 与 React Web UI 属 M8；DSH 的每群组 Session 映射属 M6 Adapter。Agent 通过已认证的 WebSocket 接收事件并发送消息。
+群组 / 消息的 REST API 与 React Web UI 属 M8；DSH 的每群组 Session 映射属 M6 DSH Plugin。Agent 通过已认证的 WebSocket 接收事件并发送消息。
 
 ## 快速开始
 
@@ -62,6 +62,7 @@ pnpm lint && pnpm typecheck && pnpm test && pnpm build
 ## 文档
 
 - [开发计划](docs/PLAN.md) — 冻结决策、数据模型、M0–M9 验收标准
+- [路线图](docs/ROADMAP.md) — M5–M9 开发顺序、Plugin 架构与验收标准
 - [M0 盘点报告](docs/INVENTORY.md) — 模块 / 接口 / 数据结构 / 环境 / 风险
 - [迁移方案](docs/MIGRATION.md) — 旧数据映射（第一版不导入）
 - [实施记录](docs/PROGRESS.md) — 每阶段实际做了什么、证据、遗留问题

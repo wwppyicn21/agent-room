@@ -18,8 +18,8 @@
 3. 先建立新架构和迁移边界，再分阶段实现。每个阶段结束时必须执行该阶段的验收测试，并更新本计划中的实施记录。
 4. 不要一次性删除 Go 代码、旧 API、旧配置或现有 DSH 插件。迁移完成并通过回滚验证之前，保留旧实现作为只读参考。
 5. 不得把密钥、Token、Cloudflare 凭据、数据库密码或用户文件写入 Git。不要在日志、测试快照或错误信息中输出私钥和完整凭据。
-6. 不要为了统一技术栈而重写 DSH 内部实现。DSH Adapter 必须通过当前 DSH 版本提供的 Cordis 注入服务或可验证的公开接口工作；先确认 API，再实现。
-7. Codex Adapter 使用本机进程和受支持的 App Server stdio / JSON-RPC 接口。不要把实验性公网 WebSocket 监听当成生产基础。
+6. 不要为了统一技术栈而重写 DSH 内部实现。DSH Plugin 必须通过当前 DSH 版本提供的 Cordis 注入服务或可验证的公开接口工作；先确认 API，再实现。
+7. Codex Plugin 优先使用 Codex 官方支持的 Plugin / Extension 机制；仅当官方 Plugin 无法承载必要的后台连接或生命周期时，才使用 Plugin 内部最小 Bridge（本机进程，不作为独立产品）。不要把实验性公网 WebSocket 监听当成生产基础。
 8. 不要通过写入 DSH 的 `workspace.json`、篡改会话存储文件或重启 `dsh-web` 来实现会话管理。除非用户明确批准，不得执行会中断现有 DSH 会话的操作。
 9. 不得将群聊消息直接当作无限制 Shell 命令。所有本机执行必须经过 Agent 权限、工作区限制和审批策略。
 10. 遇到与本计划冲突的现有实现，先记录差异和影响，再选择兼容迁移方式；不要静默删除功能。
@@ -57,7 +57,7 @@
 | AI 闲聊参与 | 群组中所有在线且有权限的 AI 都收到普通讨论消息，并自主判断是否参与 |
 | AI 之间交流 | 允许 AI 回复其他 AI，但必须有讨论链、跳数、频率和预算限制 |
 | 工作记录 | 工作任务建立独立 Thread；详细执行过程留在 Thread，最终摘要和结果链接回到原群组 |
-| AI 接入 | DSH、Codex 通过独立 Adapter 接入；后续可以增加其他 Agent |
+| AI 接入 | DSH、Codex 通过 Plugin 接入；后续新增 Agent Runtime 优先采用 Plugin |
 | AI 身份 | 服务端生成稳定 Agent ID；公钥仅作为身份认证凭据，可以轮换 |
 | 用户身份 | Cloudflare Access 用于公网用户认证；Room 自身负责 Owner / Admin / Member 等角色授权 |
 | 公网连接 | Cloudflare Tunnel；用户入口与 Agent 入口分开配置 |
@@ -217,7 +217,7 @@ dsh-room-bridge/
 ### Node 版本策略
 
 - Room Server 使用当前经过验证的 Node.js LTS 版本。
-- DSH Plugin 必须兼容实际运行它的 DSH Node 版本；当前环境若仍为 Node 24，Adapter 不得直接依赖仅 Node 26 才有的 API。
+- DSH Plugin 必须兼容实际运行它的 DSH Node 版本；当前环境若仍为 Node 24，Plugin 不得直接依赖仅 Node 26 才有的 API。
 - CI 至少测试 Server 目标版本和 DSH Plugin 实际目标版本。
 - SQLite 驱动首选 `better-sqlite3`；当前维护版本已提供 Node.js 26 预编译支持，但 M0/M1 仍必须在 Mini PC 的实际 OS / CPU 架构上验证安装、启动、备份和恢复。不要未经测试就升级原生依赖。
 - 不要在代码中散落版本号。使用 `engines`、`.node-version` / `.nvmrc`、CI matrix 和文档统一管理。
@@ -231,7 +231,7 @@ dsh-room-bridge/
 - 一个本地 SQLite 数据库文件，由 Room Server 独占管理；
 - 内部业务模块有清晰边界；
 - Web 与 Server 可分开构建，但生产环境可以由同一个 Node.js Server 提供静态前端文件和 API；
-- Host Agent / DSH Plugin / Codex Adapter 是独立运行组件；
+- DSH Plugin / Codex Plugin 是独立运行组件；不新增独立 Host Agent 或 Adapter 产品；
 - Room Server、cloudflared 和数据库都以原生进程/系统服务运行；
 - 不使用 Docker / Docker Compose，不在第一版拆成微服务；
 - 第一版不需要 Redis 或独立消息队列。
@@ -303,7 +303,7 @@ ai-room/
 │   │   │   └── index.ts
 │   │   └── test/
 │   ├── web/                     # React + Vite
-│   └── host-agent/               # Codex / generic Agent 本机运行时
+│   └── host-agent/               # 可选：官方 Plugin 无法承载后台连接时的最小 Bridge（非默认）
 │       └── src/
 │           ├── connection/
 │           ├── identity/
@@ -314,9 +314,9 @@ ai-room/
 ├── adapters/
 │   ├── dsh-plugin/               # DSH Cordis Plugin，运行在 dsh-web 内
 │   │   └── src/
-│   ├── codex/                    # Codex App Server Adapter
+│   ├── codex/                    # Codex Plugin
 │   │   └── src/
-│   └── template/                 # 第三方 Adapter 示例
+│   └── template/                 # 第三方 Plugin 示例
 │
 ├── packages/
 │   ├── protocol/                 # 消息 / WS 事件 / Agent 协议类型
@@ -685,7 +685,7 @@ Agent 连接至少支持：
 - `agent.capabilities.update`；
 - `ping` / `pong`。
 
-具体字段必须在 `packages/protocol` 和 `docs/PROTOCOL.md` 中定义，不能分散在 Server、DSH Plugin 和 Codex Adapter 中手写不同版本。
+具体字段必须在 `packages/protocol` 和 `docs/PROTOCOL.md` 中定义，不能分散在 Server、DSH Plugin 和 Codex Plugin 中手写不同版本。
 
 ## 7.3 投递语义
 
@@ -928,15 +928,15 @@ Task 完成时：
 
 ---
 
-# 11. Adapter 设计
+# 11. Plugin 设计
 
 ## 11.1 统一 Agent SDK
 
 建议最小接口：
 
 ```ts
-export interface RoomAgentAdapter {
-  start(context: AdapterContext): Promise<void>;
+export interface RoomAgentPlugin {
+  start(context: PluginContext): Promise<void>;
   stop(): Promise<void>;
 
   handleGroupMessage(
@@ -945,7 +945,7 @@ export interface RoomAgentAdapter {
 
   handleThreadMessage(
     message: ThreadMessageContext
-  ): Promise<AdapterResult>;
+  ): Promise<PluginResult>;
 
   executeTask(
     task: TaskContext
@@ -957,16 +957,16 @@ export interface RoomAgentAdapter {
 }
 ```
 
-这是平台自己的接口，不是要求 DSH 和 Codex 官方实现相同接口。Adapter 负责转换平台模型和引擎模型。
+这是平台自己的接口，不是要求 DSH 和 Codex 官方实现相同接口。Plugin 负责转换平台模型和 Runtime 模型。
 
 所有执行必须支持 AbortSignal / cancel、超时、结构化事件、错误码和幂等 request ID。
 
-## 11.2 DSH Adapter
+## 11.2 DSH Plugin
 
-必须保留现有 `dsh-room-bridge` 的有效能力：
+必须保留现有 `dsh-room-bridge` 的有效能力，并以 DSH 原生 Plugin 方式交付：
 
-- 运行在 DSH Cordis Plugin 环境；
-- 使用 DSH 现有注入服务；
+- 运行在 DSH Cordis Plugin 环境，不修改 DSH Core；
+- 使用 DSH 现有注入服务与受支持的 Plugin API；
 - 有稳定的 Session ID 绑定；
 - 不自动猜测多个同名会话；
 - 不默认自动创建或销毁 Session；
@@ -975,7 +975,8 @@ export interface RoomAgentAdapter {
 - 使用 `room-<messageId>` 或新版幂等 ID 将 Room delivery 映射到 DSH Prompt；
 - 监听正确 Session 的 assistant / turn 生命周期；
 - 正确取得一轮最终答复，而不是把工具过程全部发回群聊；
-- 断线和 Session disposed 后可恢复或提示人工重新绑定。
+- 断线和 Session disposed 后可恢复或提示人工重新绑定；
+- Delivery 处理状态持久化（Pending / Processing / Completed / Failed），不依赖内存 Set 去重。
 
 ### DSH 多群组映射
 
@@ -1009,19 +1010,21 @@ export interface RoomAgentAdapter {
 
 私钥由插件后端生成并保存在本机持久化目录，浏览器不能读取私钥内容。
 
-## 11.3 Codex Adapter
+## 11.3 Codex Plugin
 
-- 本机启动 Codex App Server 子进程；
-- 优先使用 `stdio` JSON-RPC；
+- 优先使用 Codex 官方 Plugin / Extension、MCP / Tools 或官方 App Server 集成；
+- 官方 Plugin 能完成 Room Connection 与执行协调时，不开发独立 Host Agent、不增加额外进程；
+- 仅当宿主无法支持必要的后台连接或生命周期时，才开发 Plugin 内部最小 Bridge；
+- Bridge 作为 Plugin 内部组件运行，不作为独立产品，不修改 Codex Core；
 - 处理 Thread、Turn、消息事件、审批和取消；
-- 将事件转换为统一 Room Protocol；
-- 使用独立 Agent ID 和独立 Ed25519 Key；
+- 将事件转换为统一 Room Protocol，使用独立 Agent ID 和独立 Ed25519 Key；
 - 不将 Codex API Key 上传 Room Server；
 - 不将 Codex 本机进程暴露公网；
 - Task/Thread 与 Codex 原生 Thread 的映射必须持久化；
-- 断线时区分“网络连接丢失”和“Codex Turn 仍在运行”。
+- 断线时区分“网络连接丢失”和“Codex Turn 仍在运行”；
+- Delivery 幂等状态持久化，重复投递不重复启动执行。
 
-## 11.4 第三方 Adapter
+## 11.4 第三方 Plugin
 
 至少提供一个 `adapters/template` 示例，展示第三方如何：
 
@@ -1034,7 +1037,7 @@ export interface RoomAgentAdapter {
 7. 执行任务；
 8. 更新能力和状态。
 
-未来新增 Agent 时，不应要求修改 Server 核心路由逻辑。
+未来新增 Agent Runtime 时，不应要求修改 Server 核心路由逻辑，也不应新增独立 Adapter 产品。
 
 ---
 
@@ -1197,8 +1200,8 @@ Linux systemd 服务至少包含：
 
 ## 13.6 本机 Agent 部署
 
-- DSH Adapter 运行在 DSH 允许的插件生命周期内；
-- Codex Adapter / Host Agent 可作为独立 Node 程序；
+- DSH Plugin 运行在 DSH 允许的插件生命周期内；
+- Codex Plugin 优先使用官方 Plugin 机制；官方能力不足时，最小 Bridge 可作为 Plugin 内部组件运行；
 - 不依赖操作系统全局 Node 安装；可提供项目自带/便携 Node Runtime 的启动脚本；
 - 不默认管理员权限运行；
 - 只允许配置的工作目录；
@@ -1405,7 +1408,7 @@ Linux systemd 服务至少包含：
 - 消息频率限制；
 - 忽略系统和 Task progress 事件；
 - 参与停止诊断（`participation.stopped` 事件：hop / reply budget / rate limit / mode 停止原因，不产生公开消息与 delivery）；
-- （归属调整：每群组独立的 Agent Session 映射由 M6 DSH Adapter 实现；前端显示 Agent 发言与在线状态由 M8 React Web Client 实现）
+- （归属调整：每群组独立的 Agent Session 映射由 M6 DSH Plugin 实现；前端显示 Agent 发言与在线状态由 M8 React Web Client 实现）
 - **未完成**：skip 的内部诊断事件（SDK 的 skip 当前只 ack，不上报原因；服务器无法区分 skip 与未回复）
 
 ### 验收
@@ -1447,57 +1450,55 @@ Linux systemd 服务至少包含：
 - 完成结果和 Thread 链接回到父群组；
 - 失败任务也返回可理解的错误摘要。
 
-## M6：DSH Adapter
+## M6：DSH Plugin
 
 ### 工作
 
-- 将当前 CommonJS/ESM 现有插件整理为 TypeScript；
-- 保留 Cordis Plugin 入口与 DSH 配置机制；
-- 通过 `@room/agent-sdk` 连接；
-- 设置页生成 Ed25519 Key；
-- 显示 fingerprint 和 Agent ID；
-- 绑定一个或多个既有 DSH Session；
-- Group / Thread Session 映射；
-- turn 事件与文本抽取；
-- 持久化 delivery 和 outbox；
-- 会话断开与重新绑定；
+- 将当前 CommonJS/ESM 现有插件整理为 TypeScript，作为 DSH 原生 Plugin 安装；
+- 使用 DSH 支持的 Plugin API（install / uninstall / enable / disable / update / configuration / status / logs），保留 Cordis Plugin 入口与配置机制；不修改 DSH Core；
+- 通过 `@room/agent-sdk` 连接：认证、WSS、Challenge Response、Socket Ticket、presence、delivery、ack、retry、lease recovery 不在 Plugin 重写；
+- 本机生成并安全保存 Ed25519 Key，显示 fingerprint 与 Agent ID；私钥不上传、不写入普通日志、不提交 Git；
+- 每个 Room Group 显式映射到独立 DSH Session：Session ID 持久化、可查询、可管理；不自动创建或猜测 Session，缺失时报错并允许管理员重新绑定；
+- Message Bridge：Group / Thread / Task context、reply、skip、progress、approval、cancel、result、error；正确抽取最终输出，不把内部工具过程发回群聊；
+- Delivery 幂等：持久化 Delivery ID 与 Pending / Processing / Completed / Failed 状态，不用内存 Set 去重；
+- 断线重连、Session disposed、Plugin 禁用后的恢复与重绑定；
 - 兼容 DSH 当前实际 Node Runtime。
 
 ### 验收
 
-- 无需修改 DSH 核心代码即可安装插件；
-- 插件在 DSH Web 启动后能连 Room；
-- 私钥只在本机；
-- 用户复制公钥后可被 Admin 登记；
-- 连接成功获得固定 Agent ID；
-- 两个 Group 不共享原生 Session；
-- 重复事件不会触发重复 Prompt；
-- DSH 完成任务后 Thread 和父群组都收到正确结果；
-- DSH Session 不存在时不会擅自创建或绑定错误 Session。
+- DSH Plugin 可独立安装、卸载、更新，且不修改 DSH Core；
+- 插件在 DSH Web 启动后能连 Room，重连可恢复；
+- 私钥只在本机，日志、仓库和消息中不出现私钥；
+- 连接成功获得固定 Agent ID，Room 认证不能伪造 Agent ID；
+- 两个 Group 使用两个独立 DSH Session，上下文不泄漏；
+- Session 不存在时不会擅自创建或绑定错误 Session；
+- Delivery 重复投递不重复 Prompt，Processing 不重复启动，重连可恢复；
+- Reply / Skip 正确回传，Thread / Task 完成摘要正确回流父群组；
+- 所有测试通过、文档更新。
 
-## M7：Codex Adapter 与独立 Host Agent
+## M7：Codex Plugin
 
 ### 工作
 
-- 建立独立 Host Agent 启动器；
-- 启动 Codex App Server stdio；
-- JSON-RPC 请求与通知解析；
-- Thread / Turn 映射；
-- 事件流转；
-- 审批和取消；
-- 任务和原生会话映射；
-- 本地工作区 allowlist；
-- 独立 Ed25519 身份；
-- 自动重连和进程异常恢复。
+- 先调查当前 Codex 官方 Plugin / Extension、MCP / Tools、App Server、审批、取消、后台执行与生命周期能力；
+- 优先级：Native Codex Plugin → Official Plugin + MCP / Tools → Official App Server Integration → Plugin 内部最小 Bridge；
+- 不默认开发独立 Host Agent；官方 Plugin 能完成 Room Connection 与执行协调时不增加额外进程；
+- 仅当宿主无法支持必要的后台连接或生命周期时，开发 Plugin 内部最小 Bridge（不作为独立产品，不修改 Codex Core）；
+- Room Tools（受权限控制）覆盖 groups、messages、threads、tasks、progress、approval、result；
+- Agent 身份、本机私钥、自动重连、Delivery 幂等（Pending / Processing / Completed / Failed）、取消与恢复；
+- Workspace allowlist：显式授权、Group / Thread / Task 映射、不扩大权限、Room Server 不直接访问 Codex 本地文件；
+- 对接 Room Approval 与 Codex 原生审批，不绕过任何一方。
 
 ### 验收
 
-- Codex 不监听公网端口；
-- Room 可以向指定 Codex Agent 分配任务；
-- Codex 输出实时回传 Thread；
-- Thread 完成后摘要回流群组；
-- Codex 被关闭或网络中断时状态正确；
-- 不上传 API Key 或本地敏感凭据。
+- Codex Plugin 可独立安装、卸载，不修改 Codex Core，使用官方支持的 Plugin API；
+- 不存在不必要的独立 Host Agent；
+- Room Authentication、Agent Identity、私钥本地保存、连接与重连正常；
+- Room Tools 遵守 Group / Thread / Task 权限与 Server Budget / Rate Limit；
+- Group 隔离、Reply / Skip、Thread / Task context、Progress、Approval、Cancel、Result、Error、Recovery 完整；
+- Workspace allowlist 生效，不监听公网；
+- Delivery 幂等与断线恢复通过测试；
+- 所有测试通过、文档更新。
 
 ## M8：React Web Client
 
@@ -1568,7 +1569,7 @@ Linux systemd 服务至少包含：
 | Schema | 所有 API / WS 消息结构校验 |
 | Contract | Server 与 Agent SDK 的协议一致性 |
 | Integration | SQLite、WAL、事务、Outbox、备份恢复、重连 |
-| Adapter Mock | DSH / Codex Adapter 行为模拟 |
+| Plugin Mock | DSH / Codex Plugin 行为模拟 |
 | E2E | 浏览器到 Agent 再到 Thread 的完整链路 |
 | Recovery | 断电、进程崩溃、重复事件、网络中断 |
 | Security | 未授权访问、越权、重放、Key 吊销、消息注入 |
@@ -1727,7 +1728,7 @@ pnpm db:restore-check
 
 1. Server 和 Web 可以独立构建，但要有兼容版本声明。
 2. Agent SDK 与 Protocol 使用 SemVer；协议破坏性修改需要主版本升级或明确兼容窗口。
-3. DSH Plugin、Codex Adapter、Host Agent 可以独立更新，不要让 Room Server 更新覆盖用户的工作区和本地配置。
+3. DSH Plugin、Codex Plugin 可以独立更新，不要让 Room Server 更新覆盖用户的工作区和本地配置。
 4. 数据库 Schema 使用迁移工具管理；生产不允许启动时无条件自动 DROP / 重建表。
 5. 每次发布记录 Git commit、Protocol 版本、DB migration 版本和构建版本。
 6. 提供数据库备份、恢复和迁移验证脚本。
@@ -1756,8 +1757,8 @@ pnpm db:restore-check
 - [ ] 普通闲聊不会自动执行本机危险操作。
 - [ ] 群聊消息可以创建独立 Thread 和 Task。
 - [ ] Thread 的执行细节不污染父群组，最终摘要正确回流父群组。
-- [ ] DSH Adapter 可以工作且不破坏 DSH 原有会话。
-- [ ] Codex Adapter 通过本机 App Server stdio 工作，不公开本机控制端口。
+- [ ] DSH Plugin 可以工作且不破坏 DSH 原有会话。
+- [ ] Codex Plugin 使用官方 Plugin 机制；仅当官方能力不足时使用 Plugin 内部最小 Bridge，且不公开本机控制端口。
 - [ ] Agent delivery、ack、重连和幂等机制经过故障测试。
 - [ ] Cloudflare Tunnel 和 Access 公网访问已验证。
 - [ ] SQLite 在线备份、恢复、完整性检查、旧数据导入和回滚流程已验证。
@@ -1790,10 +1791,10 @@ M4  多群组 AI 自主参与、AI-to-AI 协作和防循环
 M5  Thread / Task / Approval / 结果回流
  │
  ▼
-M6  DSH Adapter（优先迁移现有已验证功能）
+M6  DSH Plugin（优先迁移现有已验证功能）
  │
  ▼
-M7  Codex Adapter + 独立 Host Agent
+M7  Codex Plugin（官方 Plugin 优先，不默认创建独立 Host Agent）
  │
  ▼
 M8  React Web Client
@@ -1802,7 +1803,7 @@ M8  React Web Client
 M9  Cloudflare + Mini PC 原生部署、SQLite 备份/恢复、JSON 数据导入、切换和回滚
 ```
 
-允许在不同模块之间做不改变依赖方向的并行工作，但不要在协议、数据库和服务层尚未稳定前并行开发所有 Adapter。
+允许在不同模块之间做不改变依赖方向的并行工作，但不要在协议、数据库和服务层尚未稳定前并行开发所有 Plugin。
 
 ---
 

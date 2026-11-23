@@ -389,7 +389,7 @@ pnpm build       # packages/protocol, packages/database, apps/server build Done
 
 ### M4：AI 自主群聊（2026-11-23）
 
-按 `docs/PLAN.md` M4 实现服务端参与引擎、Agent 回复预算与 SDK 决策；REST/Web UI 与 Adapter 侧 Session 映射按里程碑归属记录为偏差。
+按 `docs/PLAN.md` M4 实现服务端参与引擎、Agent 回复预算与 SDK 决策；REST/Web UI 与 Plugin 侧 Session 映射按里程碑归属记录为偏差。
 
 实现：
 
@@ -425,7 +425,7 @@ $ pnpm build       # packages/protocol, packages/database, packages/agent-sdk, a
 偏差与后续：
 
 - 群组/消息 REST API 与 React Web UI 属 M8（仓库目前只有 `apps/server`），因此“前端显示 Agent 发言和在线状态”未在本轮实现。
-- 每个群组独立的 DSH Session 映射属 M6 Adapter；服务端已保证事件带 `groupId` 且群组隔离有测试。
+- 每个群组独立的 DSH Session 映射属 M6 DSH Plugin；服务端已保证事件带 `groupId` 且群组隔离有测试。
 - `request_task` 决策属 M5；当前 SDK 只实现 reply/skip。
 - skip 只 ack、不写诊断事件（plan 允许写脱敏内部事件，暂未实现）。
 - 离线 Agent 在消息发生时不会收到 delivery（plan §9.1 只对在线 Agent 建立 delivery）；历史补拉依赖 M8 的 REST API。
@@ -495,8 +495,28 @@ $ pnpm build        # exit 0
 未解决 / 明确推迟：
 
 - skip 的内部诊断事件仍未实现（SDK 的 skip 只 ack，不上报原因；服务器无法区分 skip 与未回复），已在 PLAN M4 工作项标为未完成，不计入通过。
-- REST 群组/消息 API、React Web UI 属 M8；每群组独立 Session 映射属 M6；`request_task` 属 M5。
+- REST 群组/消息 API、React Web UI 属 M8；每群组独立 Session 映射属 M6 DSH Plugin；`request_task` 属 M5。
 
 结论：M4 Review Fix 3 的 Root/Hop、Max Hop、Delivery 租约、Dev Auth 与限流作用域已修复并有测试覆盖；M4 可继续作为 M5 的输入。
 
 提交：`e52a355`（修复 + 测试 + 文档）。
+
+### 路线图同步（2026-11-23）
+
+按用户提供的 Development Roadmap 执行文档同步任务；仅修改文档，未改代码，未开始 M5。
+
+- 新增 `docs/ROADMAP.md`：保存用户提供的完整路线图（M0–M9、Plugin 架构、依赖顺序、执行规则、验收标准）。
+- `docs/PLAN.md`：M6 由“DSH Adapter”改为“DSH Plugin”，M7 由“Codex Adapter 与独立 Host Agent”改为“Codex Plugin”；§11 改为 Plugin 设计（`RoomAgentPlugin` 接口、DSH Plugin、Codex Plugin、第三方 Plugin）；架构、目录说明、执行顺序摘要与 DoD 中相关表述同步；明确不新增独立 Adapter 产品或默认 Host Agent。
+- `README.md`：状态区 M6 Session 映射引用改为“M6 DSH Plugin”，文档区新增 ROADMAP 链接。
+- `docs/PROGRESS.md`：M4 偏差中的 M6 Adapter 引用改为 M6 DSH Plugin，新增本同步记录。
+- `docs/AUTH.md`：M6 Session 映射引用改为 M6 DSH Plugin。
+
+```text
+$ pnpm lint          # exit 0（本次文档变更后复跑）
+$ pnpm typecheck     # exit 0
+$ pnpm format:check  # All matched files use Prettier code style!
+$ pnpm test          # 16 files / 126 tests passed
+$ pnpm build         # 全部 Done
+```
+
+说明：本次任务只同步文档，测试数量与代码行为均未变化；上述结果为本轮实际复跑，不是引用历史记录。
