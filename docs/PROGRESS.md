@@ -464,3 +464,4 @@ $ pnpm build       # packages/protocol, database, agent-sdk, apps/server Done
 - **测试**：`packages/agent-sdk/test/delivery.test.ts` 11 → 15（退避结束后重发同一 payload 并确认、确认超时后重发、同一 delivery 并发只保留一个重试流程、close 后不再发送、断线保留 pending 并在重连后重发）；`apps/server/test/participation.test.ts` 15 → 19（hop 拒绝诊断、reply budget 诊断、rate limit 诊断且不写消息、确认丢失重试后只有一条消息 / 一个 `message.created` / 正确投递）。
 - **验证**：`pnpm lint` exit 0；`pnpm typecheck` exit 0；`pnpm format:check` 通过；`pnpm test` 15 files / 111 tests 通过；`pnpm build` 通过。
 - **未完成**：skip 的内部诊断事件。SDK 的 skip 目前只 ack、不上报服务器，服务器无法区分 skip 与“没有回复”；已在 `docs/PLAN.md` M4 工作项中标注为未完成，不把该项验收写成已通过。
+- 提交：`29671aa`（SDK 重试 + 服务端诊断 + 测试 + 文档）。

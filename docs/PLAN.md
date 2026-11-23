@@ -1812,7 +1812,7 @@ M9  Cloudflare + Mini PC 原生部署、SQLite 备份/恢复、JSON 数据导入
 | M1 | 完成（2026-11-22） | 1ab5092 | lint / typecheck / 18 tests / build 全过；并发启动与 SIGKILL 恢复实测 | 实现记录见 docs/PROGRESS.md「M1」 |
 | M2 | 完成（2026-11-22/23，含两轮评审修复 b79a580 + 7ce6437） | 7ce6437 | lint / typecheck / 47 tests / build 全过；权限分级、Task 幂等、Delivery 状态机、归档群组只读实测 | 设计见 docs/DATABASE.md，记录见 docs/PROGRESS.md「M2」「M2 Review Fix」「M2 Review Fix 2」 |
 | M3 | 完成（2026-11-23：认证 + Agent SDK，83 tests；含 M3 Review Fix） | de8ef4d | lint / typecheck / 83 tests / build 全过；dev/access、Challenge 重放、吊销断连、重连补齐、ticket 重放、活跃 TTL、邮箱唯一实测 | 设计见 docs/AUTH.md，记录见 docs/PROGRESS.md「M3」与「M3 Review Fix」 |
-| M4 | 完成（2026-11-23：服务端参与引擎 + SDK reply/skip；Review Fix 后 103 tests） | 6515983 | lint / typecheck / 103 tests / build 全过；双 Agent WSS、skip、hop/reply/rate 限制、回复确认与重试幂等实测 | 记录见 docs/PROGRESS.md「M4」「M4 Review Fix」；REST/Web UI 属 M8，每群组 Session 映射属 M6 |
+| M4 | 完成（2026-11-23：服务端参与引擎 + SDK reply/skip；Review Fix 2 后 111 tests；skip 诊断未实现） | 29671aa | lint / typecheck / 111 tests / build 全过；双 Agent WSS、hop/reply/rate 限制、本地重试与幂等、参与停止诊断实测 | 记录见 docs/PROGRESS.md「M4」「M4 Review Fix」「M4 Review Fix 2」；REST/Web UI 属 M8，每群组 Session 映射属 M6；skip 诊断列为未完成 |
 | M5 | 未开始 | | | |
 | M6 | 未开始 | | | |
 | M7 | 未开始 | | | |
