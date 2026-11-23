@@ -178,6 +178,22 @@ describe("agent sdk delivery handling", () => {
     ]);
   });
 
+  it("clears attempt tracking once the server confirms the ack", async () => {
+    const seen: number[] = [];
+    const { socket } = await openClient((_event, context) => {
+      seen.push(context.attempt);
+    });
+    socket.emit(eventFrame("evd_1"));
+    await flush();
+    socket.emit({ type: "ack.ok", deliveryIds: ["evd_1"] });
+    await flush();
+    // A redelivery after a confirmed ack starts at attempt 1 again; the map no
+    // longer grows with every event the agent has already processed.
+    socket.emit(eventFrame("evd_1"));
+    await flush();
+    expect(seen).toEqual([1, 1]);
+  });
+
   it("uses a one-time ticket instead of the session token in the socket URL", async () => {
     const { socket, harness } = await openClient();
     expect(socket.url).toContain("ticket=tkt_one");

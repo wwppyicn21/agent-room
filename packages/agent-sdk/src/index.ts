@@ -216,6 +216,10 @@ export class AgentClient {
           void this.handleDelivery(frame);
           return;
         }
+        if (frame.type === "ack.ok") {
+          this.forgetAcknowledged(frame.deliveryIds);
+          return;
+        }
         if (frame.type === "error") {
           if (!settled) {
             settled = true;
@@ -237,6 +241,12 @@ export class AgentClient {
         }
       });
     });
+  }
+
+  /** Drops attempt counters once the server confirms the ack. */
+  private forgetAcknowledged(value: unknown): void {
+    if (!Array.isArray(value)) return;
+    for (const id of value) this.deliveryAttempts.delete(String(id));
   }
 
   private async handleDelivery(frame: Record<string, unknown>): Promise<void> {
