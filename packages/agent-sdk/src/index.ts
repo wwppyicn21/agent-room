@@ -92,6 +92,21 @@ export function signChallenge(
   return signBytes(null, Buffer.from(canonical, "utf8"), privateKey).toString("base64");
 }
 
+export interface SendMessageOptions {
+  threadId?: string;
+  rootMessageId?: string;
+  replyToMessageId?: string;
+  clientMessageId?: string;
+}
+
+interface PendingReply {
+  readonly deliveryId: string;
+  readonly groupId: string;
+  readonly content: string;
+  readonly options: SendMessageOptions & { clientMessageId: string };
+  timer: ReturnType<typeof setTimeout> | null;
+}
+
 function defaultWebSocket(): new (url: string) => WebSocketLike {
   const ctor = (globalThis as unknown as { WebSocket?: new (url: string) => WebSocketLike })
     .WebSocket;
@@ -112,15 +127,13 @@ export class AgentClient {
   private readonly fetchImpl: typeof fetch;
   private readonly WebSocketImpl: new (url: string) => WebSocketLike;
   private socket: WebSocketLike | undefined;
+  private socketOpen = false;
   private token: string | undefined;
   private heartbeatTimer: ReturnType<typeof setInterval> | undefined;
   private readonly fingerprint: string;
   private readonly deliveryAttempts = new Map<string, number>();
-  private readonly pendingReplies = new Map<
-    string,
-    { deliveryId: string; timer: ReturnType<typeof setTimeout> }
-  >();
-  private readonly replyBackoffUntil = new Map<string, number>();
+  private readonly pendingReplies = new Map<string, PendingReply>();
+  private readonly replyTimers = new Map<string, ReturnType<typeof setTimeout>>();
 
   constructor(options: AgentClientOptions) {
     this.options = options;
@@ -221,12 +234,14 @@ export class AgentClient {
         const frame = JSON.parse(String(event.data)) as Record<string, unknown>;
         if (frame.type === "hello" && !settled) {
           settled = true;
+          this.socketOpen = true;
           this.startHeartbeat(frame.heartbeatMs as number);
           resolve({
             agentId: (frame.agent as { id: string }).id,
             heartbeatMs: frame.heartbeatMs as number,
             outstanding: frame.outstanding as number,
           });
+          this.flushPendingReplies();
           return;
         }
         if (frame.type === "event.deliver") {
@@ -260,7 +275,11 @@ export class AgentClient {
         }
       });
       socket.addEventListener("close", () => {
+        this.socketOpen = false;
         this.stopHeartbeat();
+        for (const clientMessageId of [...this.replyTimers.keys()]) {
+          this.clearReplyTimer(clientMessageId);
+        }
         if (!settled) {
           settled = true;
           reject(new Error("websocket closed before hello"));
@@ -289,12 +308,9 @@ export class AgentClient {
       const result = await handler(frame.event as AgentEvent, { deliveryId, attempt });
       if (result && result.action === "reply" && result.text.trim()) {
         const clientMessageId = `sdk-reply-${deliveryId}`;
-        if (
-          this.pendingReplies.has(clientMessageId) ||
-          Date.now() < (this.replyBackoffUntil.get(clientMessageId) ?? 0)
-        ) {
-          // The first attempt is still waiting for `message.sent` or backing off
-          // after a retryable error; keep the redelivery unacked.
+        if (this.pendingReplies.has(clientMessageId)) {
+          // One retry flow per delivery: a concurrent redelivery must not create
+          // a second pending send or timer.
           return;
         }
         const event = frame.event as AgentEvent;
@@ -303,13 +319,19 @@ export class AgentClient {
         const rootId =
           typeof event.payload.rootMessageId === "string" ? event.payload.rootMessageId : null;
         if (event.groupId) {
-          this.sendMessage(event.groupId, result.text, {
-            threadId: event.threadId ?? undefined,
-            rootMessageId: rootId ?? messageId ?? undefined,
-            replyToMessageId: messageId ?? undefined,
-            clientMessageId,
+          this.pendingReplies.set(clientMessageId, {
+            deliveryId,
+            groupId: event.groupId,
+            content: result.text,
+            options: {
+              threadId: event.threadId ?? undefined,
+              rootMessageId: rootId ?? messageId ?? undefined,
+              replyToMessageId: messageId ?? undefined,
+              clientMessageId,
+            },
+            timer: null,
           });
-          if (this.options.autoAck !== false) this.armReplyAck(clientMessageId, deliveryId);
+          this.sendPendingReply(clientMessageId);
         } else if (this.options.autoAck !== false) {
           // An event without a group cannot be answered; consume it.
           this.ack([deliveryId]);
@@ -327,59 +349,92 @@ export class AgentClient {
     }
   }
 
-  /** Waits for `message.sent` before acking the delivery behind an auto reply. */
-  private armReplyAck(clientMessageId: string, deliveryId: string): void {
-    const existing = this.pendingReplies.get(clientMessageId);
-    if (existing) clearTimeout(existing.timer);
+  /**
+   * One retry flow per pending reply. A pending reply is kept until the server
+   * confirms `message.sent`, a terminal error ends it, or the client is closed;
+   * retryable errors and confirmation timeouts resend the *same* payload with
+   * the same `clientMessageId`, so a lost confirmation cannot create a duplicate.
+   */
+  private sendPendingReply(clientMessageId: string): void {
+    const pending = this.pendingReplies.get(clientMessageId);
+    if (!pending) return;
+    this.clearReplyTimer(clientMessageId);
+    if (!this.socket || !this.socketOpen) {
+      // Keep the payload for a later reconnect; do not send on a closed socket.
+      pending.timer = null;
+      return;
+    }
+    this.sendMessage(pending.groupId, pending.content, pending.options);
+    this.armReplyAck(clientMessageId);
+  }
+
+  private armReplyAck(clientMessageId: string): void {
+    this.clearReplyTimer(clientMessageId);
     const timer = setTimeout(() => {
-      this.pendingReplies.delete(clientMessageId);
+      this.replyTimers.delete(clientMessageId);
+      const pending = this.pendingReplies.get(clientMessageId);
+      if (!pending) return;
+      pending.timer = null;
+      this.sendPendingReply(clientMessageId);
     }, this.options.replyAckTimeoutMs ?? 10_000);
     (timer as { unref?: () => void }).unref?.();
-    this.pendingReplies.set(clientMessageId, { deliveryId, timer });
+    this.replyTimers.set(clientMessageId, timer);
+    const pending = this.pendingReplies.get(clientMessageId);
+    if (pending) pending.timer = timer;
+  }
+
+  private clearReplyTimer(clientMessageId: string): void {
+    const timer = this.replyTimers.get(clientMessageId);
+    if (timer) clearTimeout(timer);
+    this.replyTimers.delete(clientMessageId);
+    const pending = this.pendingReplies.get(clientMessageId);
+    if (pending) pending.timer = null;
   }
 
   private confirmReply(clientMessageId: string): void {
     const pending = this.pendingReplies.get(clientMessageId);
     if (!pending) return;
-    clearTimeout(pending.timer);
+    this.clearReplyTimer(clientMessageId);
     this.pendingReplies.delete(clientMessageId);
-    this.replyBackoffUntil.delete(clientMessageId);
     if (this.options.autoAck !== false) this.ack([pending.deliveryId]);
   }
 
   private failReply(clientMessageId: string, code: string): void {
     const pending = this.pendingReplies.get(clientMessageId);
     if (!pending) return;
-    clearTimeout(pending.timer);
-    this.pendingReplies.delete(clientMessageId);
+    this.clearReplyTimer(clientMessageId);
     if (["conflict", "forbidden", "validation_error", "not_found"].includes(code)) {
       // The discussion chain is over or the request can never succeed: stop the
       // redelivery loop instead of retrying the same rejected reply.
+      this.pendingReplies.delete(clientMessageId);
       if (this.options.autoAck !== false) this.ack([pending.deliveryId]);
       return;
     }
-    // Retryable (rate_limited, internal_error, ...): keep the delivery unacked
-    // but back off so every redelivery does not hammer the server.
-    this.replyBackoffUntil.set(
-      clientMessageId,
-      Date.now() + (this.options.replyRetryBackoffMs ?? 5_000),
-    );
+    // Retryable (rate_limited, internal_error, ...): keep the reply pending and
+    // resend the same payload after a backoff.
+    const timer = setTimeout(() => {
+      this.replyTimers.delete(clientMessageId);
+      const current = this.pendingReplies.get(clientMessageId);
+      if (!current) return;
+      current.timer = null;
+      this.sendPendingReply(clientMessageId);
+    }, this.options.replyRetryBackoffMs ?? 5_000);
+    (timer as { unref?: () => void }).unref?.();
+    this.replyTimers.set(clientMessageId, timer);
+    pending.timer = timer;
+  }
+
+  private flushPendingReplies(): void {
+    for (const clientMessageId of [...this.pendingReplies.keys()]) {
+      this.sendPendingReply(clientMessageId);
+    }
   }
 
   ack(deliveryIds: string[]): void {
     this.send({ type: "event.ack", deliveryIds });
   }
 
-  sendMessage(
-    groupId: string,
-    content: string,
-    options: {
-      threadId?: string;
-      rootMessageId?: string;
-      replyToMessageId?: string;
-      clientMessageId?: string;
-    } = {},
-  ): void {
+  sendMessage(groupId: string, content: string, options: SendMessageOptions = {}): void {
     this.send({
       type: "message.send",
       groupId,
@@ -397,9 +452,12 @@ export class AgentClient {
 
   close(): void {
     this.stopHeartbeat();
-    for (const pending of this.pendingReplies.values()) clearTimeout(pending.timer);
+    for (const clientMessageId of [...this.replyTimers.keys()]) {
+      this.clearReplyTimer(clientMessageId);
+    }
+    this.replyTimers.clear();
     this.pendingReplies.clear();
-    this.replyBackoffUntil.clear();
+    this.socketOpen = false;
     this.socket?.close();
     this.socket = undefined;
   }

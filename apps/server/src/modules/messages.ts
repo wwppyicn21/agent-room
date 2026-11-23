@@ -18,6 +18,11 @@ import {
   rootMessageIdOf,
 } from "./participation.js";
 import {
+  participationReasonOf,
+  recordParticipationStop,
+  withParticipationReason,
+} from "./participation.js";
+import {
   type Actor,
   requireActiveGroup,
   requireGroupMember,
@@ -37,6 +42,42 @@ export interface PostMessageInput {
 }
 
 export function postMessage(ctx: RoomContext, input: PostMessageInput): MessageRow {
+  try {
+    return postMessageInTransaction(ctx, input);
+  } catch (error) {
+    recordRejectedAgentMessage(ctx, input, error);
+    throw error;
+  }
+}
+
+function recordRejectedAgentMessage(
+  ctx: RoomContext,
+  input: PostMessageInput,
+  error: unknown,
+): void {
+  if (input.actor.type !== "agent") return;
+  const reason = participationReasonOf(error);
+  if (!reason) return;
+  try {
+    appendEvent(ctx.db, {
+      type: "participation.stopped",
+      actor: { type: "system", id: "participation-engine" },
+      groupId: input.groupId,
+      payload: {
+        reason,
+        rootMessageId: input.rootMessageId ?? input.replyToMessageId ?? null,
+        senderType: "agent",
+        senderId: input.actor.id,
+        agentId: input.actor.id,
+      },
+      createdAt: ctx.now(),
+    });
+  } catch {
+    // Diagnostics must never mask the original rejection.
+  }
+}
+
+function postMessageInTransaction(ctx: RoomContext, input: PostMessageInput): MessageRow {
   return ctx.db.transaction((transaction) => {
     const db = transaction as unknown as RoomDb;
     const group = requireActiveGroup(db, input.groupId);
@@ -82,7 +123,10 @@ export function postMessage(ctx: RoomContext, input: PostMessageInput): MessageR
 
     if (input.actor.type === "agent") {
       if (!group.allowAgentMessages) {
-        throw new ForbiddenError(`group ${input.groupId} does not allow agent messages`);
+        throw withParticipationReason(
+          new ForbiddenError(`group ${input.groupId} does not allow agent messages`),
+          "agent_messages_disallowed",
+        );
       }
       const parentId = input.replyToMessageId ?? input.rootMessageId;
       if (!parentId) {
@@ -98,13 +142,19 @@ export function postMessage(ctx: RoomContext, input: PostMessageInput): MessageR
       effectiveRoot = rootMessageIdOf(parent);
       hop = parent.hop + 1;
       if (hop > group.maxHops) {
-        throw new ConflictError(
-          `hop ${hop} exceeds the group limit of ${group.maxHops}; the discussion chain stopped`,
+        throw withParticipationReason(
+          new ConflictError(
+            `hop ${hop} exceeds the group limit of ${group.maxHops}; the discussion chain stopped`,
+          ),
+          "hop_limit",
         );
       }
       if (countAgentRepliesForRoot(db, effectiveRoot) >= group.maxRepliesPerRoot) {
-        throw new ConflictError(
-          `root ${effectiveRoot} already has ${group.maxRepliesPerRoot} agent replies`,
+        throw withParticipationReason(
+          new ConflictError(
+            `root ${effectiveRoot} already has ${group.maxRepliesPerRoot} agent replies`,
+          ),
+          "reply_budget",
         );
       }
       assertAgentRateLimit(db, input.actor.id, group.maxAgentMessagesPerMinute, ctx.now());
@@ -172,6 +222,19 @@ export function postMessage(ctx: RoomContext, input: PostMessageInput): MessageR
       message: saved,
       presenceTtlMs: input.presenceTtlMs ?? AGENT_PRESENCE_TTL_MS,
     });
+    if (
+      decision.reason === "hop_limit" ||
+      decision.reason === "reply_budget" ||
+      decision.reason === "mode_disabled"
+    ) {
+      recordParticipationStop(db, {
+        groupId: input.groupId,
+        message: saved,
+        reason: decision.reason,
+        agentId: input.actor.type === "agent" ? input.actor.id : null,
+        createdAt: now,
+      });
+    }
     for (const agentId of decision.agentIds) {
       enqueueDelivery(db, { agentId, eventId: event.id, createdAt: now });
     }

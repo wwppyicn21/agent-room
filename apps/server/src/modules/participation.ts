@@ -1,7 +1,9 @@
 import { and, eq, isNull, sql } from "drizzle-orm";
-import { agents, groupMembers, messages, type GroupRow, type MessageRow } from "@room/database";
+import { agents, groupMembers, messages, type GroupRow } from "@room/database";
+import type { EventRow, MessageRow } from "@room/database";
 import type { RoomContext, RoomDb } from "./context.js";
 import { RateLimitError } from "./errors.js";
+import { appendEvent } from "./events.js";
 import { liveSessionAgentIds } from "./agentAuth.js";
 
 /**
@@ -126,4 +128,46 @@ export function decideParticipation(
   }
 
   return { agentIds: candidates.map((agent) => agent.id), reason: "delivered" };
+}
+
+/**
+ * Internal diagnostic for a stopped participation chain (plan §9.2). It is an
+ * event, never a public message, and it creates no Agent delivery. Payloads
+ * deliberately omit message content and any credentials.
+ */
+export function recordParticipationStop(
+  db: RoomDb,
+  input: {
+    groupId: string;
+    message: Pick<MessageRow, "id" | "rootMessageId" | "senderType" | "senderId">;
+    reason: string;
+    agentId?: string | null;
+    createdAt: number;
+  },
+): EventRow {
+  return appendEvent(db, {
+    type: "participation.stopped",
+    actor: { type: "system", id: "participation-engine" },
+    groupId: input.groupId,
+    payload: {
+      reason: input.reason,
+      rootMessageId: rootMessageIdOf(input.message),
+      senderType: input.message.senderType,
+      senderId: input.message.senderId,
+      agentId: input.agentId ?? null,
+    },
+    createdAt: input.createdAt,
+  });
+}
+
+/** Reason attached to a rejected Agent send, used for the diagnostic event. */
+export function withParticipationReason<T extends Error>(error: T, reason: string): T {
+  (error as T & { participationReason?: string }).participationReason = reason;
+  return error;
+}
+
+export function participationReasonOf(error: unknown): string | null {
+  if (error instanceof RateLimitError) return "rate_limit";
+  const reason = (error as { participationReason?: unknown } | null)?.participationReason;
+  return typeof reason === "string" ? reason : null;
 }

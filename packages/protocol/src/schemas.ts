@@ -83,6 +83,7 @@ export const EVENT_TYPES = [
   "agent.key_revoked",
   "agent.status.changed",
   "message.created",
+  "participation.stopped",
   "thread.created",
   "thread.closed",
   "task.created",

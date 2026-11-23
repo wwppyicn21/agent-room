@@ -66,6 +66,15 @@ describe("AI participation engine", () => {
     return agentId;
   }
 
+  function stopEvents(): Array<Record<string, unknown>> {
+    return room.ctx.db
+      .select()
+      .from(events)
+      .all()
+      .filter((event) => event.type === "participation.stopped")
+      .map((event) => JSON.parse(event.payload) as Record<string, unknown>);
+  }
+
   function messagesForGroup(groupId: string): MessageRow[] {
     return room.ctx.db.select().from(messages).where(eq(messages.groupId, groupId)).all();
   }
@@ -114,6 +123,150 @@ describe("AI participation engine", () => {
       content: "please look @agentB",
     });
     expect(deliveredAgentIds(groupId)).toEqual([b]);
+  });
+
+  it("records a hop-limit diagnostic when a deeper reply is rejected", () => {
+    const { groupId, a, b } = setup({ maxHops: 1 });
+    const source = postMessage(room.ctx, {
+      groupId,
+      actor: { type: "user", id: owner },
+      content: "root",
+    });
+    const first = postMessage(room.ctx, {
+      groupId,
+      actor: { type: "agent", id: a },
+      content: "hop one",
+      rootMessageId: source.id,
+      replyToMessageId: source.id,
+    });
+    expect(() =>
+      postMessage(room.ctx, {
+        groupId,
+        actor: { type: "agent", id: b },
+        content: "too deep",
+        rootMessageId: source.id,
+        replyToMessageId: first.id,
+      }),
+    ).toThrow(ConflictError);
+
+    const stops = stopEvents();
+    expect(stops).toHaveLength(1);
+    expect(stops[0]).toMatchObject({
+      reason: "hop_limit",
+      rootMessageId: source.id,
+      senderType: "agent",
+      senderId: b,
+    });
+    expect(stops[0]).not.toHaveProperty("content");
+    expect(
+      room.ctx.db
+        .select()
+        .from(messages)
+        .all()
+        .filter((message) => message.content === "too deep"),
+    ).toHaveLength(0);
+  });
+
+  it("records a reply-budget diagnostic when the chain stops", () => {
+    const { groupId, a } = setup({ maxRepliesPerRoot: 1 });
+    const source = postMessage(room.ctx, {
+      groupId,
+      actor: { type: "user", id: owner },
+      content: "root",
+    });
+    postMessage(room.ctx, {
+      groupId,
+      actor: { type: "agent", id: a },
+      content: "only reply",
+      rootMessageId: source.id,
+      replyToMessageId: source.id,
+    });
+    const stops = stopEvents();
+    expect(stops).toHaveLength(1);
+    expect(stops[0]).toMatchObject({ reason: "reply_budget", rootMessageId: source.id });
+    expect(stops[0]).not.toHaveProperty("content");
+  });
+
+  it("records a rate-limit diagnostic for a rejected send and writes no message", () => {
+    const { groupId, a } = setup({ maxAgentMessagesPerMinute: 1 });
+    const source = postMessage(room.ctx, {
+      groupId,
+      actor: { type: "user", id: owner },
+      content: "root",
+    });
+    postMessage(room.ctx, {
+      groupId,
+      actor: { type: "agent", id: a },
+      content: "first",
+      rootMessageId: source.id,
+      replyToMessageId: source.id,
+    });
+    expect(() =>
+      postMessage(room.ctx, {
+        groupId,
+        actor: { type: "agent", id: a },
+        content: "rejected",
+        rootMessageId: source.id,
+        replyToMessageId: source.id,
+        clientMessageId: "rate-stop",
+      }),
+    ).toThrow(RateLimitError);
+
+    const stops = stopEvents();
+    expect(stops.at(-1)).toMatchObject({ reason: "rate_limit", senderId: a });
+    expect(stops.at(-1)).not.toHaveProperty("content");
+    expect(messagesForGroup(groupId)).toHaveLength(2);
+    expect(
+      room.ctx.db
+        .select()
+        .from(messages)
+        .all()
+        .filter((message) => message.clientMessageId === "rate-stop"),
+    ).toHaveLength(0);
+  });
+
+  it("keeps exactly one message, event and delivery when a lost confirmation is retried", () => {
+    const { groupId, a, b } = setup();
+    const source = postMessage(room.ctx, {
+      groupId,
+      actor: { type: "user", id: owner },
+      content: "root",
+    });
+    const send = () =>
+      postMessage(room.ctx, {
+        groupId,
+        actor: { type: "agent", id: a },
+        content: "reply committed once",
+        rootMessageId: source.id,
+        replyToMessageId: source.id,
+        clientMessageId: "lost-confirmation",
+      });
+    const first = send();
+    const retried = send();
+    expect(retried.id).toBe(first.id);
+    expect(
+      room.ctx.db
+        .select()
+        .from(messages)
+        .all()
+        .filter((message) => message.clientMessageId === "lost-confirmation"),
+    ).toHaveLength(1);
+    const createdEvents = room.ctx.db
+      .select()
+      .from(events)
+      .all()
+      .filter((event) => event.type === "message.created")
+      .filter((event) => {
+        const payload = JSON.parse(event.payload) as { messageId?: string };
+        return payload.messageId === first.id;
+      });
+    expect(createdEvents).toHaveLength(1);
+    const deliveriesToB = room.ctx.db
+      .select()
+      .from(agentDeliveries)
+      .all()
+      .filter((delivery) => delivery.agentId === b);
+    expect(deliveriesToB).toHaveLength(2);
   });
 
   it("does not treat an email-like string as a mention", () => {

@@ -10,6 +10,7 @@ import {
 } from "../src/index.js";
 
 const flush = (): Promise<void> => new Promise((resolve) => setTimeout(resolve, 25));
+const wait = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
 
 class FakeSocket implements WebSocketLike {
   static instances: FakeSocket[] = [];
@@ -148,6 +149,10 @@ function ackFrames(socket: FakeSocket): Record<string, unknown>[] {
   return socket.frames().filter((frame) => frame.type === "event.ack");
 }
 
+function replyFrames(socket: FakeSocket): Record<string, unknown>[] {
+  return socket.frames().filter((frame) => frame.type === "message.send");
+}
+
 describe("agent sdk delivery handling", () => {
   it("never acknowledges a delivery when no handler is configured", async () => {
     const { socket } = await openClient();
@@ -210,21 +215,143 @@ describe("agent sdk delivery handling", () => {
     expect(ackFrames(socket)).toHaveLength(0);
   });
 
-  it("keeps the delivery unacked and backs off after a retryable reply error", async () => {
-    const { socket } = await openClient(() => ({ action: "reply", text: "hello back" }));
+  it("resends the same reply after a retryable error backoff, then acks on confirmation", async () => {
+    const { socket } = await openClient(() => ({ action: "reply", text: "hello back" }), {
+      replyRetryBackoffMs: 20,
+      replyAckTimeoutMs: 1_000,
+    });
     socket.emit(eventFrame());
-    await flush();
+    await wait(5);
+    expect(replyFrames(socket)).toHaveLength(1);
     socket.emit({
       type: "error",
       code: "rate_limited",
       message: "slow down",
       clientMessageId: "sdk-reply-evd_1",
     });
-    await flush();
+    await wait(10);
+    expect(replyFrames(socket)).toHaveLength(1);
     expect(ackFrames(socket)).toHaveLength(0);
+
+    await wait(40);
+    const retried = replyFrames(socket);
+    expect(retried).toHaveLength(2);
+    expect(retried[1]).toMatchObject({
+      content: "hello back",
+      clientMessageId: "sdk-reply-evd_1",
+    });
+
+    socket.emit({
+      type: "message.sent",
+      messageId: "msg_2",
+      seq: 2,
+      clientMessageId: "sdk-reply-evd_1",
+    });
+    await wait(60);
+    expect(replyFrames(socket)).toHaveLength(2);
+    expect(ackFrames(socket)).toHaveLength(1);
+  });
+
+  it("resends after the confirmation timeout with the same client id, then stops on confirmation", async () => {
+    const { socket } = await openClient(() => ({ action: "reply", text: "hello back" }), {
+      replyAckTimeoutMs: 20,
+      replyRetryBackoffMs: 1_000,
+    });
     socket.emit(eventFrame());
+    await wait(5);
+    expect(replyFrames(socket)).toHaveLength(1);
+    await wait(60);
+    const retried = replyFrames(socket);
+    expect(retried.length).toBeGreaterThanOrEqual(2);
+    expect(retried[1]).toMatchObject({
+      content: "hello back",
+      clientMessageId: "sdk-reply-evd_1",
+    });
+
+    socket.emit({
+      type: "message.sent",
+      messageId: "msg_2",
+      seq: 2,
+      clientMessageId: "sdk-reply-evd_1",
+    });
+    await wait(60);
+    const countAfterAck = replyFrames(socket).length;
+    await wait(60);
+    expect(replyFrames(socket)).toHaveLength(countAfterAck);
+    expect(ackFrames(socket)).toHaveLength(1);
+  });
+
+  it("keeps a single retry flow when the same delivery arrives twice", async () => {
+    const { socket } = await openClient(() => ({ action: "reply", text: "hello back" }), {
+      replyAckTimeoutMs: 30,
+      replyRetryBackoffMs: 1_000,
+    });
+    socket.emit(eventFrame());
+    socket.emit(eventFrame());
+    await wait(5);
+    expect(replyFrames(socket)).toHaveLength(1);
+    // One confirmation timeout produces exactly one retry, not one per redelivery.
+    await wait(40);
+    expect(replyFrames(socket)).toHaveLength(2);
+    socket.emit({
+      type: "message.sent",
+      messageId: "msg_2",
+      seq: 2,
+      clientMessageId: "sdk-reply-evd_1",
+    });
+    await wait(5);
+    expect(ackFrames(socket)).toHaveLength(1);
+    await wait(80);
+    expect(replyFrames(socket)).toHaveLength(2);
+  });
+
+  it("never sends after close and clears running timers", async () => {
+    const { client, socket } = await openClient(() => ({ action: "reply", text: "hello back" }), {
+      replyAckTimeoutMs: 20,
+    });
+    socket.emit(eventFrame());
+    await wait(5);
+    expect(replyFrames(socket)).toHaveLength(1);
+    client.close();
+    await wait(80);
+    expect(replyFrames(socket)).toHaveLength(1);
+  });
+
+  it("keeps a pending reply across a socket close and resends it on reconnect", async () => {
+    const { client, socket } = await openClient(() => ({ action: "reply", text: "hello back" }), {
+      replyAckTimeoutMs: 20,
+      replyRetryBackoffMs: 1_000,
+    });
+    socket.emit(eventFrame());
+    await wait(5);
+    expect(replyFrames(socket)).toHaveLength(1);
+
+    socket.close();
+    await wait(60);
+    expect(replyFrames(socket)).toHaveLength(1);
+
+    const reopened = client.open();
     await flush();
-    expect(socket.frames().filter((frame) => frame.type === "message.send")).toHaveLength(1);
+    const next = FakeSocket.instances.at(-1)!;
+    next.emit({
+      type: "hello",
+      heartbeatMs: 60_000,
+      agent: { id: "agt_1" },
+      outstanding: 0,
+    });
+    await reopened;
+    await wait(5);
+    expect(replyFrames(next)).toHaveLength(1);
+    expect(replyFrames(next)[0]).toMatchObject({ clientMessageId: "sdk-reply-evd_1" });
+
+    next.emit({
+      type: "message.sent",
+      messageId: "msg_2",
+      seq: 2,
+      clientMessageId: "sdk-reply-evd_1",
+    });
+    await wait(5);
+    expect(ackFrames(next)).toHaveLength(1);
   });
 
   it("acks the delivery after a terminal reply error so the chain stops", async () => {
@@ -239,6 +366,8 @@ describe("agent sdk delivery handling", () => {
     });
     await flush();
     expect(ackFrames(socket)).toHaveLength(1);
+    await wait(40);
+    expect(replyFrames(socket)).toHaveLength(1);
   });
 
   it("does not send a message when the handler decides to skip", async () => {

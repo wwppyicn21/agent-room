@@ -454,3 +454,13 @@ $ pnpm build       # packages/protocol, database, agent-sdk, apps/server Done
 - 新增/更新测试：`apps/server/test/participation.test.ts`（mention 邮箱边界、预算耗尽后幂等重试、限流后幂等重试）、`packages/agent-sdk/test/delivery.test.ts`（ack 等待 message.sent、等待期间不重发、可重试错误退避、终止错误 ack）。
 - 结论：审查报告中的优先项与 mention 边界已修复；M4 仍标完成，Session 映射归 M6、前端归 M8 已在计划中同步。
 - 提交：`6515983`（修复 + 测试 + 文档）。
+
+### M4 Review Fix 2（2026-11-23）
+
+按第二轮审查补齐自动回复的本地重试、参与停止诊断与回归测试。
+
+- **SDK 本地重试**（`packages/agent-sdk/src/index.ts`）：待确认回复保存 `groupId` / `content` / 发送选项 / `clientMessageId = sdk-reply-<deliveryId>`。收到 `rate_limited` / `internal_error` 等可重试错误后，按 `replyRetryBackoffMs`（默认 5s）重发**同一 payload**；`replyAckTimeoutMs`（默认 10s）到期同样重发，不重新生成文本。`message.sent` 匹配后清除状态并 ack；`conflict` / `forbidden` / `validation_error` / `not_found` 终止并 ack；`close()` 清理全部 pending 与定时器。同一 delivery 并发重投只保留一个待发送项和一个定时器。socket 意外关闭时保留 pending、清掉运行中的定时器；重新 `open()` 后在 hello 之后重发。
+- **服务端诊断**（`packages/protocol/src/schemas.ts`、`apps/server/src/modules/participation.ts`、`apps/server/src/modules/messages.ts`）：新增事件类型 `participation.stopped`，payload 只含 `reason` / `rootMessageId` / `senderType` / `senderId` / `agentId`，不含消息正文或凭据。hop / reply budget / mode disabled 的停止在消息事务内记录；被拒绝的 Agent 发送（`rate_limit` / `hop_limit` / `reply_budget` / `agent_messages_disallowed`）在主事务回滚后记录，不创建 message、event（message.created）以外的公开内容，也不创建任何 Agent delivery。
+- **测试**：`packages/agent-sdk/test/delivery.test.ts` 11 → 15（退避结束后重发同一 payload 并确认、确认超时后重发、同一 delivery 并发只保留一个重试流程、close 后不再发送、断线保留 pending 并在重连后重发）；`apps/server/test/participation.test.ts` 15 → 19（hop 拒绝诊断、reply budget 诊断、rate limit 诊断且不写消息、确认丢失重试后只有一条消息 / 一个 `message.created` / 正确投递）。
+- **验证**：`pnpm lint` exit 0；`pnpm typecheck` exit 0；`pnpm format:check` 通过；`pnpm test` 15 files / 111 tests 通过；`pnpm build` 通过。
+- **未完成**：skip 的内部诊断事件。SDK 的 skip 目前只 ack、不上报服务器，服务器无法区分 skip 与“没有回复”；已在 `docs/PLAN.md` M4 工作项中标注为未完成，不把该项验收写成已通过。

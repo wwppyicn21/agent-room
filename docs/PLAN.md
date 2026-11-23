@@ -1404,7 +1404,9 @@ Linux systemd 服务至少包含：
 - rootMessageId、hop 和 budget；
 - 消息频率限制；
 - 忽略系统和 Task progress 事件；
+- 参与停止诊断（`participation.stopped` 事件：hop / reply budget / rate limit / mode 停止原因，不产生公开消息与 delivery）；
 - （归属调整：每群组独立的 Agent Session 映射由 M6 DSH Adapter 实现；前端显示 Agent 发言与在线状态由 M8 React Web Client 实现）
+- **未完成**：skip 的内部诊断事件（SDK 的 skip 当前只 ack，不上报原因；服务器无法区分 skip 与未回复）
 
 ### 验收
 
