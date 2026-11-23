@@ -1,5 +1,5 @@
 export type ErrorCode =
-  "validation_error" | "not_found" | "forbidden" | "conflict" | "internal_error";
+  "validation_error" | "unauthorized" | "forbidden" | "not_found" | "conflict" | "internal_error";
 
 export class DomainError extends Error {
   readonly code: ErrorCode;
@@ -10,6 +10,12 @@ export class DomainError extends Error {
     this.name = new.target.name;
     this.code = code;
     this.statusCode = statusCode;
+  }
+}
+
+export class UnauthorizedError extends DomainError {
+  constructor(message = "authentication required") {
+    super(message, "unauthorized", 401);
   }
 }
 

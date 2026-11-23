@@ -1,0 +1,453 @@
+import { generateKeyPairSync, sign, type KeyObject } from "node:crypto";
+import { eq } from "drizzle-orm";
+import type { FastifyInstance } from "fastify";
+import { loadConfig } from "@room/config";
+import { agentDeliveries, agents, users } from "@room/database";
+import { buildAgentChallengeString } from "@room/protocol";
+import { afterEach, describe, expect, it } from "vitest";
+import { buildApp } from "../src/app.js";
+import { sweepStaleSessions } from "../src/modules/agentAuth.js";
+import { addMember } from "../src/modules/groups.js";
+import { postMessage } from "../src/modules/messages.js";
+import { registerAgentWithKey } from "../src/modules/agents.js";
+import { createTestRoom, seedGroup, seedUser, type TestRoom } from "./helpers.js";
+
+interface TestSocket {
+  addEventListener(type: "message", listener: (event: { data: unknown }) => void): void;
+  send(data: string): void;
+  close(): void;
+}
+
+class Frames {
+  private readonly socket: TestSocket;
+  private readonly queue: Record<string, unknown>[] = [];
+  private readonly waiters: ((frame: Record<string, unknown>) => void)[] = [];
+
+  constructor(socket: TestSocket) {
+    this.socket = socket;
+    socket.addEventListener("message", (event) => {
+      const frame = JSON.parse(String(event.data)) as Record<string, unknown>;
+      const waiter = this.waiters.shift();
+      if (waiter) waiter(frame);
+      else this.queue.push(frame);
+    });
+  }
+
+  next(timeoutMs = 4_000): Promise<Record<string, unknown>> {
+    const queued = this.queue.shift();
+    if (queued) return Promise.resolve(queued);
+    return new Promise((resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error("timed out waiting for a frame")), timeoutMs);
+      this.waiters.push((frame) => {
+        clearTimeout(timer);
+        resolve(frame);
+      });
+    });
+  }
+
+  send(frame: Record<string, unknown>): void {
+    this.socket.send(JSON.stringify(frame));
+  }
+
+  close(): void {
+    this.socket.close();
+  }
+
+  async nextOf(type: string): Promise<Record<string, unknown>> {
+    for (let i = 0; i < 10; i += 1) {
+      const frame = await this.next();
+      if (frame.type === type) return frame;
+    }
+    throw new Error(`no ${type} frame arrived`);
+  }
+}
+
+interface Harness {
+  room: TestRoom;
+  app: FastifyInstance;
+  baseUrl: string;
+}
+
+const baseUrls = new WeakMap<FastifyInstance, string>();
+
+const open: Harness[] = [];
+
+async function setup(): Promise<Harness> {
+  const room = createTestRoom();
+  const app = await buildApp({
+    config: loadConfig({ LOG_LEVEL: "silent" }),
+    database: room.handle,
+  });
+  await app.listen({ host: "127.0.0.1", port: 0 });
+  const address = app.server.address();
+  if (!address || typeof address === "string") throw new Error("server has no TCP address");
+  const baseUrl = `ws://127.0.0.1:${address.port}`;
+  baseUrls.set(app, baseUrl);
+  const harness = { room, app, baseUrl };
+  open.push(harness);
+  return harness;
+}
+
+afterEach(async () => {
+  for (const harness of open.splice(0)) {
+    await harness.app.close();
+    harness.room.close();
+  }
+});
+
+function dev(userId: string): { headers: Record<string, string> } {
+  return { headers: { "x-dev-user-id": userId } };
+}
+
+function pair(): { publicKey: KeyObject; privateKey: KeyObject; pem: string } {
+  const keys = generateKeyPairSync("ed25519");
+  return {
+    publicKey: keys.publicKey,
+    privateKey: keys.privateKey,
+    pem: keys.publicKey.export({ type: "spki", format: "pem" }).toString(),
+  };
+}
+
+async function completeConnect(
+  app: FastifyInstance,
+  keys: { privateKey: KeyObject },
+  fingerprint: string,
+): Promise<{
+  statusCode: number;
+  body: Record<string, unknown>;
+  challenge?: Record<string, unknown>;
+}> {
+  const challengeResponse = await app.inject({
+    method: "POST",
+    url: "/api/v1/agent/challenge",
+    payload: { fingerprint, clientNonce: "client-nonce-1" },
+  });
+  if (challengeResponse.statusCode !== 200) {
+    return { statusCode: challengeResponse.statusCode, body: challengeResponse.json() };
+  }
+  const challenge = challengeResponse.json();
+  const canonical = buildAgentChallengeString({
+    serverId: challenge.serverId,
+    challengeId: challenge.challengeId,
+    nonce: challenge.nonce,
+    clientNonce: challenge.clientNonce,
+    agentId: challenge.agentId,
+    keyFingerprint: challenge.keyFingerprint,
+    expiresAt: Date.parse(challenge.expiresAt),
+    purpose: challenge.purpose,
+    protocolVersion: challenge.protocolVersion,
+  });
+  const signature = sign(null, Buffer.from(canonical, "utf8"), keys.privateKey).toString("base64");
+  const connect = await app.inject({
+    method: "POST",
+    url: "/api/v1/agent/connect",
+    payload: { challengeId: challenge.challengeId, signature },
+  });
+  return { statusCode: connect.statusCode, body: connect.json(), challenge };
+}
+
+type WebSocketConstructor = new (url: string) => TestSocket & {
+  addEventListener(type: "open", listener: () => void): void;
+  addEventListener(type: "error", listener: () => void): void;
+};
+
+async function openSocket(app: FastifyInstance, token: string): Promise<Frames> {
+  const baseUrl = baseUrls.get(app);
+  if (!baseUrl) throw new Error("test app has no base url");
+  const Constructor = (globalThis as unknown as { WebSocket: WebSocketConstructor }).WebSocket;
+  const socket = new Constructor(
+    `${baseUrl}/api/v1/agent/connect?token=${encodeURIComponent(token)}`,
+  );
+  await new Promise<void>((resolve, reject) => {
+    socket.addEventListener("open", () => resolve());
+    socket.addEventListener("error", () => reject(new Error("websocket failed to open")));
+  });
+  return new Frames(socket);
+}
+
+describe("dev auth and agent registration", () => {
+  it("requires a provisioned, active user for admin routes", async () => {
+    const { room, app } = await setup();
+    const owner = seedUser(room.ctx, "owner", "owner");
+
+    expect((await app.inject({ method: "GET", url: "/api/v1/me" })).statusCode).toBe(401);
+    expect(
+      (
+        await app.inject({
+          method: "GET",
+          url: "/api/v1/me",
+          headers: { "x-dev-user-id": "usr_none" },
+        })
+      ).statusCode,
+    ).toBe(401);
+
+    const me = await app.inject({ method: "GET", url: "/api/v1/me", ...dev(owner) });
+    expect(me.statusCode).toBe(200);
+    expect(me.json().user.id).toBe(owner);
+
+    room.ctx.db.update(users).set({ status: "disabled" }).where(eq(users.id, owner)).run();
+    expect((await app.inject({ method: "GET", url: "/api/v1/me", ...dev(owner) })).statusCode).toBe(
+      403,
+    );
+  });
+
+  it("only owners and admins can register agents", async () => {
+    const { room, app } = await setup();
+    const owner = seedUser(room.ctx, "owner", "owner");
+    const member = seedUser(room.ctx, "member");
+    const keys = pair();
+    const body = { displayName: "dsh", runtime: "dsh", publicKey: keys.pem };
+
+    const denied = await app.inject({
+      method: "POST",
+      url: "/api/v1/agents",
+      ...dev(member),
+      payload: body,
+    });
+    expect(denied.statusCode).toBe(403);
+
+    const created = await app.inject({
+      method: "POST",
+      url: "/api/v1/agents",
+      ...dev(owner),
+      payload: body,
+    });
+    expect(created.statusCode).toBe(201);
+    expect(created.json().key.fingerprint).toMatch(/^[0-9a-f]{64}$/);
+    expect(created.json().agent.displayName).toBe("dsh");
+  });
+
+  it("never derives identity from an unregistered fingerprint or a forged agentId", async () => {
+    const { room, app } = await setup();
+    const owner = seedUser(room.ctx, "owner", "owner");
+    const first = pair();
+    const second = pair();
+    const agent = registerAgentWithKey(room.ctx, {
+      displayName: "a1",
+      runtime: "test",
+      publicKey: first.pem,
+      actorUserId: owner,
+    });
+    const other = registerAgentWithKey(room.ctx, {
+      displayName: "a2",
+      runtime: "test",
+      publicKey: second.pem,
+      actorUserId: owner,
+    });
+
+    const unknown = await app.inject({
+      method: "POST",
+      url: "/api/v1/agent/challenge",
+      payload: { fingerprint: "0".repeat(64) },
+    });
+    expect(unknown.statusCode).toBe(401);
+
+    const forged = await app.inject({
+      method: "POST",
+      url: "/api/v1/agent/challenge",
+      payload: { fingerprint: agent.key.fingerprint, agentId: other.agent.id },
+    });
+    expect(forged.statusCode).toBe(401);
+  });
+});
+
+describe("agent challenge/response", () => {
+  it("connects with a valid signature and refuses to reuse the challenge", async () => {
+    const { room, app } = await setup();
+    const owner = seedUser(room.ctx, "owner", "owner");
+    const keys = pair();
+    const { key } = registerAgentWithKey(room.ctx, {
+      displayName: "dsh",
+      runtime: "dsh",
+      publicKey: keys.pem,
+      actorUserId: owner,
+    });
+
+    const first = await completeConnect(app, keys, key.fingerprint);
+    expect(first.statusCode).toBe(200);
+    expect(first.body.sessionToken).toMatch(/^[A-Za-z0-9_-]{40,}$/);
+
+    const replay = await app.inject({
+      method: "POST",
+      url: "/api/v1/agent/connect",
+      payload: { challengeId: String(first.challenge!.challengeId), signature: "A".repeat(64) },
+    });
+    expect(replay.statusCode).toBe(401);
+  });
+
+  it("rejects a signature made with a different key", async () => {
+    const { room, app } = await setup();
+    const owner = seedUser(room.ctx, "owner", "owner");
+    const keys = pair();
+    const impostor = pair();
+    const { key } = registerAgentWithKey(room.ctx, {
+      displayName: "dsh",
+      runtime: "dsh",
+      publicKey: keys.pem,
+      actorUserId: owner,
+    });
+    const result = await completeConnect(app, impostor, key.fingerprint);
+    expect(result.statusCode).toBe(401);
+  });
+
+  it("revokes a key, disconnects the live socket and refuses new connects", async () => {
+    const { room, app } = await setup();
+    const owner = seedUser(room.ctx, "owner", "owner");
+    const keys = pair();
+    const { agent, key } = registerAgentWithKey(room.ctx, {
+      displayName: "dsh",
+      runtime: "dsh",
+      publicKey: keys.pem,
+      actorUserId: owner,
+    });
+    const connected = await completeConnect(app, keys, key.fingerprint);
+    const frames = await openSocket(app, String(connected.body.sessionToken));
+    expect((await frames.nextOf("hello")).agent).toMatchObject({ id: agent.id });
+
+    const revoked = await app.inject({
+      method: "POST",
+      url: `/api/v1/agents/${agent.id}/keys/${key.id}/revoke`,
+      ...dev(owner),
+    });
+    expect(revoked.statusCode).toBe(200);
+    const frame = await frames.next();
+    expect(frame).toMatchObject({ type: "error", code: "session_closed" });
+
+    expect((await completeConnect(app, keys, key.fingerprint)).statusCode).toBe(401);
+  });
+});
+
+describe("agent websocket deliveries", () => {
+  it("delivers, acks, and redelivers an unacked event after reconnect", async () => {
+    const { room, app } = await setup();
+    const owner = seedUser(room.ctx, "owner", "owner");
+    const groupId = seedGroup(room.ctx, owner);
+    const keys = pair();
+    const { agent, key } = registerAgentWithKey(room.ctx, {
+      displayName: "dsh",
+      runtime: "dsh",
+      publicKey: keys.pem,
+      actorUserId: owner,
+    });
+    addMember(room.ctx, { groupId, actorUserId: owner, memberType: "agent", memberId: agent.id });
+    postMessage(room.ctx, { groupId, actor: { type: "user", id: owner }, content: "first" });
+
+    const first = await completeConnect(app, keys, key.fingerprint);
+    const frames = await openSocket(app, String(first.body.sessionToken));
+    const hello = await frames.nextOf("hello");
+    expect(hello.outstanding).toBe(1);
+    const delivery = await frames.nextOf("event.deliver");
+    expect((delivery.event as Record<string, unknown>).eventType).toBe("message.created");
+    const deliveryId = delivery.deliveryId as string;
+
+    // Close without acking: the delivery must stay recoverable.
+    frames.close();
+
+    const second = await completeConnect(app, keys, key.fingerprint);
+    const frames2 = await openSocket(app, String(second.body.sessionToken));
+    await frames2.nextOf("hello");
+    const redelivered = await frames2.nextOf("event.deliver");
+    expect(redelivered.deliveryId).toBe(deliveryId);
+
+    frames2.send({ type: "event.ack", deliveryIds: [deliveryId] });
+    const ack = await frames2.nextOf("ack.ok");
+    expect(ack.deliveryIds).toEqual([deliveryId]);
+    frames2.close();
+
+    const pending = room.ctx.db
+      .select()
+      .from(agentDeliveries)
+      .where(eq(agentDeliveries.agentId, agent.id))
+      .all();
+    expect(pending.map((row) => row.status)).toEqual(["acked"]);
+  }, 20_000);
+
+  it("posts a message as the agent over the socket", async () => {
+    const { room, app } = await setup();
+    const owner = seedUser(room.ctx, "owner", "owner");
+    const groupId = seedGroup(room.ctx, owner);
+    const keys = pair();
+    const { agent, key } = registerAgentWithKey(room.ctx, {
+      displayName: "dsh",
+      runtime: "dsh",
+      publicKey: keys.pem,
+      actorUserId: owner,
+    });
+    addMember(room.ctx, { groupId, actorUserId: owner, memberType: "agent", memberId: agent.id });
+    const connected = await completeConnect(app, keys, key.fingerprint);
+    const frames = await openSocket(app, String(connected.body.sessionToken));
+    await frames.nextOf("hello");
+
+    frames.send({
+      type: "message.send",
+      groupId,
+      content: "hello from the agent",
+      clientMessageId: "client-1",
+    });
+    const sent = await frames.nextOf("message.sent");
+    expect(sent.clientMessageId).toBe("client-1");
+    frames.close();
+
+    const stored = room.ctx.db
+      .select()
+      .from(agentDeliveries)
+      .where(eq(agentDeliveries.agentId, agent.id))
+      .all();
+    // The agent's own message must not be delivered back to itself.
+    expect(stored).toHaveLength(0);
+  }, 20_000);
+
+  it("marks the agent offline on disconnect and after a stale lease", async () => {
+    const { room, app } = await setup();
+    const owner = seedUser(room.ctx, "owner", "owner");
+    const keys = pair();
+    const { agent, key } = registerAgentWithKey(room.ctx, {
+      displayName: "dsh",
+      runtime: "dsh",
+      publicKey: keys.pem,
+      actorUserId: owner,
+    });
+    const connected = await completeConnect(app, keys, key.fingerprint);
+    const frames = await openSocket(app, String(connected.body.sessionToken));
+    await frames.nextOf("hello");
+    expect(statusOf(room, agent.id)).toBe("online");
+
+    frames.close();
+    await waitFor(() => statusOf(room, agent.id) === "offline");
+
+    // A session that never says goodbye still expires after its presence lease.
+    await completeConnect(app, keys, key.fingerprint);
+    room.ctx.db.update(agents).set({ status: "online" }).where(eq(agents.id, agent.id)).run();
+    const offline = sweepStaleSessions(room.ctx, {
+      presenceTtlMs: 1,
+      now: room.ctx.now() + 60_000,
+    });
+    expect(offline).toContain(agent.id);
+  }, 20_000);
+
+  it("rejects a socket without a valid session token", async () => {
+    const { app } = await setup();
+    const frames = await openSocket(app, "not-a-token");
+    const frame = await frames.next();
+    expect(frame).toMatchObject({ type: "error", code: "unauthorized" });
+  }, 10_000);
+});
+
+function statusOf(room: TestRoom, agentId: string): string | undefined {
+  return room.ctx.db.select().from(agents).where(eq(agents.id, agentId)).get()?.status;
+}
+
+function waitFor(predicate: () => boolean, timeoutMs = 4_000): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const started = Date.now();
+    const timer = setInterval(() => {
+      if (predicate()) {
+        clearInterval(timer);
+        resolve();
+      } else if (Date.now() - started > timeoutMs) {
+        clearInterval(timer);
+        reject(new Error("condition not met in time"));
+      }
+    }, 25);
+  });
+}

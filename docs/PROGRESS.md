@@ -285,3 +285,61 @@ $ pnpm build       # packages/protocol, packages/database, apps/server build Don
 结论：建议将 M2 Review Fix 标记为完成（47 tests，五项检查全过）；M4 风控与 M3 认证按计划后续实现。
 
 提交：`7ce6437`（代码 + 测试 + 文档），已推 `agent-room.git` main。
+
+### M3：身份认证与 Agent SDK（2026-11-23）
+
+按 `docs/PLAN.md` M3 实现人类认证、Agent 密钥与 Challenge/Response、WSS 会话、在线租约与 durable inbox/ack；
+群组/消息的 HTTP API 仍留给 M4。
+
+实现范围：
+
+- `packages/protocol/src/agent.ts`：协议版本、Challenge 规范签名串（`buildAgentChallengeString`）、challenge/connect 与
+  WSS 帧的 zod schema；`fingerprint.ts` 统一 `sha256(SPKI DER)`；ID 前缀增 `chl` / `ses`；事件类型增 `agent.status.changed`。
+- `packages/config`：`AUTH_MODE=dev|access`（生产强制 access）、`ACCESS_TEAM_DOMAIN`/`ACCESS_AUDIENCE`、
+  `BOOTSTRAP_OWNER_EMAIL`、Agent 会话/Challenge/Lease/Heartbeat TTL。
+- `packages/database`：`agent_challenges`（nonce 唯一、`used_at`、过期索引）与 `agent_sessions`
+  （`token_hash` 唯一、`last_seen_at`、`closed_at`、按 Agent 与过期索引）；迁移 `0004_fat_nicolaos.sql`。
+- `apps/server/src/auth`：`dev`（`x-dev-user-id` / `x-dev-user-email`，只认已登记用户）、`access`（jose 校验 JWT，
+  未映射邮箱按用户邮箱自动 link）、`bootstrap`（用户表为空时按 `BOOTSTRAP_OWNER_EMAIL` 建一次 Owner）、
+  `onRequest` Principal 解析（仅保护 `/api/v1/*`，健康探针与旧 `/ws` 保持公开）。
+- `apps/server/src/modules/agentAuth.ts`：一次性 challenge（`UPDATE ... WHERE used_at IS NULL` 原子消费）、
+  Ed25519 验签、session token（只存 SHA-256）、在线租约与静默 session 清扫、按 key 吊销并返回受影响 Agent。
+- `apps/server/src/routes`：`/api/v1/me`、`/api/v1/users`、`/api/v1/agents`（注册时同事务写 agent + key + 事件 + 审计）、
+  key 追加/吊销；`/api/v1/agent/challenge`、`/api/v1/agent/connect` 与已认证 WSS；WSS 每秒扫描投递，
+  `pending → delivered → acked`，重连后未 ack 的事件再投递，Agent 按 `deliveryId` 去重。
+- `apps/server/src/modules/agentHub.ts`：在线 socket 注册表；吊销 key / 租约超时先发 `error session_closed` 再断开。
+- `packages/agent-sdk`：`AgentClient`（Challenge → 签名 → connect → WSS → 自动 ack / 心跳）与 `scripts/mock-agent.ts`
+  手工联调脚本；SDK 单测覆盖指纹与签名串。
+- `main.ts`：启动时 bootstrap Owner、每 10s 清扫过期在线租约；进程退出关闭定时器。
+
+验收对照（`pnpm test`，10 个测试文件 / 67 tests）：
+
+| 验收项 | 覆盖 |
+| --- | --- |
+| 未登录不能访问 | `requires a provisioned, active user for admin routes`（401） |
+| Member 不能执行 Admin 操作 | `only owners and admins can register agents`（403） |
+| 未登记公钥不能连接 | `never derives identity from an unregistered fingerprint or a forged agentId` |
+| 不能伪造 Agent ID | 同上（challenge 的 `agentId` 只作提示，不一致即 401） |
+| Challenge 重放失败 | `connects with a valid signature and refuses to reuse the challenge` |
+| 吊销后连接失效 | `revokes a key, disconnects the live socket and refuses new connects` |
+| 重连补齐未 ack 事件 | `delivers, acks, and redelivers an unacked event after reconnect` |
+| 重复事件不重复执行 | ack 后 `deliveries` 为 `acked`，重连时不再投递（同一测试断言） |
+
+手动端到端（临时库 `/tmp/agentroom-m3`，`AUTH_MODE=dev` + `BOOTSTRAP_OWNER_EMAIL`）：
+
+```text
+healthz=200 readyz=200 me_noauth=401
+GET /api/v1/me (x-dev-user-email) → role=owner, serverId=srv_8facf294…
+POST /api/v1/agents → 201 fingerprint=1167588bbee70e92…
+POST /api/v1/agent/challenge → 200; 签名 connect → 200 agt_6965879991d54d56846e1e9f388a1d1c
+WS connect → hello（outstanding=0）
+SIGTERM → 正常退出
+```
+
+全量检查：`lint` / `typecheck` / `format:check` / `test`（67）/ `build` 全过。
+
+已知偏差：
+
+- WSS 采用“HTTP challenge → HTTP connect → 带 token 升级”的握手；签名串与一次性消费语义不变，后续可在 WSS 内完成握手。
+- 群组/消息 HTTP API 在 M4；mock Agent 目前只能验证连接与事件接收，不能主动拉取群消息。
+- Agent 连接本身不逐条审计（状态变化写 `agent.status.changed` 事件）；会话 token 暂不轮换。

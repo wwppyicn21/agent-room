@@ -1,4 +1,4 @@
-import { and, desc, eq, ne } from "drizzle-orm";
+import { and, desc, eq, ne, sql } from "drizzle-orm";
 import { externalIdentities, type ExternalIdentityRow, users, type UserRow } from "@room/database";
 import { newId } from "@room/protocol";
 import { rbacRoleSchema, type RbacRole } from "@room/protocol";
@@ -77,6 +77,20 @@ export function createUser(
 
 export function getUser(ctx: RoomContext, userId: string): UserRow {
   return requireUser(ctx.db, userId);
+}
+
+export function findUserById(ctx: RoomContext, userId: string): UserRow | undefined {
+  return ctx.db.select().from(users).where(eq(users.id, userId)).get();
+}
+
+export function findUserByEmail(ctx: RoomContext, email: string): UserRow | undefined {
+  const normalized = email.trim().toLowerCase();
+  if (!normalized) return undefined;
+  return ctx.db
+    .select()
+    .from(users)
+    .where(sql`lower(${users.email}) = ${normalized}`)
+    .get();
 }
 
 export function listUsers(

@@ -1,6 +1,8 @@
 import { fileURLToPath } from "node:url";
 import { loadConfig } from "@room/config";
 import { acquireInstanceLock, InstanceLockError, openDatabase } from "@room/database";
+import { ensureBootstrapOwner } from "./auth/bootstrap.js";
+import { sweepStaleSessions } from "./modules/agentAuth.js";
 import { buildApp } from "./app.js";
 
 const config = loadConfig();
@@ -23,6 +25,36 @@ const database = openDatabase({
 });
 
 const app = await buildApp({ config, database });
+const { roomContext } = app;
+
+const bootstrapOwner = ensureBootstrapOwner(
+  roomContext,
+  { email: config.bootstrapOwnerEmail },
+  {
+    warn: (obj, msg) => app.log.warn(obj, msg),
+    info: (obj, msg) => app.log.info(obj, msg),
+  },
+);
+if (bootstrapOwner) {
+  app.log.info({ userId: bootstrapOwner.id }, "bootstrap owner ready");
+}
+
+const presenceTimer = setInterval(() => {
+  try {
+    const offline = sweepStaleSessions(roomContext, {
+      presenceTtlMs: config.agentPresenceTtlMs,
+    });
+    for (const agentId of offline) {
+      app.agentHub.closeAgent(agentId, "presence timeout");
+    }
+  } catch (error) {
+    app.log.warn({ err: error }, "presence sweep failed");
+  }
+}, 10_000);
+presenceTimer.unref();
+app.addHook("onClose", async () => {
+  clearInterval(presenceTimer);
+});
 
 try {
   await app.listen({ host: config.host, port: config.port });

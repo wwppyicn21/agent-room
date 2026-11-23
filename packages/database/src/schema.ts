@@ -158,6 +158,66 @@ export const agentKeys = sqliteTable(
 );
 
 // ---------------------------------------------------------------------------
+// Agent connection handshake and presence sessions (M3)
+// ---------------------------------------------------------------------------
+
+/**
+ * One-time challenges for Ed25519 agent authentication. A challenge is bound to
+ * an agent + key, expires quickly, and can be consumed exactly once (plan §8.5).
+ */
+export const agentChallenges = sqliteTable(
+  "agent_challenges",
+  {
+    id: text("id").primaryKey(),
+    agentId: text("agent_id")
+      .notNull()
+      .references(() => agents.id, { onDelete: "cascade" }),
+    keyId: text("key_id")
+      .notNull()
+      .references(() => agentKeys.id, { onDelete: "cascade" }),
+    nonce: text("nonce").notNull(),
+    clientNonce: text("client_nonce").notNull(),
+    purpose: text("purpose").notNull(),
+    protocolVersion: integer("protocol_version").notNull().default(1),
+    expiresAt: integer("expires_at").notNull(),
+    usedAt: integer("used_at"),
+    createdAt: integer("created_at").notNull(),
+  },
+  (table) => [
+    uniqueIndex("agent_challenges_nonce_uq").on(table.nonce),
+    index("agent_challenges_expiry_idx").on(table.expiresAt),
+  ],
+);
+
+/**
+ * Bearer sessions created after a successful challenge. Only the SHA-256 hash of
+ * the token is stored; `last_seen_at` doubles as the presence lease (plan §5.7).
+ */
+export const agentSessions = sqliteTable(
+  "agent_sessions",
+  {
+    id: text("id").primaryKey(),
+    agentId: text("agent_id")
+      .notNull()
+      .references(() => agents.id, { onDelete: "cascade" }),
+    keyId: text("key_id")
+      .notNull()
+      .references(() => agentKeys.id, { onDelete: "cascade" }),
+    tokenHash: text("token_hash").notNull(),
+    createdAt: integer("created_at").notNull(),
+    expiresAt: integer("expires_at").notNull(),
+    lastSeenAt: integer("last_seen_at").notNull(),
+    closedAt: integer("closed_at"),
+    closeReason: text("close_reason"),
+  },
+  (table) => [
+    uniqueIndex("agent_sessions_token_uq").on(table.tokenHash),
+    index("agent_sessions_agent_idx").on(table.agentId, table.closedAt),
+    index("agent_sessions_expiry_idx").on(table.expiresAt),
+  ],
+);
+
+// ---------------------------------------------------------------------------
 // Threads, messages
 // ---------------------------------------------------------------------------
 
@@ -373,6 +433,8 @@ export type GroupRow = typeof groups.$inferSelect;
 export type GroupMemberRow = typeof groupMembers.$inferSelect;
 export type AgentRow = typeof agents.$inferSelect;
 export type AgentKeyRow = typeof agentKeys.$inferSelect;
+export type AgentChallengeRow = typeof agentChallenges.$inferSelect;
+export type AgentSessionRow = typeof agentSessions.$inferSelect;
 export type ThreadRow = typeof threads.$inferSelect;
 export type MessageRow = typeof messages.$inferSelect;
 export type TaskRow = typeof tasks.$inferSelect;

@@ -81,6 +81,7 @@ export const EVENT_TYPES = [
   "agent.registered",
   "agent.key_registered",
   "agent.key_revoked",
+  "agent.status.changed",
   "message.created",
   "thread.created",
   "thread.closed",

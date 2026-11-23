@@ -6,6 +6,7 @@ import type { RoomContext, RoomDb } from "./context.js";
 import { recordAudit } from "./audit.js";
 import { ConflictError, NotFoundError, ValidationError, isUniqueViolation } from "./errors.js";
 import { appendEvent } from "./events.js";
+import { normalizeEd25519PublicKey } from "./keys.js";
 import { requireAgent, requireSystemAdmin, validateTitle } from "./permissions.js";
 
 export function registerAgent(
@@ -179,4 +180,99 @@ export function listAgentKeys(
     .where(and(eq(agentKeys.agentId, input.agentId), eq(agentKeys.status, "active")))
     .orderBy(desc(agentKeys.createdAt))
     .all();
+}
+
+/**
+ * Registers an agent and its first Ed25519 key in one transaction. The key is
+ * normalized and its fingerprint derived here; the caller never supplies a
+ * fingerprint (plan §8.4).
+ */
+export function registerAgentWithKey(
+  ctx: RoomContext,
+  input: {
+    displayName: string;
+    runtime: string;
+    model?: string | null;
+    capabilities?: string[];
+    hostId?: string | null;
+    publicKey: string;
+    actorUserId: string;
+  },
+): { agent: AgentRow; key: AgentKeyRow } {
+  requireSystemAdmin(ctx.db, input.actorUserId);
+  const displayName = validateTitle(input.displayName, "displayName", 120);
+  const runtime = validateTitle(input.runtime, "runtime", 60);
+  const capabilities = agentCapabilitiesSchema.parse(input.capabilities ?? []);
+  const normalized = normalizeEd25519PublicKey(input.publicKey);
+  const now = ctx.now();
+  const agentId = newId("agt");
+  const keyId = newId("key");
+  try {
+    return ctx.db.transaction((transaction) => {
+      const db = transaction as unknown as RoomDb;
+      db.insert(agents)
+        .values({
+          id: agentId,
+          displayName,
+          hostId: input.hostId ?? null,
+          runtime,
+          model: input.model ?? null,
+          capabilities: JSON.stringify(capabilities),
+          status: "offline",
+          createdAt: now,
+          updatedAt: now,
+        })
+        .run();
+      db.insert(agentKeys)
+        .values({
+          id: keyId,
+          agentId,
+          publicKey: normalized.publicKey,
+          fingerprint: normalized.fingerprint,
+          algorithm: "ed25519",
+          status: "active",
+          createdAt: now,
+        })
+        .run();
+      appendEvent(db, {
+        type: "agent.registered",
+        actor: { type: "user", id: input.actorUserId },
+        payload: { agentId, runtime, fingerprint: normalized.fingerprint },
+        createdAt: now,
+      });
+      appendEvent(db, {
+        type: "agent.key_registered",
+        actor: { type: "user", id: input.actorUserId },
+        payload: { agentId, fingerprint: normalized.fingerprint },
+        createdAt: now,
+      });
+      recordAudit(db, {
+        actorType: "user",
+        actorId: input.actorUserId,
+        action: "agent.register",
+        targetType: "agent",
+        targetId: agentId,
+        metadata: { runtime, fingerprint: normalized.fingerprint },
+        createdAt: now,
+      });
+      recordAudit(db, {
+        actorType: "user",
+        actorId: input.actorUserId,
+        action: "agent.key_register",
+        targetType: "agent",
+        targetId: agentId,
+        metadata: { fingerprint: normalized.fingerprint },
+        createdAt: now,
+      });
+      return {
+        agent: db.select().from(agents).where(eq(agents.id, agentId)).get()!,
+        key: db.select().from(agentKeys).where(eq(agentKeys.id, keyId)).get()!,
+      };
+    });
+  } catch (error) {
+    if (isUniqueViolation(error)) {
+      throw new ConflictError(`fingerprint ${normalized.fingerprint} is already registered`);
+    }
+    throw error;
+  }
 }

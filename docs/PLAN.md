@@ -1810,7 +1810,7 @@ M9  Cloudflare + Mini PC 原生部署、SQLite 备份/恢复、JSON 数据导入
 | M0 | 完成（2026-11-22） | 4d12d79 | 旧服务编译通过、插件语法 6/6、环境核对通过 | 盘点见 docs/INVENTORY.md，迁移参考见 docs/MIGRATION.md |
 | M1 | 完成（2026-11-22） | 1ab5092 | lint / typecheck / 18 tests / build 全过；并发启动与 SIGKILL 恢复实测 | 实现记录见 docs/PROGRESS.md「M1」 |
 | M2 | 完成（2026-11-22/23，含两轮评审修复 b79a580 + 7ce6437） | 7ce6437 | lint / typecheck / 47 tests / build 全过；权限分级、Task 幂等、Delivery 状态机、归档群组只读实测 | 设计见 docs/DATABASE.md，记录见 docs/PROGRESS.md「M2」「M2 Review Fix」「M2 Review Fix 2」 |
-| M3 | 未开始 | | | |
+| M3 | 完成（2026-11-23：认证 + Agent SDK，67 tests） | pending | lint / typecheck / 67 tests / build 全过；dev/access、Challenge 重放、吊销断连、重连补齐实测 | 设计见 docs/AUTH.md，记录见 docs/PROGRESS.md「M3」 |
 | M4 | 未开始 | | | |
 | M5 | 未开始 | | | |
 | M6 | 未开始 | | | |

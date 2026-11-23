@@ -14,6 +14,9 @@ describe("loadConfig", () => {
   it("reads overrides from the environment", () => {
     const config = loadConfig({
       NODE_ENV: "production",
+      AUTH_MODE: "access",
+      ACCESS_TEAM_DOMAIN: "https://team.cloudflareaccess.com",
+      ACCESS_AUDIENCE: "aud-tag",
       HOST: "127.0.0.1",
       PORT: "9123",
       DATABASE_PATH: "/var/lib/agentroom/room.db",
@@ -37,6 +40,36 @@ describe("loadConfig", () => {
     } catch (error) {
       expect((error as ConfigError).issues.join(" ")).toContain("port");
     }
+  });
+
+  it("defaults to dev auth outside production", () => {
+    expect(loadConfig({}).authMode).toBe("dev");
+    expect(loadConfig({ NODE_ENV: "test" }).authMode).toBe("dev");
+  });
+
+  it("never allows dev auth in production", () => {
+    expect(() => loadConfig({ NODE_ENV: "production", AUTH_MODE: "dev" })).toThrow(ConfigError);
+    try {
+      loadConfig({ NODE_ENV: "production", AUTH_MODE: "dev" });
+    } catch (error) {
+      expect((error as ConfigError).issues.join(" ")).toContain("dev auth");
+    }
+  });
+
+  it("requires the Access team domain and audience in access mode", () => {
+    expect(() => loadConfig({ AUTH_MODE: "access" })).toThrow(ConfigError);
+    const config = loadConfig({
+      AUTH_MODE: "access",
+      ACCESS_TEAM_DOMAIN: "https://team.cloudflareaccess.com",
+      ACCESS_AUDIENCE: "aud",
+    });
+    expect(config.authMode).toBe("access");
+  });
+
+  it("reads the one-time bootstrap owner email", () => {
+    expect(loadConfig({ BOOTSTRAP_OWNER_EMAIL: "owner@example.com" }).bootstrapOwnerEmail).toBe(
+      "owner@example.com",
+    );
   });
 
   it("returns a frozen object", () => {

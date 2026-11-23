@@ -1,6 +1,6 @@
-# Room Core 数据库设计（M2）
+# Room Core 与认证数据库设计（M2/M3）
 
-本文档记录 M2「数据库与 Room Core」的 ERD、Drizzle schema、迁移、索引与关键查询计划。实现以
+本文档记录 M2「Room Core」与 M3 认证相关表的 ERD、Drizzle schema、迁移、索引与关键查询计划。实现以
 `packages/database/src/schema.ts` 为准，迁移在 `packages/database/drizzle/`。
 
 ## 1. 运行时约定
@@ -30,6 +30,8 @@ erDiagram
     users ||--o{ group_members : "joins as user"
     agents ||--o{ group_members : "joins as agent"
     agents ||--o{ agent_keys : "owns"
+    agents ||--o{ agent_challenges : "proves key"
+    agents ||--o{ agent_sessions : "connects"
     groups ||--o{ threads : "contains"
     groups ||--o{ messages : "contains"
     threads ||--o{ messages : "groups"
@@ -63,6 +65,8 @@ erDiagram
 | `group_members`       | 群体成员（用户/Agent）           | `(group_id, member_type, member_id)` 唯一、`member_role`                         |
 | `agents`              | Agent 注册表                     | `runtime`、`status`、`capabilities`(JSON)                                        |
 | `agent_keys`          | Agent 公钥（Ed25519）            | `fingerprint` 唯一、`status`                                                     |
+| `agent_challenges`    | 一次性 Challenge（M3）           | `nonce` 唯一、`used_at`（重放保护）、`expires_at`                                |
+| `agent_sessions`      | Agent WSS 会话（M3）             | `token_hash` 唯一、`last_seen_at`、`closed_at`、`close_reason`                   |
 | `threads`             | 由源消息派生的讨论串             | `source_message_id`、`status`                                                    |
 | `messages`            | 群消息                           | `seq`（群内单调）、`client_message_id`（幂等）、`root_message_id`、`hop`         |
 | `tasks`               | 任务                             | `status`、`assigned_agent_id`、`thread_id`、`source_message_id`                  |
@@ -71,7 +75,7 @@ erDiagram
 | `agent_deliveries`    | 每个 Agent 的投递队列            | `(agent_id, event_id)` 唯一、`status`                                            |
 | `audit_logs`          | 审计                             | `actor_type/actor_id`、`action`、`target_type/target_id`                         |
 
-## 4. 索引（30 个显式索引）
+## 4. 索引（35 个显式索引）
 
 | 表                    | 索引                                                                                                         | 用途                                   |
 | --------------------- | ------------------------------------------------------------------------------------------------------------ | -------------------------------------- |
@@ -81,6 +85,8 @@ erDiagram
 | `group_members`       | `group_members_member_uq`、`group_members_lookup_idx`、`group_members_group_idx`                             | 权限判定、反查用户/Agent 所在群        |
 | `agents`              | `agents_status_idx`                                                                                          | 在线/离线                              |
 | `agent_keys`          | `agent_keys_fingerprint_uq`、`agent_keys_agent_idx`                                                          | 公钥查找、某 Agent 的 key              |
+| `agent_challenges`    | `agent_challenges_nonce_uq`、`agent_challenges_expiry_idx`                                                   | 一次性消费、过期清理                   |
+| `agent_sessions`      | `agent_sessions_token_uq`、`agent_sessions_agent_idx`、`agent_sessions_expiry_idx`                           | token 校验、在线租约、过期清扫         |
 | `threads`             | `threads_group_idx`、`threads_source_message_idx`                                                            | 群内时间线、源消息 → Thread            |
 | `messages`            | `messages_group_seq_uq`、`messages_group_client_uq`、`messages_thread_seq_idx`、`messages_group_created_idx` | 分页、幂等、Thread 时间线、按时间      |
 | `tasks`               | `tasks_group_idx`、`tasks_status_idx`、`tasks_thread_idx`、`tasks_assignee_idx`                              | 群内任务分页、状态、Thread、Agent 队列 |
@@ -88,6 +94,8 @@ erDiagram
 | `events`              | `events_group_seq_idx`、`events_type_created_idx`、`events_id_unique`                                        | 群内增量、类型检索、按事件 id          |
 | `agent_deliveries`    | `agent_deliveries_event_uq`、`agent_deliveries_pending_idx`                                                  | 去重、待投递队列                       |
 | `audit_logs`          | `audit_logs_created_idx`、`audit_logs_actor_idx`                                                             | 时间线、按操作者                       |
+
+`agent_challenges` 的 `used_at` 以 `UPDATE ... WHERE used_at IS NULL` 原子消费；`agent_sessions` 只存 token 的 SHA-256。
 
 `tasks_group_idx (group_id, created_at, id)` 与 `agent_deliveries_pending_idx
 (agent_id, status, created_at)` 把排序键并入索引，避免 keyset 分页时出现临时 B-tree。
