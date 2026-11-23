@@ -257,8 +257,18 @@ export function registerRoomRoutes(app: FastifyInstance, deps: RoomRouteDependen
   app.get("/api/v1/groups/:groupId/threads", async (request) => {
     const actor = actorOf(request);
     const { groupId } = params<{ groupId: string }>(request);
-    const { status } = query<{ status?: "open" | "closed" | "failed" }>(request);
-    return { threads: listThreads(ctx, { groupId, viewer: actor, status }) };
+    const { status, limit, cursor } = query<{
+      status?: "open" | "closed" | "failed";
+      limit?: string;
+      cursor?: string;
+    }>(request);
+    return listThreads(ctx, {
+      groupId,
+      viewer: actor,
+      status,
+      limit: limitOf(limit, 50),
+      cursor: cursor || undefined,
+    });
   });
 
   app.post("/api/v1/groups/:groupId/threads", async (request, reply) => {

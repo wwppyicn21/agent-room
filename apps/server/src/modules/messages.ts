@@ -1,5 +1,5 @@
 import { and, asc, eq, gt, isNull, sql } from "drizzle-orm";
-import { messages, type MessageRow, threads } from "@room/database";
+import { messages, type MessageRow, type ThreadRow, threads } from "@room/database";
 import { AGENT_PRESENCE_TTL_MS, newId } from "@room/protocol";
 import { messageContentSchema } from "@room/protocol";
 import type { RoomContext, RoomDb } from "./context.js";
@@ -86,8 +86,9 @@ function postMessageInTransaction(ctx: RoomContext, input: PostMessageInput): Me
     const content = messageContentSchema.parse(input.content);
     const isAgent = input.actor.type === "agent";
 
+    let thread: ThreadRow | null = null;
     if (input.threadId) {
-      const thread = db.select().from(threads).where(eq(threads.id, input.threadId)).get();
+      thread = db.select().from(threads).where(eq(threads.id, input.threadId)).get() ?? null;
       if (!thread) throw new NotFoundError(`thread ${input.threadId} not found`);
       if (thread.groupId !== input.groupId) {
         throw new ValidationError("thread belongs to a different group");
@@ -107,6 +108,15 @@ function postMessageInTransaction(ctx: RoomContext, input: PostMessageInput): Me
       if (!parent) throw new NotFoundError(`replyToMessageId ${parentId} not found`);
       if (parent.groupId !== input.groupId) {
         throw new ValidationError("reply target belongs to a different group");
+      }
+      if (thread) {
+        // Thread replies may target a message of the same thread or the thread's
+        // source group message; anything else breaks thread isolation.
+        if (parent.threadId !== thread.id && parent.id !== thread.sourceMessageId) {
+          throw new ValidationError("reply target is outside this thread");
+        }
+      } else if (parent.threadId !== null) {
+        throw new ValidationError("thread messages cannot be replied to from the group stream");
       }
     }
 

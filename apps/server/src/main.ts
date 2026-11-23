@@ -7,6 +7,7 @@ import {
   cleanupExpiredSocketTickets,
   sweepStaleSessions,
 } from "./modules/agentAuth.js";
+import { expireDueApprovals } from "./modules/approvals.js";
 import { buildApp } from "./app.js";
 
 const config = loadConfig();
@@ -43,6 +44,22 @@ if (bootstrapOwner) {
   app.log.info({ userId: bootstrapOwner.id }, "bootstrap owner ready");
 }
 
+// Task approvals have deadlines in the database; sweep them on the server so a
+// restart or an agent disconnect cannot leave a task waiting forever.
+const expireApprovals = (): number => {
+  try {
+    const expired = expireDueApprovals(roomContext);
+    if (expired > 0) app.log.info({ expired }, "approvals expired");
+    return expired;
+  } catch (error) {
+    app.log.warn({ err: error }, "approval expiration failed");
+    return 0;
+  }
+};
+expireApprovals();
+const approvalTimer = setInterval(expireApprovals, 30_000);
+approvalTimer.unref();
+
 const presenceTimer = setInterval(() => {
   try {
     const offline = sweepStaleSessions(roomContext, {
@@ -76,6 +93,7 @@ authCleanupTimer.unref();
 app.addHook("onClose", async () => {
   clearInterval(presenceTimer);
   clearInterval(authCleanupTimer);
+  clearInterval(approvalTimer);
 });
 
 try {

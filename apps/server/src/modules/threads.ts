@@ -1,9 +1,9 @@
-import { and, desc, eq, isNull, sql } from "drizzle-orm";
+import { and, desc, eq, isNull, lt, notInArray, or, sql } from "drizzle-orm";
 import { messages, tasks, type TaskRow, threads, type ThreadRow } from "@room/database";
 import { newId } from "@room/protocol";
 import type { RoomContext, RoomDb } from "./context.js";
 import { recordAudit } from "./audit.js";
-import { ForbiddenError, NotFoundError } from "./errors.js";
+import { ConflictError, ForbiddenError, NotFoundError, ValidationError } from "./errors.js";
 import { appendEvent } from "./events.js";
 import { getGroupMessageRow } from "./messages.js";
 import {
@@ -80,19 +80,34 @@ export function listThreads(
     viewer: Actor;
     status?: ThreadRow["status"];
     limit?: number;
+    cursor?: string | null;
   },
-): ThreadRow[] {
+): { items: ThreadRow[]; nextCursor: string | null } {
   requireGroupMember(ctx.db, input.groupId, input.viewer);
   const limit = Math.min(Math.max(input.limit ?? 50, 1), 200);
   const conditions = [eq(threads.groupId, input.groupId)];
   if (input.status) conditions.push(eq(threads.status, input.status));
-  return ctx.db
+  if (input.cursor) {
+    const cursor = ctx.db.select().from(threads).where(eq(threads.id, input.cursor)).get();
+    if (!cursor || cursor.groupId !== input.groupId) {
+      throw new ValidationError("cursor is not a thread of this group");
+    }
+    conditions.push(
+      or(
+        lt(threads.createdAt, cursor.createdAt),
+        and(eq(threads.createdAt, cursor.createdAt), lt(threads.id, cursor.id)),
+      )!,
+    );
+  }
+  const items = ctx.db
     .select()
     .from(threads)
     .where(and(...conditions))
     .orderBy(desc(threads.createdAt), desc(threads.id))
     .limit(limit)
     .all();
+  const last = items.at(-1);
+  return { items, nextCursor: items.length === limit && last ? last.id : null };
 }
 
 export function closeThread(
@@ -109,6 +124,21 @@ export function closeThread(
   const isCreator = thread.createdByUserId === input.actorUserId;
   if (!isCreator) {
     requireGroupManager(ctx.db, thread.groupId, { type: "user", id: input.actorUserId });
+  }
+  const activeTask = ctx.db
+    .select()
+    .from(tasks)
+    .where(
+      and(
+        eq(tasks.threadId, thread.id),
+        notInArray(tasks.status, ["succeeded", "failed", "cancelled"]),
+      ),
+    )
+    .get();
+  if (activeTask) {
+    throw new ConflictError(
+      `thread ${thread.id} belongs to active task ${activeTask.id} (${activeTask.status})`,
+    );
   }
   const now = ctx.now();
   return ctx.db.transaction((transaction) => {

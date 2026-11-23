@@ -61,6 +61,9 @@ export function createTaskFromMessage(
   requireWriteUser(ctx.db, input.createdByUserId);
   requireGroupMember(ctx.db, input.groupId, { type: "user", id: input.createdByUserId });
   requireActiveGroup(ctx.db, input.groupId);
+  const title = validateTitle(input.title, "title");
+  const description = input.description?.trim() || null;
+  const assignedAgentId = input.assignedAgentId ?? null;
   const idempotencyKey = input.idempotencyKey?.trim() || null;
   if (idempotencyKey) {
     const existing = ctx.db
@@ -69,16 +72,25 @@ export function createTaskFromMessage(
       .where(and(eq(tasks.groupId, input.groupId), eq(tasks.idempotencyKey, idempotencyKey)))
       .get();
     if (existing) {
+      const samePayload =
+        existing.sourceMessageId === input.sourceMessageId &&
+        existing.title === title &&
+        (existing.description ?? null) === description &&
+        (existing.assignedAgentId ?? null) === assignedAgentId;
+      if (!samePayload) {
+        throw new ConflictError(
+          `idempotency key ${idempotencyKey} was already used with a different payload`,
+        );
+      }
       if (!existing.threadId) throw new ConflictError(`task ${existing.id} has no thread`);
       return { task: existing, threadId: existing.threadId };
     }
   }
   getGroupMessageRow(ctx, input.groupId, input.sourceMessageId);
-  const title = validateTitle(input.title, "title");
-  if (input.assignedAgentId) {
-    requireAgent(ctx.db, input.assignedAgentId);
-    if (!isGroupMember(ctx.db, input.groupId, "agent", input.assignedAgentId)) {
-      throw new ValidationError(`agent ${input.assignedAgentId} is not a member of the group`);
+  if (assignedAgentId) {
+    requireAgent(ctx.db, assignedAgentId);
+    if (!isGroupMember(ctx.db, input.groupId, "agent", assignedAgentId)) {
+      throw new ValidationError(`agent ${assignedAgentId} is not a member of the group`);
     }
   }
   const now = ctx.now();
@@ -106,10 +118,10 @@ export function createTaskFromMessage(
         idempotencyKey,
         sourceMessageId: input.sourceMessageId,
         title,
-        description: input.description ?? null,
-        status: input.assignedAgentId ? "assigned" : "queued",
+        description,
+        status: assignedAgentId ? "assigned" : "queued",
         priority: 0,
-        assignedAgentId: input.assignedAgentId ?? null,
+        assignedAgentId,
         createdByUserId: input.createdByUserId,
         createdAt: now,
         updatedAt: now,
@@ -130,7 +142,7 @@ export function createTaskFromMessage(
       groupId: input.groupId,
       threadId,
       taskId,
-      payload: { taskId, title, assignedAgentId: input.assignedAgentId ?? null },
+      payload: { taskId, title, assignedAgentId },
       createdAt: now,
     });
     enqueueGroupAgentDeliveries(db, {
@@ -138,18 +150,18 @@ export function createTaskFromMessage(
       eventId: created.id,
       createdAt: now,
     });
-    if (input.assignedAgentId) {
+    if (assignedAgentId) {
       const assigned = appendEvent(db, {
         type: "task.assigned",
         actor: { type: "user", id: input.createdByUserId },
         groupId: input.groupId,
         threadId,
         taskId,
-        payload: { taskId, agentId: input.assignedAgentId },
+        payload: { taskId, agentId: assignedAgentId },
         createdAt: now,
       });
       enqueueDelivery(db, {
-        agentId: input.assignedAgentId,
+        agentId: assignedAgentId,
         eventId: assigned.id,
         createdAt: now,
       });
@@ -163,7 +175,7 @@ export function createTaskFromMessage(
       metadata: {
         groupId: input.groupId,
         threadId,
-        assignedAgentId: input.assignedAgentId ?? null,
+        assignedAgentId,
       },
       createdAt: now,
     });

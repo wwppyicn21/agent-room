@@ -1,4 +1,4 @@
-import { and, desc, eq, sql } from "drizzle-orm";
+import { and, desc, eq, lte, sql } from "drizzle-orm";
 import {
   approvals,
   type ApprovalRow,
@@ -163,12 +163,15 @@ export function expireApproval(
   input: { approvalId: string },
 ): { approval: ApprovalRow; task: TaskRow } {
   const approval = getApprovalRow(ctx, input.approvalId);
+  const task = getTaskRow(ctx, approval.taskId);
+  // Expiration is idempotent: a second sweep must not duplicate the failure
+  // summary, events or audit rows.
+  if (approval.status === "expired") return { approval, task };
   const now = ctx.now();
   if (approval.status !== "pending") throw new ConflictError(`approval is ${approval.status}`);
   if (approval.expiresAt === null || approval.expiresAt > now) {
     throw new ConflictError("approval has not expired");
   }
-  const task = getTaskRow(ctx, approval.taskId);
   if (task.status !== "waiting_approval") {
     throw new ConflictError(`task ${task.id} is ${task.status}`);
   }
@@ -178,12 +181,48 @@ export function expireApproval(
       .set({ status: "expired", reason: "approval expired", updatedAt: now })
       .where(eq(approvals.id, approval.id))
       .run();
-    failTask(db, task, approval, "approval expired", now, { type: "system", id: "system" });
+    failTask(
+      db,
+      task,
+      approval,
+      "approval expired",
+      now,
+      { type: "system", id: "system" },
+      {
+        eventType: "task.approval_expired",
+        auditAction: "approval.expire",
+        summaryHeader: "审批超时",
+      },
+    );
     return {
       approval: db.select().from(approvals).where(eq(approvals.id, approval.id)).get()!,
       task: db.select().from(tasks).where(eq(tasks.id, task.id)).get()!,
     };
   });
+}
+
+/**
+ * Server-side expiration trigger: sweep pending approvals whose deadline passed.
+ * Returns the number of approvals expired. Safe to call from a periodic timer.
+ */
+export function expireDueApprovals(ctx: RoomContext, input: { now?: number } = {}): number {
+  const now = input.now ?? ctx.now();
+  const due = ctx.db
+    .select({ id: approvals.id })
+    .from(approvals)
+    .where(and(eq(approvals.status, "pending"), lte(approvals.expiresAt, now)))
+    .all();
+  let expired = 0;
+  for (const row of due) {
+    try {
+      expireApproval(ctx, { approvalId: row.id });
+      expired += 1;
+    } catch {
+      // A concurrent sweep or decision already moved this approval; the next
+      // sweep only sees pending rows, so there is nothing to reconcile here.
+    }
+  }
+  return expired;
 }
 
 function decideApproval(
@@ -267,10 +306,15 @@ function decideApproval(
           createdAt: now,
         });
       }
-      failTask(db, task, approval, reason ?? "approval rejected", now, {
-        type: "user",
-        id: actorUserId,
-      });
+      failTask(
+        db,
+        task,
+        approval,
+        reason ?? "approval rejected",
+        now,
+        { type: "user", id: actorUserId },
+        { eventType: "task.failed", auditAction: "task.fail", summaryHeader: "审批被拒绝" },
+      );
     }
     return {
       approval: db.select().from(approvals).where(eq(approvals.id, approval.id)).get()!,
@@ -287,6 +331,11 @@ function failTask(
   reason: string,
   now: number,
   actor: { type: "user" | "system"; id: string },
+  options: {
+    eventType: "task.failed" | "task.approval_expired";
+    auditAction: "task.fail" | "approval.expire";
+    summaryHeader: string;
+  },
 ): void {
   db.update(taskRuns)
     .set({ status: "failed", finishedAt: now, updatedAt: now, error: reason })
@@ -301,7 +350,7 @@ function failTask(
     .where(eq(tasks.id, task.id))
     .run();
 
-  const content = `任务失败：${task.title}\n\n审批被拒绝：${reason}\n\nThread: ${task.threadId}`;
+  const content = `任务失败：${task.title}\n\n${options.summaryHeader}：${reason}\n\nThread: ${task.threadId}`;
   const summaryMessageId = newId("msg");
   const maxSeq = db
     .select({ value: sql<number>`coalesce(max(${messages.seq}), 0)` })
@@ -348,7 +397,7 @@ function failTask(
     excludeAgentId: task.assignedAgentId,
   });
   appendEvent(db, {
-    type: "task.failed",
+    type: options.eventType,
     actor,
     groupId: task.groupId,
     threadId: task.threadId,
@@ -359,7 +408,7 @@ function failTask(
   recordAudit(db, {
     actorType: actor.type === "system" ? "system" : "user",
     actorId: actor.id,
-    action: "task.fail",
+    action: options.auditAction,
     targetType: "task",
     targetId: task.id,
     metadata: { approvalId: approval.id, reason, summaryMessageId },

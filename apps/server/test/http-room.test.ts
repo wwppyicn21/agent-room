@@ -213,6 +213,13 @@ describe("M5 REST surface", () => {
     expect(started.statusCode).toBe(200);
     expect(started.json().task.status).toBe("running");
 
+    const closeActive = await app.inject({
+      method: "POST",
+      url: `/api/v1/threads/${created.json().threadId}/close`,
+      headers,
+    });
+    expect(closeActive.statusCode).toBe(409);
+
     const progress = await app.inject({
       method: "POST",
       url: `/api/v1/tasks/${taskId}/progress`,
@@ -253,6 +260,48 @@ describe("M5 REST surface", () => {
       headers,
     });
     expect(detail.json().task.result).toBe("artifact");
+  });
+
+  it("pages threads with an opaque cursor and rejects invalid cursors", async () => {
+    const { app, ctx, owner } = await setup();
+    const groupId = createGroup(ctx, { name: "g", createdByUserId: owner }).id;
+    const headers = { "x-dev-user-id": owner };
+    for (let index = 0; index < 3; index += 1) {
+      const source = await app.inject({
+        method: "POST",
+        url: `/api/v1/groups/${groupId}/messages`,
+        headers,
+        payload: { content: `source ${index}` },
+      });
+      const thread = await app.inject({
+        method: "POST",
+        url: `/api/v1/groups/${groupId}/threads`,
+        headers,
+        payload: { sourceMessageId: source.json().message.id, title: `thread ${index}` },
+      });
+      expect(thread.statusCode).toBe(201);
+    }
+    const first = await app.inject({
+      method: "GET",
+      url: `/api/v1/groups/${groupId}/threads?limit=2`,
+      headers,
+    });
+    expect(first.statusCode).toBe(200);
+    expect(first.json().items).toHaveLength(2);
+    expect(first.json().nextCursor).toBe(first.json().items[1].id);
+    const second = await app.inject({
+      method: "GET",
+      url: `/api/v1/groups/${groupId}/threads?limit=2&cursor=${first.json().nextCursor}`,
+      headers,
+    });
+    expect(second.json().items).toHaveLength(1);
+    expect(second.json().nextCursor).toBeNull();
+    const invalid = await app.inject({
+      method: "GET",
+      url: `/api/v1/groups/${groupId}/threads?cursor=thr_missing`,
+      headers,
+    });
+    expect(invalid.statusCode).toBe(400);
   });
 
   it("rejects approval decisions from ordinary members and bad transitions", async () => {

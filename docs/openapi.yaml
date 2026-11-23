@@ -165,13 +165,33 @@ paths:
     parameters:
       - $ref: "#/components/parameters/groupId"
     get:
-      summary: List threads (optional status filter)
+      summary: List threads with keyset pagination
       parameters:
         - name: status
           in: query
           schema: { type: string, enum: [open, closed, failed] }
+        - name: limit
+          in: query
+          schema: { type: integer, minimum: 1, maximum: 200, default: 50 }
+        - name: cursor
+          in: query
+          description: Thread id returned as nextCursor by the previous page.
+          schema: { type: string }
       responses:
-        "200": { description: Threads }
+        "200":
+          description: Threads and the cursor for the next page
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items, nextCursor]
+                properties:
+                  items:
+                    type: array
+                    items: { type: object }
+                  nextCursor: { type: string, nullable: true }
+        "400": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
     post:
       summary: Create a thread from a group message
       requestBody:
@@ -261,6 +281,7 @@ paths:
       responses:
         "201": { description: Task and thread }
         "403": { $ref: "#/components/responses/Error" }
+        "409": { $ref: "#/components/responses/Error" }
   /api/v1/tasks/{taskId}:
     get:
       summary: Task detail

@@ -97,5 +97,6 @@ export const EVENT_TYPES = [
   "task.cancelled",
   "task.approval_requested",
   "task.approval_decided",
+  "task.approval_expired",
 ] as const;
 export type EventType = (typeof EVENT_TYPES)[number];
