@@ -498,3 +498,5 @@ $ pnpm build        # exit 0
 - REST 群组/消息 API、React Web UI 属 M8；每群组独立 Session 映射属 M6；`request_task` 属 M5。
 
 结论：M4 Review Fix 3 的 Root/Hop、Max Hop、Delivery 租约、Dev Auth 与限流作用域已修复并有测试覆盖；M4 可继续作为 M5 的输入。
+
+提交：`e52a355`（修复 + 测试 + 文档）。
