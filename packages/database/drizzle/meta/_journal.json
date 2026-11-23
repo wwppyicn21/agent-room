@@ -50,6 +50,13 @@
       "when": 1795445347007,
       "tag": "0006_faithful_chat",
       "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "6",
+      "when": 1795469718361,
+      "tag": "0007_rainy_rawhide_kid",
+      "breakpoints": true
     }
   ]
 }

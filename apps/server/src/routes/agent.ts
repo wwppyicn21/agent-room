@@ -29,8 +29,11 @@ import type { RoomContext } from "../modules/context.js";
 import { DomainError, UnauthorizedError, ValidationError } from "../modules/errors.js";
 import {
   ackDelivery,
+  failDelivery,
   listOutstandingDeliveries,
   markDeliveryDelivered,
+  MAX_DELIVERY_ATTEMPTS,
+  redeliverDelivery,
 } from "../modules/events.js";
 import { postMessage } from "../modules/messages.js";
 
@@ -154,7 +157,6 @@ export function registerAgentRoutes(app: FastifyInstance, deps: AgentRouteDepend
 
     const { agent, session } = identity;
     const capabilities = JSON.parse(agent.capabilities) as string[];
-    const sent = new Set<string>();
     const timers: { poll?: NodeJS.Timeout; expiryTimer?: NodeJS.Timeout } = {};
     let closed = false;
 
@@ -192,14 +194,32 @@ export function registerAgentRoutes(app: FastifyInstance, deps: AgentRouteDepend
     touchAgentSession(ctx, session.id);
     setAgentStatus(ctx, agent.id, "online", "connected");
 
-    const deliverOutstanding = (): void => {
-      const outstanding = listOutstandingDeliveries(ctx, { agentId: agent.id, limit: 100 });
+    const deliverOutstanding = (includeUnacked = false): void => {
+      const outstanding = listOutstandingDeliveries(ctx, {
+        agentId: agent.id,
+        limit: 100,
+        includeUnacked,
+      });
       for (const delivery of outstanding) {
-        if (sent.has(delivery.id)) continue;
+        if (delivery.attempts >= MAX_DELIVERY_ATTEMPTS) {
+          try {
+            failDelivery(ctx, {
+              deliveryId: delivery.id,
+              agentId: agent.id,
+              error: "max delivery attempts reached",
+            });
+          } catch (error) {
+            app.log.warn({ err: error, deliveryId: delivery.id }, "delivery quarantine failed");
+          }
+          continue;
+        }
         const event = ctx.db.select().from(events).where(eq(events.id, delivery.eventId)).get();
         if (!event) continue;
         if (delivery.status === "pending") {
           markDeliveryDelivered(ctx, { deliveryId: delivery.id, agentId: agent.id });
+        } else {
+          // Leased but unacked: retry with the same delivery id.
+          redeliverDelivery(ctx, { deliveryId: delivery.id, agentId: agent.id });
         }
         let payload: Record<string, unknown> = {};
         try {
@@ -223,7 +243,6 @@ export function registerAgentRoutes(app: FastifyInstance, deps: AgentRouteDepend
             payload,
           },
         });
-        sent.add(delivery.id);
       }
     };
 
@@ -239,9 +258,13 @@ export function registerAgentRoutes(app: FastifyInstance, deps: AgentRouteDepend
         runtime: agent.runtime,
         capabilities,
       },
-      outstanding: listOutstandingDeliveries(ctx, { agentId: agent.id, limit: 200 }).length,
+      outstanding: listOutstandingDeliveries(ctx, {
+        agentId: agent.id,
+        limit: 200,
+        includeUnacked: true,
+      }).length,
     });
-    deliverOutstanding();
+    deliverOutstanding(true);
 
     timers.poll = setInterval(() => {
       if (closed) return;
@@ -299,7 +322,6 @@ export function registerAgentRoutes(app: FastifyInstance, deps: AgentRouteDepend
             try {
               ackDelivery(ctx, { deliveryId, agentId: agent.id });
               acked.push(deliveryId);
-              sent.delete(deliveryId);
             } catch {
               // Unknown or not-yet-delivered ids are reported as errors below.
             }

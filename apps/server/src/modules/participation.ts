@@ -45,15 +45,23 @@ export function countAgentRepliesForRoot(db: RoomDb, rootMessageId: string): num
   return Number(row?.value ?? 0);
 }
 
-export function countRecentAgentMessages(db: RoomDb, agentId: string, since: number): number {
+/**
+ * Group-scoped Agent reply rate (M4 review 3): `maxAgentMessagesPerMinute` is a
+ * per-(agent, group) limit. User and system messages never count.
+ */
+export function countRecentAgentMessages(
+  db: RoomDb,
+  input: { groupId: string; agentId: string; since: number },
+): number {
   const row = db
     .select({ value: sql<number>`count(*)` })
     .from(messages)
     .where(
       and(
+        eq(messages.groupId, input.groupId),
         eq(messages.senderType, "agent"),
-        eq(messages.senderId, agentId),
-        sql`${messages.createdAt} > ${since}`,
+        eq(messages.senderId, input.agentId),
+        sql`${messages.createdAt} > ${input.since}`,
         isNull(messages.deletedAt),
       ),
     )
@@ -61,17 +69,19 @@ export function countRecentAgentMessages(db: RoomDb, agentId: string, since: num
   return Number(row?.value ?? 0);
 }
 
-/** Per-Agent reply rate across all groups (plan §9.2 table). */
+/** Per-(Agent, Group) reply rate (plan §9.2 table). */
 export function assertAgentRateLimit(
   db: RoomDb,
-  agentId: string,
-  limitPerMinute: number,
-  now: number,
+  input: { groupId: string; agentId: string; limitPerMinute: number; now: number },
 ): void {
-  const recent = countRecentAgentMessages(db, agentId, now - 60_000);
-  if (recent >= limitPerMinute) {
+  const recent = countRecentAgentMessages(db, {
+    groupId: input.groupId,
+    agentId: input.agentId,
+    since: input.now - 60_000,
+  });
+  if (recent >= input.limitPerMinute) {
     throw new RateLimitError(
-      `agent ${agentId} exceeded ${limitPerMinute} messages per minute; wait before replying again`,
+      `agent ${input.agentId} exceeded ${input.limitPerMinute} messages per minute in group ${input.groupId}; wait before replying again`,
     );
   }
 }
@@ -98,7 +108,7 @@ export function decideParticipation(
   if (message.senderType === "agent" && !group.allowAgentMessages) {
     return none("agent_messages_disallowed");
   }
-  if (message.hop > group.maxHops) return none("hop_limit");
+  if (message.hop >= group.maxHops) return none("hop_limit");
 
   const rootId = rootMessageIdOf(message);
   if (

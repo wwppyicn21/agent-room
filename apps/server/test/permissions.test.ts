@@ -379,7 +379,8 @@ describe("identity, idempotency and delivery state machine", () => {
     expect(() => markDeliveryDelivered(ctx, { deliveryId: pending!.id, agentId })).toThrow(
       ConflictError,
     );
-    expect(listOutstandingDeliveries(ctx, { agentId })).toHaveLength(1);
+    expect(listOutstandingDeliveries(ctx, { agentId })).toHaveLength(0);
+    expect(listOutstandingDeliveries(ctx, { agentId, includeUnacked: true })).toHaveLength(1);
 
     const acked = ackDelivery(ctx, { deliveryId: pending!.id, agentId });
     expect(acked.status).toBe("acked");

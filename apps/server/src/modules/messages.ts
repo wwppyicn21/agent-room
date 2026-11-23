@@ -84,8 +84,7 @@ function postMessageInTransaction(ctx: RoomContext, input: PostMessageInput): Me
     requireWritableActor(db, input.actor);
     requireGroupMember(db, input.groupId, input.actor);
     const content = messageContentSchema.parse(input.content);
-    let hop = 0;
-    let effectiveRoot: string | null = input.rootMessageId ?? null;
+    const isAgent = input.actor.type === "agent";
 
     if (input.threadId) {
       const thread = db.select().from(threads).where(eq(threads.id, input.threadId)).get();
@@ -97,15 +96,17 @@ function postMessageInTransaction(ctx: RoomContext, input: PostMessageInput): Me
         throw new ConflictError(`thread ${thread.id} is closed and cannot receive messages`);
       }
     }
-    for (const [field, id] of [
-      ["rootMessageId", input.rootMessageId],
-      ["replyToMessageId", input.replyToMessageId],
-    ] as const) {
-      if (!id) continue;
-      const parent = db.select().from(messages).where(eq(messages.id, id)).get();
-      if (!parent) throw new NotFoundError(`${field} ${id} not found`);
+    // Root and hop are derived by the server (M4 review 3). `replyToMessageId`
+    // is the only client-controlled attachment point; `rootMessageId` is only
+    // honoured as a legacy parent for agents that do not send replyTo, and a
+    // client-provided root/hop never decides the chain.
+    const parentId = input.replyToMessageId ?? (isAgent ? input.rootMessageId : null);
+    let parent: MessageRow | null = null;
+    if (parentId) {
+      parent = db.select().from(messages).where(eq(messages.id, parentId)).get() ?? null;
+      if (!parent) throw new NotFoundError(`replyToMessageId ${parentId} not found`);
       if (parent.groupId !== input.groupId) {
-        throw new ValidationError(`${field} belongs to a different group`);
+        throw new ValidationError("reply target belongs to a different group");
       }
     }
 
@@ -121,26 +122,21 @@ function postMessageInTransaction(ctx: RoomContext, input: PostMessageInput): Me
       if (existing) return existing;
     }
 
-    if (input.actor.type === "agent") {
+    // User replies inherit the parent's Agent depth; only Agent replies increase
+    // it, and a top-level message starts a new root at hop 0.
+    const hop = parent ? parent.hop + (isAgent ? 1 : 0) : 0;
+    const effectiveRoot = parent ? rootMessageIdOf(parent) : null;
+
+    if (isAgent) {
       if (!group.allowAgentMessages) {
         throw withParticipationReason(
           new ForbiddenError(`group ${input.groupId} does not allow agent messages`),
           "agent_messages_disallowed",
         );
       }
-      const parentId = input.replyToMessageId ?? input.rootMessageId;
-      if (!parentId) {
+      if (!parent) {
         throw new ValidationError("agent messages must reply to a group message");
       }
-      const parent = db.select().from(messages).where(eq(messages.id, parentId)).get()!;
-      const replyTo = input.replyToMessageId
-        ? db.select().from(messages).where(eq(messages.id, input.replyToMessageId)).get()
-        : null;
-      if (replyTo && input.rootMessageId && rootMessageIdOf(replyTo) !== input.rootMessageId) {
-        throw new ValidationError("rootMessageId does not match the reply target");
-      }
-      effectiveRoot = rootMessageIdOf(parent);
-      hop = parent.hop + 1;
       if (hop > group.maxHops) {
         throw withParticipationReason(
           new ConflictError(
@@ -149,7 +145,7 @@ function postMessageInTransaction(ctx: RoomContext, input: PostMessageInput): Me
           "hop_limit",
         );
       }
-      if (countAgentRepliesForRoot(db, effectiveRoot) >= group.maxRepliesPerRoot) {
+      if (countAgentRepliesForRoot(db, effectiveRoot!) >= group.maxRepliesPerRoot) {
         throw withParticipationReason(
           new ConflictError(
             `root ${effectiveRoot} already has ${group.maxRepliesPerRoot} agent replies`,
@@ -157,7 +153,12 @@ function postMessageInTransaction(ctx: RoomContext, input: PostMessageInput): Me
           "reply_budget",
         );
       }
-      assertAgentRateLimit(db, input.actor.id, group.maxAgentMessagesPerMinute, ctx.now());
+      assertAgentRateLimit(db, {
+        groupId: input.groupId,
+        agentId: input.actor.id,
+        limitPerMinute: group.maxAgentMessagesPerMinute,
+        now: ctx.now(),
+      });
     }
 
     const maxSeq = db
@@ -167,6 +168,7 @@ function postMessageInTransaction(ctx: RoomContext, input: PostMessageInput): Me
       .get();
     const seq = Number(maxSeq?.value ?? 0) + 1;
     const id = newId("msg");
+    const rootId = effectiveRoot ?? id;
     const now = ctx.now();
     try {
       db.insert(messages)
@@ -177,8 +179,8 @@ function postMessageInTransaction(ctx: RoomContext, input: PostMessageInput): Me
           senderType: input.actor.type,
           senderId: input.actor.id,
           content,
-          rootMessageId: effectiveRoot,
-          replyToMessageId: input.replyToMessageId ?? null,
+          rootMessageId: rootId,
+          replyToMessageId: parent?.id ?? null,
           hop,
           clientMessageId,
           seq,
@@ -209,8 +211,8 @@ function postMessageInTransaction(ctx: RoomContext, input: PostMessageInput): Me
         senderType: input.actor.type,
         senderId: input.actor.id,
         content,
-        rootMessageId: effectiveRoot,
-        replyToMessageId: input.replyToMessageId ?? null,
+        rootMessageId: rootId,
+        replyToMessageId: parent?.id ?? null,
         hop,
         seq,
       },

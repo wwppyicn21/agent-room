@@ -149,7 +149,7 @@ describe("AI participation engine", () => {
       }),
     ).toThrow(ConflictError);
 
-    const stops = stopEvents();
+    const stops = stopEvents().filter((event) => event.senderId === b);
     expect(stops).toHaveLength(1);
     expect(stops[0]).toMatchObject({
       reason: "hop_limit",
@@ -520,5 +520,301 @@ describe("AI participation engine", () => {
     postMessage(room.ctx, { groupId, actor: { type: "user", id: owner }, content: "hello" });
     expect(deliveredAgentIds(groupId)).toEqual([a, b].sort());
     expect(deliveredAgentIds(otherGroup)).toEqual([]);
+  });
+  it("derives root and hop on the server and ignores client-supplied values", () => {
+    const { groupId, a, b } = setup();
+    const source = postMessage(room.ctx, {
+      groupId,
+      actor: { type: "user", id: owner },
+      content: "root",
+      rootMessageId: "msg_forged_root",
+    });
+    expect(source.rootMessageId).toBe(source.id);
+    expect(source.hop).toBe(0);
+
+    const first = postMessage(room.ctx, {
+      groupId,
+      actor: { type: "agent", id: a },
+      content: "agent one",
+      replyToMessageId: source.id,
+      rootMessageId: "msg_forged_root",
+    });
+    expect(first.rootMessageId).toBe(source.id);
+    expect(first.hop).toBe(1);
+
+    const interjection = postMessage(room.ctx, {
+      groupId,
+      actor: { type: "user", id: owner },
+      content: "user interjects",
+      replyToMessageId: first.id,
+      rootMessageId: "msg_forged_root",
+    });
+    expect(interjection.rootMessageId).toBe(source.id);
+    expect(interjection.hop).toBe(1);
+
+    const second = postMessage(room.ctx, {
+      groupId,
+      actor: { type: "agent", id: b },
+      content: "agent two",
+      replyToMessageId: interjection.id,
+    });
+    expect(second.rootMessageId).toBe(source.id);
+    expect(second.hop).toBe(2);
+  });
+
+  it("keeps the root reply budget after a user interjects", () => {
+    const { groupId, a, b } = setup({ maxRepliesPerRoot: 1 });
+    const source = postMessage(room.ctx, {
+      groupId,
+      actor: { type: "user", id: owner },
+      content: "root",
+    });
+    const first = postMessage(room.ctx, {
+      groupId,
+      actor: { type: "agent", id: a },
+      content: "only reply",
+      replyToMessageId: source.id,
+    });
+    postMessage(room.ctx, {
+      groupId,
+      actor: { type: "user", id: owner },
+      content: "user interjects",
+      replyToMessageId: first.id,
+    });
+    expect(() =>
+      postMessage(room.ctx, {
+        groupId,
+        actor: { type: "agent", id: b },
+        content: "over budget",
+        replyToMessageId: first.id,
+      }),
+    ).toThrow(ConflictError);
+    expect(messagesForGroup(groupId)).toHaveLength(3);
+    expect(
+      stopEvents()
+        .filter((event) => event.senderId === b)
+        .map((event) => event.reason),
+    ).toEqual(["reply_budget"]);
+  });
+
+  it("stops fan-out when the hop limit is reached", () => {
+    const { groupId, a, b } = setup({ maxHops: 2 });
+    const source = postMessage(room.ctx, {
+      groupId,
+      actor: { type: "user", id: owner },
+      content: "root",
+    });
+    const first = postMessage(room.ctx, {
+      groupId,
+      actor: { type: "agent", id: a },
+      content: "hop one",
+      replyToMessageId: source.id,
+    });
+    const before = room.ctx.db.select().from(agentDeliveries).all().length;
+    const last = postMessage(room.ctx, {
+      groupId,
+      actor: { type: "agent", id: b },
+      content: "hop two",
+      replyToMessageId: first.id,
+    });
+    expect(last.hop).toBe(2);
+    expect(room.ctx.db.select().from(agentDeliveries).all().length).toBe(before);
+    expect(
+      stopEvents()
+        .filter((event) => event.senderId === b)
+        .map((event) => event.reason),
+    ).toEqual(["hop_limit"]);
+    expect(() =>
+      postMessage(room.ctx, {
+        groupId,
+        actor: { type: "agent", id: a },
+        content: "hop three",
+        replyToMessageId: last.id,
+      }),
+    ).toThrow(ConflictError);
+
+    const interjection = postMessage(room.ctx, {
+      groupId,
+      actor: { type: "user", id: owner },
+      content: "does this restart?",
+      replyToMessageId: last.id,
+    });
+    expect(interjection.hop).toBe(2);
+    expect(room.ctx.db.select().from(agentDeliveries).all().length).toBe(before);
+  });
+
+  it("scopes the agent rate limit to each group", () => {
+    const a = agentOnline("AgentA");
+    const g1 = seedGroup(room.ctx, owner, "g1");
+    const g2 = seedGroup(room.ctx, owner, "g2");
+    for (const groupId of [g1, g2]) {
+      addMember(room.ctx, {
+        groupId,
+        actorUserId: owner,
+        memberType: "agent",
+        memberId: a,
+        memberRole: "member",
+      });
+      updateGroupAISettings(room.ctx, {
+        groupId,
+        actorUserId: owner,
+        settings: settings({ maxAgentMessagesPerMinute: 1 }),
+      });
+    }
+    const s1 = postMessage(room.ctx, {
+      groupId: g1,
+      actor: { type: "user", id: owner },
+      content: "g1",
+    });
+    postMessage(room.ctx, {
+      groupId: g1,
+      actor: { type: "agent", id: a },
+      content: "one in g1",
+      replyToMessageId: s1.id,
+      clientMessageId: "g1-one",
+    });
+    expect(() =>
+      postMessage(room.ctx, {
+        groupId: g1,
+        actor: { type: "agent", id: a },
+        content: "two in g1",
+        replyToMessageId: s1.id,
+        clientMessageId: "g1-two",
+      }),
+    ).toThrow(RateLimitError);
+
+    const s2 = postMessage(room.ctx, {
+      groupId: g2,
+      actor: { type: "user", id: owner },
+      content: "g2",
+    });
+    expect(
+      postMessage(room.ctx, {
+        groupId: g2,
+        actor: { type: "agent", id: a },
+        content: "first in g2",
+        replyToMessageId: s2.id,
+        clientMessageId: "g2-one",
+      }).id,
+    ).toBeTruthy();
+  });
+
+  it("does not count user or system messages toward the agent rate limit", () => {
+    const a = agentOnline("AgentA");
+    const groupId = seedGroup(room.ctx, owner, "rate");
+    addMember(room.ctx, {
+      groupId,
+      actorUserId: owner,
+      memberType: "agent",
+      memberId: a,
+      memberRole: "member",
+    });
+    updateGroupAISettings(room.ctx, {
+      groupId,
+      actorUserId: owner,
+      settings: settings({ maxAgentMessagesPerMinute: 1 }),
+    });
+    for (let i = 0; i < 3; i += 1) {
+      postMessage(room.ctx, { groupId, actor: { type: "user", id: owner }, content: `user ${i}` });
+    }
+    const rows = messagesForGroup(groupId);
+    room.ctx.db
+      .insert(messages)
+      .values({
+        id: newId("msg"),
+        groupId,
+        senderType: "system",
+        senderId: "system",
+        content: "task progress",
+        hop: 0,
+        seq: Math.max(...rows.map((row) => row.seq)) + 1,
+        createdAt: room.ctx.now(),
+      })
+      .run();
+    const source = rows.find((row) => row.senderType === "user")!;
+    expect(
+      postMessage(room.ctx, {
+        groupId,
+        actor: { type: "agent", id: a },
+        content: "allowed",
+        replyToMessageId: source.id,
+        clientMessageId: "counts",
+      }).id,
+    ).toBeTruthy();
+  });
+
+  it("resets the group rate window after one minute", () => {
+    let now = 1_000_000;
+    const clockRoom = createTestRoom(() => now);
+    try {
+      const clockOwner = seedUser(clockRoom.ctx, "owner", "owner");
+      const clockAgent = seedAgent(clockRoom.ctx, clockOwner, "AgentA");
+      const groupId = seedGroup(clockRoom.ctx, clockOwner);
+      addMember(clockRoom.ctx, {
+        groupId,
+        actorUserId: clockOwner,
+        memberType: "agent",
+        memberId: clockAgent,
+        memberRole: "member",
+      });
+      updateGroupAISettings(clockRoom.ctx, {
+        groupId,
+        actorUserId: clockOwner,
+        settings: settings({ maxAgentMessagesPerMinute: 1 }),
+      });
+      const source = postMessage(clockRoom.ctx, {
+        groupId,
+        actor: { type: "user", id: clockOwner },
+        content: "root",
+      });
+      const reply = (suffix: string) =>
+        postMessage(clockRoom.ctx, {
+          groupId,
+          actor: { type: "agent", id: clockAgent },
+          content: "reply",
+          replyToMessageId: source.id,
+          clientMessageId: suffix,
+        });
+      reply("first");
+      expect(() => reply("second")).toThrow(RateLimitError);
+      now += 60_001;
+      expect(reply("third").id).toBeTruthy();
+    } finally {
+      clockRoom.close();
+    }
+  });
+
+  it("tracks the rate limit per agent", () => {
+    const { groupId, a, b } = setup({ maxAgentMessagesPerMinute: 1 });
+    const source = postMessage(room.ctx, {
+      groupId,
+      actor: { type: "user", id: owner },
+      content: "root",
+    });
+    postMessage(room.ctx, {
+      groupId,
+      actor: { type: "agent", id: a },
+      content: "a first",
+      replyToMessageId: source.id,
+      clientMessageId: "a-1",
+    });
+    expect(() =>
+      postMessage(room.ctx, {
+        groupId,
+        actor: { type: "agent", id: a },
+        content: "a second",
+        replyToMessageId: source.id,
+        clientMessageId: "a-2",
+      }),
+    ).toThrow(RateLimitError);
+    expect(
+      postMessage(room.ctx, {
+        groupId,
+        actor: { type: "agent", id: b },
+        content: "b first",
+        replyToMessageId: source.id,
+        clientMessageId: "b-1",
+      }).id,
+    ).toBeTruthy();
   });
 });

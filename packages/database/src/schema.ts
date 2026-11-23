@@ -428,6 +428,7 @@ export const agentDeliveries = sqliteTable(
   (table) => [
     uniqueIndex("agent_deliveries_event_uq").on(table.agentId, table.eventId),
     index("agent_deliveries_pending_idx").on(table.agentId, table.status, table.createdAt),
+    index("agent_deliveries_lease_idx").on(table.agentId, table.status, table.deliveredAt),
   ],
 );
 

@@ -43,6 +43,14 @@ export const configSchema = z
     agentSocketTicketTtlMs: z.coerce.number().int().min(5_000).max(300_000).default(60_000),
   })
   .superRefine((config, ctx) => {
+    const loopbackHosts = new Set(["127.0.0.1", "localhost", "::1", "[::1]"]);
+    if (config.authMode === "dev" && !loopbackHosts.has(config.host.toLowerCase())) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["authMode"],
+        message: "dev auth requires a loopback HOST (127.0.0.1, localhost or ::1)",
+      });
+    }
     if (config.nodeEnv === "production" && config.authMode === "dev") {
       ctx.addIssue({
         code: "custom",

@@ -1,4 +1,4 @@
-import { and, asc, eq, or } from "drizzle-orm";
+import { and, asc, eq, isNull, lte, or } from "drizzle-orm";
 import {
   agentDeliveries,
   type AgentDeliveryRow,
@@ -120,19 +120,44 @@ export function listPendingDeliveries(
  * Pending plus delivered-but-not-yet-acked rows. A delivered row whose agent
  * disconnected before acking stays recoverable instead of silently dropping.
  */
+/** Server-managed delivery lease; a delivered-but-unacked event is retried after it. */
+export const DELIVERY_LEASE_MS = 30_000;
+/** Hard cap so a permanently stuck Agent cannot occupy the delivery window forever. */
+export const MAX_DELIVERY_ATTEMPTS = 10;
+
 export function listOutstandingDeliveries(
   ctx: RoomContext,
-  input: { agentId: string; limit?: number },
+  input: {
+    agentId: string;
+    limit?: number;
+    leaseMs?: number;
+    now?: number;
+    /** Re-send every delivered-but-unacked row (used on reconnect). */
+    includeUnacked?: boolean;
+  },
 ): AgentDeliveryRow[] {
   requireAgent(ctx.db, input.agentId);
   const limit = Math.min(Math.max(input.limit ?? 50, 1), 200);
+  const now = input.now ?? ctx.now();
+  const leaseCutoff = now - (input.leaseMs ?? DELIVERY_LEASE_MS);
   return ctx.db
     .select()
     .from(agentDeliveries)
     .where(
       and(
         eq(agentDeliveries.agentId, input.agentId),
-        or(eq(agentDeliveries.status, "pending"), eq(agentDeliveries.status, "delivered")),
+        or(
+          eq(agentDeliveries.status, "pending"),
+          input.includeUnacked
+            ? eq(agentDeliveries.status, "delivered")
+            : and(
+                eq(agentDeliveries.status, "delivered"),
+                or(
+                  isNull(agentDeliveries.deliveredAt),
+                  lte(agentDeliveries.deliveredAt, leaseCutoff),
+                ),
+              ),
+        ),
       ),
     )
     .orderBy(asc(agentDeliveries.createdAt), asc(agentDeliveries.id))
@@ -181,6 +206,26 @@ export function markDeliveryDelivered(
 }
 
 /** delivered -> acked. Acking an already acked delivery is idempotent. */
+/** Re-send a delivered but still unacked event after its lease expired. */
+export function redeliverDelivery(
+  ctx: RoomContext,
+  input: { deliveryId: string; agentId: string; now?: number },
+): AgentDeliveryRow {
+  const delivery = getDeliveryForAgent(ctx, input.deliveryId, input.agentId);
+  if (delivery.status !== "delivered") {
+    throw new ConflictError(
+      `delivery ${delivery.id} is ${delivery.status}; only leased deliveries can be retried`,
+    );
+  }
+  const now = input.now ?? ctx.now();
+  ctx.db
+    .update(agentDeliveries)
+    .set({ attempts: delivery.attempts + 1, deliveredAt: now, lastError: null })
+    .where(eq(agentDeliveries.id, delivery.id))
+    .run();
+  return { ...delivery, attempts: delivery.attempts + 1, deliveredAt: now, lastError: null };
+}
+
 export function ackDelivery(
   ctx: RoomContext,
   input: { deliveryId: string; agentId: string; now?: number },

@@ -56,6 +56,25 @@ describe("loadConfig", () => {
     }
   });
 
+  it("allows dev auth only on loopback hosts", () => {
+    for (const host of ["127.0.0.1", "localhost", "::1"]) {
+      expect(loadConfig({ HOST: host, AUTH_MODE: "dev" }).authMode).toBe("dev");
+    }
+    for (const host of ["0.0.0.0", "192.168.1.10", "10.0.0.5"]) {
+      expect(() => loadConfig({ HOST: host, AUTH_MODE: "dev" })).toThrow(ConfigError);
+    }
+  });
+
+  it("does not restrict non-dev auth to loopback", () => {
+    const config = loadConfig({
+      AUTH_MODE: "access",
+      ACCESS_TEAM_DOMAIN: "https://team.cloudflareaccess.com",
+      ACCESS_AUDIENCE: "aud-tag",
+      HOST: "0.0.0.0",
+    });
+    expect(config.host).toBe("0.0.0.0");
+  });
+
   it("requires the Access team domain and audience in access mode", () => {
     expect(() => loadConfig({ AUTH_MODE: "access" })).toThrow(ConfigError);
     const config = loadConfig({

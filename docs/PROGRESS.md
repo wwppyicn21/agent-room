@@ -465,3 +465,36 @@ $ pnpm build       # packages/protocol, database, agent-sdk, apps/server Done
 - **验证**：`pnpm lint` exit 0；`pnpm typecheck` exit 0；`pnpm format:check` 通过；`pnpm test` 15 files / 111 tests 通过；`pnpm build` 通过。
 - **未完成**：skip 的内部诊断事件。SDK 的 skip 目前只 ack、不上报服务器，服务器无法区分 skip 与“没有回复”；已在 `docs/PLAN.md` M4 工作项中标注为未完成，不把该项验收写成已通过。
 - 提交：`29671aa`（SDK 重试 + 服务端诊断 + 测试 + 文档）。
+
+### M4 Review Fix 3（2026-11-23）
+
+针对第三轮审查修复 M4 的 Root/Hop 语义、Max Hop Fan-out、Delivery 重试/租约、Dev Auth 边界与限流作用域；未提前实现 M5。
+
+修复：
+
+- **P1 Root / Hop 由服务端推导**（`apps/server/src/modules/messages.ts`）：顶层消息 `rootMessageId = 自身`、`hop = 0`；用户回复继承 parent 的 root 且不增加 hop；Agent 回复继承 root、`hop = parent.hop + 1`。`replyToMessageId` 是唯一附着点（必须存在、同群），客户端提交的 `rootMessageId` 只作为 Agent 无 `replyToMessageId` 时的兼容回复目标，不能决定链；`hop` 无客户端输入字段。`maxRepliesPerRoot` 的计数按 effective root，用户插话不会重置预算。
+- **P2 Max Hop 终止 Fan-out**（`apps/server/src/modules/participation.ts`）：参与判定从 `hop > maxHops` 收紧为 `hop >= maxHops`，达到上限的消息不再创建 Agent Delivery；Agent 发送 `hop > maxHops` 仍被拒绝并写入 `participation.stopped`（reason `hop_limit`）。用户插话不会恢复已达上限的讨论链。
+- **P2 Delivery 租约与重试**（`apps/server/src/modules/events.ts`、`apps/server/src/routes/agent.ts`、`packages/database/src/schema.ts`）：新增 `DELIVERY_LEASE_MS = 30_000` 与 `MAX_DELIVERY_ATTEMPTS = 10`；`listOutstandingDeliveries` 支持 `leaseMs` / `now` / `includeUnacked`，默认返回 `pending` + 租约已过期的 `delivered`；连接建立/重连时用 `includeUnacked` 立刻补发全部未 ack 投递，之后每 1s 按租约扫描。新增 `redeliverDelivery`（`delivered` → `delivered`、`attempts + 1`、更新 `delivered_at`），重投复用同一 `deliveryId`，不产生新 Message/Event；`attempts >= 10` 由连接循环置为 `failed` 作为诊断状态。索引新增 `agent_deliveries_lease_idx(agent_id, status, delivered_at)`（迁移 `0007_rainy_rawhide_kid.sql`，显式索引 43）。
+- **P2 Dev Auth 仅限 Loopback**（`packages/config/src/index.ts`）：`AUTH_MODE=dev` 时 `HOST` 必须是 `127.0.0.1` / `localhost` / `::1`（或 `[::1]`），`0.0.0.0` 与非回环 IP 在启动前被 `ConfigError` 拒绝；`access` 模式不受此限制。
+- **P2 按群组限流**（`apps/server/src/modules/participation.ts`）：`countRecentAgentMessages` 与 `assertAgentRateLimit` 增加 `groupId`，只统计同一 `(group, agent)` 最近 60 秒的 Agent 消息；用户/系统消息不计，跨群组互不影响。
+
+测试：
+
+- 新增 `apps/server/test/delivery-lease.test.ts` 6 例：租约到期以同一 `deliveryId` 重投、requeue、达到最大尝试后 `failed`、长期未 ack 不阻塞新投递、跨 Agent ack 拒绝、disabled Agent 拒投。
+- `apps/server/test/participation.test.ts` 扩至 26 例：顶层 root/hop、用户回复不重置 root/hop、Agent 回复 hop 递增、忽略伪造 root、跨群组 reply 拒绝、budget 在用户插话后仍生效、hop 达到上限零 fan-out、按群组限流/窗口恢复/不同 Agent 独立。
+- `packages/config/test/config.test.ts` 扩至 12 例：dev auth 仅 Loopback（允许/拒绝）、access 模式不受限。
+
+```text
+$ pnpm lint         # exit 0
+$ pnpm typecheck    # exit 0
+$ pnpm format:check # All matched files use Prettier code style!
+$ pnpm test         # Test Files 16 passed (16) / Tests 126 passed (126)
+$ pnpm build        # exit 0
+```
+
+未解决 / 明确推迟：
+
+- skip 的内部诊断事件仍未实现（SDK 的 skip 只 ack，不上报原因；服务器无法区分 skip 与未回复），已在 PLAN M4 工作项标为未完成，不计入通过。
+- REST 群组/消息 API、React Web UI 属 M8；每群组独立 Session 映射属 M6；`request_task` 属 M5。
+
+结论：M4 Review Fix 3 的 Root/Hop、Max Hop、Delivery 租约、Dev Auth 与限流作用域已修复并有测试覆盖；M4 可继续作为 M5 的输入。

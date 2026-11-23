@@ -76,7 +76,7 @@ erDiagram
 | `agent_deliveries`     | 每个 Agent 的投递队列            | `(agent_id, event_id)` 唯一、`status`                                            |
 | `audit_logs`           | 审计                             | `actor_type/actor_id`、`action`、`target_type/target_id`                         |
 
-## 4. 索引（42 个显式索引）
+## 4. 索引（43 个显式索引）
 
 | 表                     | 索引                                                                                                                                                             | 用途                                                            |
 | ---------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------- |
@@ -94,7 +94,7 @@ erDiagram
 | `tasks`                | `tasks_group_idx`、`tasks_status_idx`、`tasks_thread_idx`、`tasks_assignee_idx`                                                                                  | 群内任务分页、状态、Thread、Agent 队列                          |
 | `task_runs`            | `task_runs_task_idx`                                                                                                                                             | 任务执行历史                                                    |
 | `events`               | `events_group_seq_idx`、`events_type_created_idx`、`events_id_unique`                                                                                            | 群内增量、类型检索、按事件 id                                   |
-| `agent_deliveries`     | `agent_deliveries_event_uq`、`agent_deliveries_pending_idx`                                                                                                      | 去重、待投递队列                                                |
+| `agent_deliveries`     | `agent_deliveries_event_uq`、`agent_deliveries_pending_idx`、`agent_deliveries_lease_idx`                                                                        | 去重、待投递队列、租约到期重投                                  |
 | `audit_logs`           | `audit_logs_created_idx`、`audit_logs_actor_idx`                                                                                                                 | 时间线、按操作者                                                |
 
 `agent_challenges` 的 `used_at` 以 `UPDATE ... WHERE used_at IS NULL` 原子消费；`agent_sessions` 只存 token 的 SHA-256。
@@ -118,7 +118,7 @@ tasks by group: SEARCH tasks USING INDEX tasks_group_idx (group_id=?)
 pending deliveries: SEARCH agent_deliveries USING INDEX agent_deliveries_pending_idx (agent_id=? AND status=?)
 events by group: SEARCH events USING INDEX events_group_seq_idx (group_id=? AND seq>?)
 message idempotency: SEARCH messages USING INDEX messages_group_client_uq (group_id=? AND client_message_id=?)
-explicit indexes: 42
+explicit indexes: 43
 ```
 
 消息分页使用 `WHERE group_id = ? AND seq > ? ORDER BY seq LIMIT 50`，命中
@@ -150,7 +150,9 @@ pending ──deliver──▶ delivered ──ack──▶ acked
 ```
 
 - 非法转换抛 `ConflictError`；`acked` 再次 `ack`、`failed` 再次 `fail` 幂等。
-- `listPendingDeliveries` 只取 `pending`；`listOutstandingDeliveries` 取 `pending + delivered`，避免“已送达但断线未 ack”的投递永久消失。
+- `listPendingDeliveries` 只取 `pending`；`listOutstandingDeliveries` 默认取 `pending + 租约已过期的 delivered`，连接/重连时用 `includeUnacked` 立即补发所有已送达未 ack 的投递，避免“已送达但断线未 ack”的投递永久消失。
+- 投递租约：`DELIVERY_LEASE_MS = 30_000`；已送达未 ack 的投递在租约到期后以同一 `deliveryId` 重投并 `attempts + 1`，不会创建新的 Message/Event。超过 `MAX_DELIVERY_ATTEMPTS = 10` 时连接循环将其置为 `failed`（诊断状态），离开可投递窗口，长期未 ack 不会阻塞新投递。
+- 重连仍会补发未完成投递；`ackDelivery` 校验 Agent 归属，`failed` 后不能再 ack。
 - `tasks(group_id, idempotency_key)` 唯一索引把 HTTP 重试折叠成同一个 Task；`createTaskFromMessage` 命中已有 key 时直接返回原 Task 与 Thread。
 - `linkExternalIdentity` 的 `external_identities`、`events(identity.linked)`、`audit_logs` 在同一事务提交。
 - `agent_sessions` 的 TTL 对活跃连接同样生效；`agent_socket_tickets` 以 `UPDATE ... WHERE used_at IS NULL AND expires_at > ?` 原子消费，只存票据的 SHA-256。

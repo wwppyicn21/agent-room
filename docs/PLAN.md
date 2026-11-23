@@ -1416,7 +1416,11 @@ Linux systemd 服务至少包含：
 - 两个 Agent 能在限制内交流；
 - 自己的消息不会触发自己；
 - 超过 hop / reply / rate limit 后停止自动交流；
-- 群组 A 的消息不会出现在群组 B 的会话上下文中。
+- 群组 A 的消息不会出现在群组 B 的会话上下文中；
+- Root/Hop 由服务端推导：顶层 `root = 自身, hop = 0`；用户回复继承 root 且不增加 hop；Agent 回复 hop + 1，客户端不能伪造；
+- 消息 hop 达到 `maxHops` 后不再 Fan-out（不创建新的 Participation Delivery），用户插话也不会恢复；
+- `maxAgentMessagesPerMinute` 按 `(Agent, Group)` 独立计数，用户/系统消息不计入，跨群组互不影响；
+- Delivery 采用租约重试：未 ack 的 `delivered` 在租约到期后以同一 `deliveryId` 重投，达到最大尝试次数进入 `failed`，不阻塞后续投递，重连仍可补齐。
 
 ## M5：Thread / Task Engine
 

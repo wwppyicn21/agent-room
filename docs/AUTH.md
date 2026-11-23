@@ -11,7 +11,7 @@
 | `dev`    | `x-dev-user-id` 或 `x-dev-user-email`                     | 仅开发/测试；只接受已登记且 active 的用户，不自动建用户      |
 | `access` | `Cf-Access-Jwt-Assertion`（Cloudflare Access 注入的 JWT） | `jose` 校验 `iss` / `aud` / 过期时间；生产环境默认且唯一允许 |
 
-- `NODE_ENV=production` 时配置层直接拒绝 `AUTH_MODE=dev`（`packages/config`）。
+- `NODE_ENV=production` 时配置层直接拒绝 `AUTH_MODE=dev`；开发模式下 `HOST` 必须是回环地址（`127.0.0.1` / `localhost` / `::1`），`0.0.0.0` 或非回环 IP 会在启动前被拒绝（`packages/config`）。
 - Access JWT 的 `email` 先映射 `external_identities(issuer, subject)`；未映射时按小写邮箱匹配已有用户并自动建立映射，
   未登记邮箱返回 401，禁用用户返回 403。
 - 首个 Owner 由 `BOOTSTRAP_OWNER_EMAIL` 在**用户表为空**时创建一次；之后该环境变量被忽略，Owner/Admin 必须走 RBAC。
@@ -71,7 +71,8 @@ protocolVersion=1
 | Server → Agent | `error`（`unauthorized` / `session_closed` / `command_failed` 等）     |
 
 - 投递顺序：`pending → delivered`（发送前标记）→ `acked`。进程每秒扫描一次该 Agent 的
-  `pending` + 已送达未 ack 的投递；重连后未 ack 的事件会再次投递，Agent 按 `deliveryId` 去重。
+  `pending` + 租约（30s）已过期的 `delivered`；重连时用 `includeUnacked` 立即补发所有已送达未 ack 的事件，Agent 按 `deliveryId` 去重。
+- 重试复用同一 `deliveryId`、`attempts + 1`，不产生新消息；连续未 ack 达到 10 次后置为 `failed`，不再占用投递窗口。
 - Agent 自己发送的消息不会生成给自己的投递。
 
 ## 5. 在线租约
@@ -115,6 +116,9 @@ protocolVersion=1
 ## 9. M4 AI 参与引擎（2026-11-23）
 
 - **Agent 发言已开放（对象级）**：WSS `message.send` 不再有全局开关；服务端在 `postMessage` 事务内强制校验群组 `allowAgentMessages`、`participationMode`、`maxHops`、`maxRepliesPerRoot`、`maxAgentMessagesPerMinute`。Agent 必须提供同群的 `rootMessageId` 或 `replyToMessageId`；`hop` 由服务端按父消息计算（`parent.hop + 1`），不接受客户端伪造。
+- **Root/Hop 由服务端推导**：顶层消息 `rootMessageId = 自身`、`hop = 0`；用户回复继承 parent 的 root，且不增加 hop；Agent 回复继承 root 并将 hop 加 1。客户端提交的 `rootMessageId` 不再决定链（仅作为无 `replyToMessageId` 时 Agent 的兼容回复目标），没有客户端可控的 hop 字段。
+- **Max Hop 终止 Fan-out**：消息 hop 达到群组 `maxHops` 时不再为它创建 Agent delivery，用户插话也不会恢复；Agent 回复超过上限会被拒绝并记录 `participation.stopped`。
+- **按群组限流**：`maxAgentMessagesPerMinute` 统计同一 `(group, agent)` 最近 60 秒的 Agent 消息；用户/系统消息不计入，也不会跨群组互相影响。
 - **只投递给在线 Agent**：`message.created` 只会为「群成员 + Agent 状态非 disabled + 存在未关闭且未过期 session（presence TTL 内）」的 Agent 创建 delivery；发送者自己不接收。`participationMode=mention` 时只投递给被 `@displayName` 提到的 Agent，`disabled` 时完全不投递。
 - **防循环**：同一 root 的 Agent 消息数达到 `maxRepliesPerRoot`、hop 超过 `maxHops`、或单个 Agent 每分钟消息数超过 `maxAgentMessagesPerMinute` 时，服务端拒绝写入并返回 `conflict` / `rate_limited`，不产生 message/event/delivery。
 - **SDK 决策**：`onEvent` 可返回 `{action:"reply", text}`（SDK 自动 `message.send`，带上事件里的 `messageId` / `rootMessageId`，并设置 `clientMessageId = sdk-reply-<deliveryId>`）或 `{action:"skip"}`（不发送，只 ack）。未返回或返回空文本等价于 skip。

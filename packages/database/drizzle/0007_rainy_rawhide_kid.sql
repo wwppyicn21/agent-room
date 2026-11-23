@@ -1,0 +1,1 @@
+CREATE INDEX `agent_deliveries_lease_idx` ON `agent_deliveries` (`agent_id`,`status`,`delivered_at`);
