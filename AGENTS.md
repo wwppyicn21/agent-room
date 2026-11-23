@@ -22,4 +22,4 @@
 
 ## 认证阶段
 
-- M1/M2 使用 Dev Auth Provider（MOCK 身份）；M3 再接 Cloudflare Access JWT，不提前扩大范围。
+- M1/M2 只实现服务层，不暴露 HTTP API，因此尚未接入 Dev Auth；M3 先实现 Dev Auth Provider（MOCK 身份），再接 Cloudflare Access JWT，不提前扩大范围。

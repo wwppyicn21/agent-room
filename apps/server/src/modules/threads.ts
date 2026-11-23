@@ -24,8 +24,9 @@ export function createThread(
     createdByUserId: string;
   },
 ): ThreadRow {
-  requireActiveGroup(ctx.db, input.groupId);
   requireWriteUser(ctx.db, input.createdByUserId);
+  requireGroupMember(ctx.db, input.groupId, { type: "user", id: input.createdByUserId });
+  requireActiveGroup(ctx.db, input.groupId);
   getGroupMessageRow(ctx, input.groupId, input.sourceMessageId);
   const title = validateTitle(input.title, "title");
   const now = ctx.now();
@@ -97,6 +98,7 @@ export function closeThread(
     viewer: { type: "user", id: input.actorUserId },
   });
   if (thread.status === "closed") return thread;
+  requireActiveGroup(ctx.db, thread.groupId);
   const isCreator = thread.createdByUserId === input.actorUserId;
   if (!isCreator) {
     requireGroupManager(ctx.db, thread.groupId, { type: "user", id: input.actorUserId });

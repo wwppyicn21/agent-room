@@ -33,6 +33,7 @@ export function createTaskFromMessage(
   },
 ): { task: TaskRow; threadId: string } {
   requireWriteUser(ctx.db, input.createdByUserId);
+  requireGroupMember(ctx.db, input.groupId, { type: "user", id: input.createdByUserId });
   requireActiveGroup(ctx.db, input.groupId);
   const idempotencyKey = input.idempotencyKey?.trim() || null;
   if (idempotencyKey) {
@@ -154,6 +155,7 @@ export function assignTask(
   const task = getTaskRow(ctx, input.taskId);
   requireGroupManager(ctx.db, task.groupId, { type: "user", id: input.actorUserId });
   requireWriteUser(ctx.db, input.actorUserId);
+  requireActiveGroup(ctx.db, task.groupId);
   requireAgent(ctx.db, input.agentId);
   if (!isGroupMember(ctx.db, task.groupId, "agent", input.agentId)) {
     throw new ValidationError(`agent ${input.agentId} is not a member of the group`);
@@ -198,6 +200,7 @@ export function startTask(
   const task = getTaskRow(ctx, input.taskId);
   requireAgent(ctx.db, input.agentId);
   requireGroupMember(ctx.db, task.groupId, agentActor(input.agentId));
+  requireActiveGroup(ctx.db, task.groupId);
   if (task.assignedAgentId !== input.agentId) {
     throw new ConflictError(`task ${task.id} is not assigned to agent ${input.agentId}`);
   }
@@ -260,6 +263,7 @@ export function completeTask(
   const task = getTaskRow(ctx, input.taskId);
   requireAgent(ctx.db, input.agentId);
   requireGroupMember(ctx.db, task.groupId, agentActor(input.agentId));
+  requireActiveGroup(ctx.db, task.groupId);
   if (task.assignedAgentId !== input.agentId) {
     throw new ConflictError(`task ${task.id} is not assigned to agent ${input.agentId}`);
   }

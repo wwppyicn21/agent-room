@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { eq } from "drizzle-orm";
-import { agentDeliveries, agents, auditLogs, events, groups, tasks } from "@room/database";
+import { agentDeliveries, agents, auditLogs, events, groups, tasks, threads } from "@room/database";
 import { ConflictError, ForbiddenError, ValidationError } from "../src/modules/errors.js";
 import {
   addMember,
@@ -9,8 +9,13 @@ import {
   updateGroupAISettings,
 } from "../src/modules/groups.js";
 import { listMessages, postMessage } from "../src/modules/messages.js";
-import { createThread } from "../src/modules/threads.js";
-import { createTaskFromMessage } from "../src/modules/tasks.js";
+import { closeThread, createThread } from "../src/modules/threads.js";
+import {
+  assignTask,
+  completeTask,
+  createTaskFromMessage,
+  startTask,
+} from "../src/modules/tasks.js";
 import { disableUser, linkExternalIdentity, setUserRole } from "../src/modules/users.js";
 import {
   ackDelivery,
@@ -392,3 +397,204 @@ describe("identity, idempotency and delivery state machine", () => {
     expect(deliveredRow?.status).toBe("acked");
   });
 });
+
+describe("M2 review fix 2: thread/task creation, archives, closed threads", () => {
+  it("rejects thread and task creation by a non-member", () => {
+    const { ctx } = room;
+    const owner = seedUser(ctx, "owner", "owner");
+    const outsider = seedUser(ctx, "outsider");
+    const groupId = seedGroup(ctx, owner);
+    const source = postMessage(ctx, { groupId, actor: { type: "user", id: owner }, content: "hi" });
+
+    expect(() =>
+      createThread(ctx, {
+        groupId,
+        sourceMessageId: source.id,
+        title: "t",
+        createdByUserId: outsider,
+      }),
+    ).toThrow(ForbiddenError);
+    expect(() =>
+      createTaskFromMessage(ctx, {
+        groupId,
+        sourceMessageId: source.id,
+        title: "t",
+        createdByUserId: outsider,
+      }),
+    ).toThrow(ForbiddenError);
+    expect(ctx.db.select().from(threads).all()).toHaveLength(0);
+    expect(ctx.db.select().from(tasks).all()).toHaveLength(0);
+  });
+
+  it("does not reveal an existing task through an idempotency key to a non-member", () => {
+    const { ctx } = room;
+    const owner = seedUser(ctx, "owner", "owner");
+    const outsider = seedUser(ctx, "outsider");
+    const groupId = seedGroup(ctx, owner);
+    const source = postMessage(ctx, { groupId, actor: { type: "user", id: owner }, content: "hi" });
+    const created = createTaskFromMessage(ctx, {
+      groupId,
+      sourceMessageId: source.id,
+      title: "Fix",
+      createdByUserId: owner,
+      idempotencyKey: "shared-key",
+    });
+
+    expect(() =>
+      createTaskFromMessage(ctx, {
+        groupId,
+        sourceMessageId: source.id,
+        title: "Fix",
+        createdByUserId: outsider,
+        idempotencyKey: "shared-key",
+      }),
+    ).toThrow(ForbiddenError);
+    const rows = ctx.db.select().from(tasks).all();
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.id).toBe(created.task.id);
+  });
+
+  it("rejects every write path against an archived group without partial rows", () => {
+    const { ctx } = room;
+    const owner = seedUser(ctx, "owner", "owner");
+    const groupId = seedGroup(ctx, owner);
+    const member = seedMember(ctx, owner, groupId);
+    const agentId = seedAgent(ctx, owner, "agent");
+    addMember(ctx, {
+      groupId,
+      actorUserId: owner,
+      memberType: "agent",
+      memberId: agentId,
+      memberRole: "member",
+    });
+    const source = postMessage(ctx, { groupId, actor: { type: "user", id: owner }, content: "hi" });
+    const thread = createThread(ctx, {
+      groupId,
+      sourceMessageId: source.id,
+      title: "t",
+      createdByUserId: owner,
+    });
+    const assigned = createTaskFromMessage(ctx, {
+      groupId,
+      sourceMessageId: source.id,
+      title: "queued",
+      createdByUserId: owner,
+      assignedAgentId: agentId,
+    });
+    const running = createTaskFromMessage(ctx, {
+      groupId,
+      sourceMessageId: source.id,
+      title: "running",
+      createdByUserId: owner,
+      assignedAgentId: agentId,
+    });
+    startTask(ctx, { taskId: running.task.id, agentId });
+    const extra = seedUser(ctx, "extra");
+
+    ctx.db
+      .update(groups)
+      .set({ status: "archived", updatedAt: ctx.now() })
+      .where(eq(groups.id, groupId))
+      .run();
+    const before = snapshotCounts(ctx);
+
+    expect(() =>
+      addMember(ctx, {
+        groupId,
+        actorUserId: owner,
+        memberType: "user",
+        memberId: extra,
+      }),
+    ).toThrow(ForbiddenError);
+    expect(() =>
+      removeMember(ctx, { groupId, actorUserId: owner, memberType: "user", memberId: member }),
+    ).toThrow(ForbiddenError);
+    expect(() =>
+      updateGroupAISettings(ctx, {
+        groupId,
+        actorUserId: owner,
+        settings: {
+          participationMode: "all",
+          allowAgentMessages: true,
+          maxHops: 4,
+          maxRepliesPerRoot: 20,
+          maxAgentMessagesPerMinute: 10,
+        },
+      }),
+    ).toThrow(ForbiddenError);
+    expect(() =>
+      createThread(ctx, {
+        groupId,
+        sourceMessageId: source.id,
+        title: "t2",
+        createdByUserId: owner,
+      }),
+    ).toThrow(ForbiddenError);
+    expect(() => closeThread(ctx, { threadId: thread.id, actorUserId: owner })).toThrow(
+      ForbiddenError,
+    );
+    expect(() =>
+      assignTask(ctx, { taskId: assigned.task.id, agentId, actorUserId: owner }),
+    ).toThrow(ForbiddenError);
+    expect(() => startTask(ctx, { taskId: assigned.task.id, agentId })).toThrow(ForbiddenError);
+    expect(() =>
+      completeTask(ctx, {
+        taskId: running.task.id,
+        agentId,
+        outcome: "succeeded",
+        summary: "done",
+      }),
+    ).toThrow(ForbiddenError);
+    expect(() =>
+      postMessage(ctx, { groupId, actor: { type: "user", id: owner }, content: "nope" }),
+    ).toThrow(ForbiddenError);
+
+    expect(snapshotCounts(ctx)).toEqual(before);
+    expect(ctx.db.select().from(tasks).all()).toHaveLength(2);
+  });
+
+  it("rejects messages in a closed thread but keeps open threads and group messages working", () => {
+    const { ctx } = room;
+    const owner = seedUser(ctx, "owner", "owner");
+    const groupId = seedGroup(ctx, owner);
+    const source = postMessage(ctx, { groupId, actor: { type: "user", id: owner }, content: "hi" });
+    const thread = createThread(ctx, {
+      groupId,
+      sourceMessageId: source.id,
+      title: "t",
+      createdByUserId: owner,
+    });
+
+    const inThread = postMessage(ctx, {
+      groupId,
+      actor: { type: "user", id: owner },
+      content: "inside",
+      threadId: thread.id,
+    });
+    expect(inThread.threadId).toBe(thread.id);
+
+    closeThread(ctx, { threadId: thread.id, actorUserId: owner });
+    const before = snapshotCounts(ctx);
+    expect(() =>
+      postMessage(ctx, {
+        groupId,
+        actor: { type: "user", id: owner },
+        content: "after close",
+        threadId: thread.id,
+      }),
+    ).toThrow(ConflictError);
+    expect(snapshotCounts(ctx)).toEqual(before);
+    expect(
+      postMessage(ctx, { groupId, actor: { type: "user", id: owner }, content: "group msg" })
+        .threadId,
+    ).toBeNull();
+  });
+});
+
+function snapshotCounts(ctx: TestRoom["ctx"]) {
+  return {
+    events: ctx.db.select().from(events).all().length,
+    deliveries: ctx.db.select().from(agentDeliveries).all().length,
+    audits: ctx.db.select().from(auditLogs).all().length,
+  };
+}

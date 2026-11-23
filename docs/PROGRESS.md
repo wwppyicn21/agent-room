@@ -57,7 +57,7 @@ OK {"c":1} sqlite 3.54.1
 
 | 决策 | 说明 |
 |---|---|
-| M1/M2 使用 Dev Auth Provider | 用户确认；M3 再接 Cloudflare Access |
+| Dev Auth Provider / Access JWT | M3 先 Dev Auth，再接 Cloudflare Access；M1/M2 无 HTTP API，尚未接入 |
 | DSH 插件作为“DSH 连接服务端”的方案 | 用户确认；现有插件库中的 `@local/dsh-room-bridge` 作为移植基础 |
 | Codex 暂不处理 | 用户确认；M7 延后，后续单独开发 Codex 插件 |
 | 第一版 SQLite + 原生部署 | 新版计划冻结；本机实测可用，无需 Docker/PG |
@@ -156,7 +156,7 @@ SIGTERM → exit 0
 ### M1 遗留
 
 - `/ws` 目前只有 hello / ping / 错误处理，业务协议在 M2/M5 填充。
-- 没有认证（Dev Auth Provider 在 M2 引入，M3 接 Cloudflare Access）。
+- 没有认证（M1/M2 无 HTTP API；Dev Auth Provider 在 M3 引入，随后接 Cloudflare Access）。
 - 生产库路径与 systemd 单元尚未在 Mini PC 上实际安装（M9 做安装/回滚演练）。
 
 ### 下一步（M2）
@@ -256,3 +256,30 @@ Tests       43 passed (43)
 | 成员生命周期 | PASS | `rejects duplicate memberships and removing the last group owner` |
 
 全量校验：`lint` / `typecheck` / `format:check` / `test`（43）/ `build` 全过。提交：`b79a580`。
+
+### M2 Review Fix 2（2026-11-23）
+
+按第二轮静态审查（`m02580` 执行计划）封堵 Thread/Task 创建、归档群组写入与关闭 Thread 的边界；未提前实现 M3/M4。
+
+修复：
+
+- **阶段一：Thread/Task 创建权限**：`createThread` 与 `createTaskFromMessage` 统一按 `requireWriteUser → requireGroupMember → requireActiveGroup` 顺序校验；两者此前缺成员校验。Task 的幂等键查询移到权限校验之后，非成员用已存在的幂等键只会得到 `ForbiddenError`，拿不到 Task/Thread 信息。
+- **阶段二：归档群组统一只读**：`postMessage`、`addMember`、`removeMember`、`updateGroupAISettings`、`createThread`、`closeThread`、`createTaskFromMessage`、`assignTask`、`startTask`、`completeTask` 全部走 `requireActiveGroup`。没有例外：归档后已完成/运行中的 Task 也不能再 start/complete，只能读取。
+- **阶段三：关闭 Thread**：`postMessage` 指定 `threadId` 时校验 `thread.groupId` 与 `thread.status === "open"`；已关闭返回 `ConflictError`。普通群消息与开放 Thread 不受影响。
+- **阶段四：回归测试**：`apps/server/test/permissions.test.ts` 新增 4 例——非成员建 Thread/Task、非成员用幂等键、归档群组全部写入入口且事件/投递/审计计数不变、关闭 Thread 拒消息。总数 43 → 47。
+
+```text
+$ pnpm lint        # exit 0
+$ pnpm typecheck   # exit 0
+$ pnpm format:check# All matched files use Prettier code style!
+$ pnpm test        # Test Files 7 passed (7) / Tests 47 passed (47)
+$ pnpm build       # packages/protocol, packages/database, apps/server build Done
+```
+
+遗留（不阻塞 M2，已按计划阶段记录）：
+
+- `allowAgentMessages`、`maxRepliesPerRoot`、`maxAgentMessagesPerMinute` 目前只存储、发送路径未执行；属于 M4 群聊能力的风控，计划在 M4 实现并补测试。
+- Dev Auth Provider 尚未实现：M1/M2 只有服务层，没有 HTTP/WS API，因此没有可接入的认证入口；M3 先实现 Dev Auth Provider，再接 Cloudflare Access JWT。`AGENTS.md` 与本记录已按此对齐，不把未实现项记为完成。
+- 已知 P3 偏差（事件 payload 通用 schema、状态枚举无 DB CHECK、`group_members` 多态无单 FK、`threads.source_message_id` 无硬 FK）保持不变，已在 `docs/DATABASE.md` §7 记录。
+
+结论：建议将 M2 Review Fix 标记为完成（47 tests，五项检查全过）；M4 风控与 M3 认证按计划后续实现。

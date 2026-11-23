@@ -3,7 +3,7 @@ import { messages, type MessageRow, threads } from "@room/database";
 import { newId } from "@room/protocol";
 import { messageContentSchema } from "@room/protocol";
 import type { RoomContext, RoomDb } from "./context.js";
-import { NotFoundError, ValidationError, isUniqueViolation } from "./errors.js";
+import { ConflictError, NotFoundError, ValidationError, isUniqueViolation } from "./errors.js";
 import { appendEvent, enqueueGroupAgentDeliveries } from "./events.js";
 import {
   type Actor,
@@ -40,6 +40,9 @@ export function postMessage(ctx: RoomContext, input: PostMessageInput): MessageR
       if (!thread) throw new NotFoundError(`thread ${input.threadId} not found`);
       if (thread.groupId !== input.groupId) {
         throw new ValidationError("thread belongs to a different group");
+      }
+      if (thread.status !== "open") {
+        throw new ConflictError(`thread ${thread.id} is closed and cannot receive messages`);
       }
     }
     for (const [field, id] of [

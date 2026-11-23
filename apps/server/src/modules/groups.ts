@@ -182,6 +182,7 @@ export function removeMember(
 ): void {
   requireGroupManager(ctx.db, input.groupId, { type: "user", id: input.actorUserId });
   requireWriteUser(ctx.db, input.actorUserId);
+  requireActiveGroup(ctx.db, input.groupId);
   const memberType = memberTypeSchema.parse(input.memberType);
   const membership = ctx.db
     .select()
