@@ -382,3 +382,5 @@ pnpm build       # packages/protocol, packages/database, apps/server build Done
 - 握手仍是 HTTP challenge/connect → 带 ticket 升级，未在 WSS 内完成 challenge。
 - 邮箱唯一性依赖迁移前检查：含重复邮箱的旧库会启动失败并给出重复地址，需要人工去重后重跑。
 - 应用日志已剥离 query string；部署侧（Cloudflare/代理）仍需保证不记录升级 URL。
+
+提交：`de8ef4d`（实现 + 测试 + 文档），已推 `agent-room.git` main。
