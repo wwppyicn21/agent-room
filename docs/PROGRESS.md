@@ -632,3 +632,4 @@ $ pnpm build         # 全部 Done
 - `running` Task 的恢复需要 Agent 主动拉取；Server 不会自动重启执行，也不会把 `running` 自动判失败。
 - 审批过期扫描仍是进程内定时器（单实例）；多实例部署在 M9 评估。
 - `request_task` 属 M6/M7；M4 skip 诊断未实现；Web UI 属 M8。
+- 代码提交：`6f8092a`（实现 + 测试 + 文档 + 迁移 0009）。
