@@ -9,6 +9,7 @@ import {
   users,
 } from "@room/database";
 import { newId } from "@room/protocol";
+import { cancelAgentTasksForGroupRemoval } from "./tasks.js";
 import {
   groupAISettingsSchema,
   groupRoleSchema,
@@ -24,7 +25,7 @@ import {
   ValidationError,
   isUniqueViolation,
 } from "./errors.js";
-import { appendEvent } from "./events.js";
+import { appendEvent, revokeGroupAgentDeliveries } from "./events.js";
 import {
   assertKnownMember,
   requireActiveGroup,
@@ -215,6 +216,15 @@ export function removeMember(
   ctx.db.transaction((transaction) => {
     const db = transaction as unknown as RoomDb;
     db.delete(groupMembers).where(eq(groupMembers.id, membership.id)).run();
+    if (memberType === "agent") {
+      cancelAgentTasksForGroupRemoval(db, {
+        groupId: input.groupId,
+        agentId: input.memberId,
+        actorUserId: input.actorUserId,
+        now,
+      });
+      revokeGroupAgentDeliveries(db, { agentId: input.memberId, groupId: input.groupId });
+    }
     appendEvent(db, {
       type: "group.member_removed",
       actor: { type: "user", id: input.actorUserId },

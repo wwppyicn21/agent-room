@@ -32,6 +32,7 @@ import {
 } from "./participation.js";
 import {
   type Actor,
+  isGroupMember,
   requireActiveGroup,
   requireGroupMember,
   requireWritableActor,
@@ -289,7 +290,11 @@ function postMessageInTransaction(ctx: RoomContext, input: PostMessageInput): Me
         .from(agents)
         .where(eq(agents.id, threadTask.assignedAgentId))
         .get();
-      if (assignee && assignee.status !== "disabled") {
+      if (
+        assignee &&
+        assignee.status !== "disabled" &&
+        isGroupMember(db, threadTask.groupId, "agent", assignee.id)
+      ) {
         enqueueDelivery(db, { agentId: assignee.id, eventId: event.id, createdAt: now });
       }
     }
@@ -374,6 +379,9 @@ export function listThreadMessagesForAgent(
   const limit = Math.min(Math.max(input.limit ?? 50, 1), 100);
   const thread = ctx.db.select().from(threads).where(eq(threads.id, input.threadId)).get();
   if (!thread) throw new NotFoundError(`thread ${input.threadId} not found`);
+  if (!isGroupMember(ctx.db, thread.groupId, "agent", input.agentId)) {
+    throw new ForbiddenError(`agent ${input.agentId} is not a member of group ${thread.groupId}`);
+  }
   const assignment = ctx.db
     .select({ id: tasks.id })
     .from(tasks)

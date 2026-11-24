@@ -1,6 +1,7 @@
-import { and, desc, eq, lt, or, sql } from "drizzle-orm";
+import { and, desc, eq, inArray, lt, or, sql } from "drizzle-orm";
 import {
   approvals,
+  groupMembers,
   taskRuns,
   type TaskRunRow,
   tasks,
@@ -550,6 +551,103 @@ export function resumeTask(
   });
 }
 
+function cancelTaskInTransaction(
+  db: RoomDb,
+  input: {
+    task: TaskRow;
+    actorUserId: string;
+    reason: string | null;
+    now: number;
+    notifyAssignee: boolean;
+  },
+): TaskRow {
+  const { task } = input;
+  const run = latestRun(db, task.id, "running") ?? latestRun(db, task.id, "paused");
+  if (run) {
+    db.update(taskRuns)
+      .set({
+        status: "cancelled",
+        finishedAt: input.now,
+        updatedAt: input.now,
+        error: input.reason,
+      })
+      .where(eq(taskRuns.id, run.id))
+      .run();
+  }
+  db.update(approvals)
+    .set({ status: "cancelled", updatedAt: input.now, reason: input.reason ?? "task cancelled" })
+    .where(and(eq(approvals.taskId, task.id), eq(approvals.status, "pending")))
+    .run();
+  if (task.threadId) {
+    db.update(threads)
+      .set({ status: "closed", closedAt: input.now, updatedAt: input.now })
+      .where(eq(threads.id, task.threadId))
+      .run();
+  }
+  db.update(tasks)
+    .set({ status: "cancelled", cancelledAt: input.now, updatedAt: input.now, error: input.reason })
+    .where(eq(tasks.id, task.id))
+    .run();
+  const event = appendEvent(db, {
+    type: "task.cancelled",
+    actor: { type: "user", id: input.actorUserId },
+    groupId: task.groupId,
+    threadId: task.threadId,
+    taskId: task.id,
+    payload: { taskId: task.id, runId: run?.id ?? null, reason: input.reason },
+    createdAt: input.now,
+  });
+  if (input.notifyAssignee && task.assignedAgentId) {
+    enqueueDelivery(db, {
+      agentId: task.assignedAgentId,
+      eventId: event.id,
+      createdAt: input.now,
+    });
+  }
+  recordAudit(db, {
+    actorType: "user",
+    actorId: input.actorUserId,
+    action: "task.cancel",
+    targetType: "task",
+    targetId: task.id,
+    metadata: { runId: run?.id ?? null, reason: input.reason },
+    createdAt: input.now,
+  });
+  return db.select().from(tasks).where(eq(tasks.id, task.id)).get()!;
+}
+
+/**
+ * Atomic cleanup used when an Agent membership is removed. It cancels every
+ * non-terminal Task assigned to that Agent in the Group without notifying the
+ * removed Agent (permission revocation must not enqueue fresh deliveries).
+ */
+export function cancelAgentTasksForGroupRemoval(
+  db: RoomDb,
+  input: { groupId: string; agentId: string; actorUserId: string; now: number },
+): number {
+  const rows = db
+    .select()
+    .from(tasks)
+    .where(
+      and(
+        eq(tasks.groupId, input.groupId),
+        eq(tasks.assignedAgentId, input.agentId),
+        inArray(tasks.status, ["queued", "assigned", "running", "waiting_approval", "paused"]),
+      ),
+    )
+    .all();
+  for (const task of rows) {
+    cancelTaskInTransaction(db, {
+      task,
+      actorUserId: input.actorUserId,
+      reason: "agent removed from group",
+      now: input.now,
+      notifyAssignee: false,
+    });
+  }
+  return rows.length;
+}
+
 export function cancelTask(
   ctx: RoomContext,
   input: { taskId: string; actorUserId: string; reason?: string | null },
@@ -566,51 +664,13 @@ export function cancelTask(
   const now = ctx.now();
   return ctx.db.transaction((transaction) => {
     const db = transaction as unknown as RoomDb;
-    const run = latestRun(db, task.id, "running") ?? latestRun(db, task.id, "paused");
-    if (run) {
-      db.update(taskRuns)
-        .set({ status: "cancelled", finishedAt: now, updatedAt: now, error: reason })
-        .where(eq(taskRuns.id, run.id))
-        .run();
-    }
-    db.update(approvals)
-      .set({ status: "cancelled", updatedAt: now, reason: reason ?? "task cancelled" })
-      .where(and(eq(approvals.taskId, task.id), eq(approvals.status, "pending")))
-      .run();
-    db.update(threads)
-      .set({ status: "closed", closedAt: now, updatedAt: now })
-      .where(eq(threads.id, task.threadId!))
-      .run();
-    db.update(tasks)
-      .set({ status: "cancelled", cancelledAt: now, updatedAt: now, error: reason })
-      .where(eq(tasks.id, task.id))
-      .run();
-    const event = appendEvent(db, {
-      type: "task.cancelled",
-      actor: { type: "user", id: input.actorUserId },
-      groupId: task.groupId,
-      threadId: task.threadId,
-      taskId: task.id,
-      payload: { taskId: task.id, runId: run?.id ?? null, reason },
-      createdAt: now,
+    return cancelTaskInTransaction(db, {
+      task,
+      actorUserId: input.actorUserId,
+      reason,
+      now,
+      notifyAssignee: true,
     });
-    if (task.assignedAgentId) {
-      enqueueDelivery(db, {
-        agentId: task.assignedAgentId,
-        eventId: event.id,
-        createdAt: now,
-      });
-    }
-    recordAudit(db, {
-      actorType: "user",
-      actorId: input.actorUserId,
-      action: "task.cancel",
-      targetType: "task",
-      targetId: task.id,
-      metadata: { runId: run?.id ?? null, reason },
-      createdAt: now,
-    });
-    return db.select().from(tasks).where(eq(tasks.id, task.id)).get()!;
   });
 }
 
@@ -790,14 +850,22 @@ export function listAgentTasks(
     "paused",
   ];
   const rows = ctx.db
-    .select()
+    .select({ task: tasks })
     .from(tasks)
+    .innerJoin(
+      groupMembers,
+      and(
+        eq(groupMembers.groupId, tasks.groupId),
+        eq(groupMembers.memberType, "agent"),
+        eq(groupMembers.memberId, input.agentId),
+      ),
+    )
     .where(eq(tasks.assignedAgentId, input.agentId))
     .orderBy(desc(tasks.createdAt), desc(tasks.id))
     .all();
   return rows
-    .filter((task) => input.includeTerminal || active.includes(task.status))
-    .map((task) => agentTaskView(ctx.db, task));
+    .filter(({ task }) => input.includeTerminal || active.includes(task.status))
+    .map(({ task }) => agentTaskView(ctx.db, task));
 }
 
 export function getAgentTask(
@@ -805,8 +873,11 @@ export function getAgentTask(
   input: { agentId: string; taskId: string },
 ): AgentTaskView {
   const task = getTaskRow(ctx, input.taskId);
-  if (task.assignedAgentId !== input.agentId) {
-    // Do not leak the existence of other Agents' tasks.
+  if (
+    task.assignedAgentId !== input.agentId ||
+    !isGroupMember(ctx.db, task.groupId, "agent", input.agentId)
+  ) {
+    // Assignment alone is not authorization, and we do not leak task existence.
     throw new NotFoundError(`task ${input.taskId} not found`);
   }
   return agentTaskView(ctx.db, task);

@@ -11,6 +11,7 @@ import {
   events,
   migrationsFolder,
   openDatabase,
+  tasks,
 } from "@room/database";
 import { eq } from "drizzle-orm";
 import { newId } from "@room/protocol";
@@ -19,7 +20,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { buildApp } from "../src/app.js";
 import { registerAgent } from "../src/modules/agents.js";
 import { createRoomContext, type RoomContext } from "../src/modules/context.js";
-import { addMember, createGroup } from "../src/modules/groups.js";
+import { addMember, createGroup, removeMember } from "../src/modules/groups.js";
 import { createUser } from "../src/modules/users.js";
 
 interface Harness {
@@ -538,5 +539,131 @@ describe("M5 review round 2 REST surface", () => {
       headers,
     });
     expect(own.statusCode).toBe(200);
+  });
+});
+
+describe("M5 review fix 3 REST revocation", () => {
+  it("hides a removed Agent's Group resources while keeping its other Groups", async () => {
+    const { app, ctx, owner } = await setup();
+    const groupA = createGroup(ctx, { name: "a", createdByUserId: owner }).id;
+    const groupB = createGroup(ctx, { name: "b", createdByUserId: owner }).id;
+    const agent = registerAgent(ctx, {
+      displayName: "agent",
+      runtime: "test",
+      actorUserId: owner,
+    }).id;
+    for (const groupId of [groupA, groupB]) {
+      addMember(ctx, { groupId, actorUserId: owner, memberType: "agent", memberId: agent });
+    }
+    const token = agentToken(ctx, agent);
+    const headers = { "x-dev-user-id": owner };
+
+    async function createTask(groupId: string, title: string): Promise<string> {
+      const source = await app.inject({
+        method: "POST",
+        url: `/api/v1/groups/${groupId}/messages`,
+        headers,
+        payload: { content: `${title} source` },
+      });
+      const created = await app.inject({
+        method: "POST",
+        url: `/api/v1/groups/${groupId}/tasks`,
+        headers,
+        payload: { sourceMessageId: source.json().message.id, title, assignedAgentId: agent },
+      });
+      expect(created.statusCode).toBe(201);
+      const started = await app.inject({
+        method: "POST",
+        url: `/api/v1/tasks/${created.json().task.id}/start`,
+        headers: { authorization: `Bearer ${token}` },
+      });
+      expect(started.statusCode).toBe(200);
+      return created.json().task.id as string;
+    }
+
+    const taskA = await createTask(groupA, "task-a");
+    const taskB = await createTask(groupB, "task-b");
+
+    removeMember(ctx, {
+      groupId: groupA,
+      actorUserId: owner,
+      memberType: "agent",
+      memberId: agent,
+    });
+
+    const listA = await app.inject({
+      method: "GET",
+      url: "/api/v1/agent/tasks",
+      headers: { authorization: `Bearer ${token}` },
+    });
+    expect(listA.statusCode).toBe(200);
+    expect(listA.json().tasks.map((view: { task: { id: string } }) => view.task.id)).toEqual([
+      taskB,
+    ]);
+
+    const detailA = await app.inject({
+      method: "GET",
+      url: `/api/v1/agent/tasks/${taskA}`,
+      headers: { authorization: `Bearer ${token}` },
+    });
+    expect(detailA.statusCode).toBe(404);
+    const detailB = await app.inject({
+      method: "GET",
+      url: `/api/v1/agent/tasks/${taskB}`,
+      headers: { authorization: `Bearer ${token}` },
+    });
+    expect(detailB.statusCode).toBe(200);
+
+    const taskARow = ctx.db.select().from(tasks).where(eq(tasks.id, taskA)).get()!;
+    expect(taskARow.status).toBe("cancelled");
+    const threadA = taskARow.threadId!;
+    const threadB = (
+      await app.inject({
+        method: "GET",
+        url: `/api/v1/agent/tasks/${taskB}`,
+        headers: { authorization: `Bearer ${token}` },
+      })
+    ).json().thread.id as string;
+
+    const historyA = await app.inject({
+      method: "GET",
+      url: `/api/v1/agent/threads/${threadA}/messages`,
+      headers: { authorization: `Bearer ${token}` },
+    });
+    expect(historyA.statusCode).toBe(403);
+    expect(historyA.json().items).toBeUndefined();
+    const historyB = await app.inject({
+      method: "GET",
+      url: `/api/v1/agent/threads/${threadB}/messages`,
+      headers: { authorization: `Bearer ${token}` },
+    });
+    expect(historyB.statusCode).toBe(200);
+
+    const writeAttempts = await Promise.all([
+      app.inject({
+        method: "POST",
+        url: `/api/v1/tasks/${taskA}/start`,
+        headers: { authorization: `Bearer ${token}` },
+      }),
+      app.inject({
+        method: "POST",
+        url: `/api/v1/tasks/${taskA}/progress`,
+        headers: { authorization: `Bearer ${token}` },
+        payload: { percent: 10 },
+      }),
+      app.inject({
+        method: "POST",
+        url: `/api/v1/tasks/${taskA}/complete`,
+        headers: { authorization: `Bearer ${token}` },
+        payload: { outcome: "succeeded", summary: "done" },
+      }),
+      app.inject({
+        method: "POST",
+        url: `/api/v1/tasks/${taskA}/approvals`,
+        headers: { authorization: `Bearer ${token}` },
+        payload: { title: "approve" },
+      }),
+    ]);
+    for (const response of writeAttempts) expect(response.statusCode).toBe(403);
   });
 });

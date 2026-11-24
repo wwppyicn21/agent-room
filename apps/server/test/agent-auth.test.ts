@@ -7,9 +7,10 @@ import { buildAgentChallengeString } from "@room/protocol";
 import { afterEach, describe, expect, it } from "vitest";
 import { buildApp } from "../src/app.js";
 import { sweepStaleSessions } from "../src/modules/agentAuth.js";
-import { addMember } from "../src/modules/groups.js";
+import { addMember, removeMember } from "../src/modules/groups.js";
 import { postMessage } from "../src/modules/messages.js";
 import { registerAgentWithKey } from "../src/modules/agents.js";
+import { appendEvent, enqueueDelivery, markDeliveryDelivered } from "../src/modules/events.js";
 import { createTestRoom, seedGroup, seedUser, type TestRoom } from "./helpers.js";
 
 interface TestSocket {
@@ -597,3 +598,137 @@ function waitFor(predicate: () => boolean, timeoutMs = 4_000): Promise<void> {
     }, 25);
   });
 }
+
+async function framesUntil(frames: Frames, timeoutMs: number): Promise<Record<string, unknown>[]> {
+  const out: Record<string, unknown>[] = [];
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    const remaining = deadline - Date.now();
+    if (remaining <= 0) return out;
+    try {
+      out.push(await frames.next(remaining));
+    } catch {
+      return out;
+    }
+  }
+}
+describe("M5 review fix 3 delivery revocation", () => {
+  it("does not send or replay a revoked Group's pending and unacked deliveries", async () => {
+    const { room, app } = await setup();
+    const ctx = room.ctx;
+    const owner = seedUser(ctx, "owner", "owner");
+    const groupId = seedGroup(ctx, owner, "revoked");
+    const otherGroup = seedGroup(ctx, owner, "kept");
+    const keys = pair();
+    const { agent, key } = registerAgentWithKey(ctx, {
+      displayName: "revoked-agent",
+      runtime: "dsh",
+      publicKey: keys.pem,
+      actorUserId: owner,
+    });
+    for (const group of [groupId, otherGroup]) {
+      addMember(ctx, {
+        groupId: group,
+        actorUserId: owner,
+        memberType: "agent",
+        memberId: agent.id,
+      });
+    }
+    const session = await completeConnect(app, keys, key.fingerprint);
+    const frames = await openSocket(app, String(session.body.sessionToken));
+    expect((await frames.nextOf("hello")).outstanding).toBe(0);
+
+    const pendingEvent = appendEvent(ctx.db, {
+      type: "message.created",
+      actor: { type: "user", id: owner },
+      groupId,
+      payload: { messageId: "msg_pending" },
+      createdAt: ctx.now(),
+    });
+    const pending = enqueueDelivery(ctx.db, {
+      agentId: agent.id,
+      eventId: pendingEvent.id,
+      createdAt: ctx.now(),
+    });
+    const unackedEvent = appendEvent(ctx.db, {
+      type: "message.created",
+      actor: { type: "user", id: owner },
+      groupId,
+      payload: { messageId: "msg_unacked" },
+      createdAt: ctx.now(),
+    });
+    const unacked = enqueueDelivery(ctx.db, {
+      agentId: agent.id,
+      eventId: unackedEvent.id,
+      createdAt: ctx.now(),
+    });
+    markDeliveryDelivered(ctx, { deliveryId: unacked.id, agentId: agent.id });
+    const otherEvent = appendEvent(ctx.db, {
+      type: "message.created",
+      actor: { type: "user", id: owner },
+      groupId: otherGroup,
+      payload: { messageId: "msg_kept" },
+      createdAt: ctx.now(),
+    });
+    enqueueDelivery(ctx.db, { agentId: agent.id, eventId: otherEvent.id, createdAt: ctx.now() });
+
+    removeMember(ctx, {
+      groupId,
+      actorUserId: owner,
+      memberType: "agent",
+      memberId: agent.id,
+    });
+
+    // The live socket polls once per second. Group B deliveries may still arrive,
+    // but nothing from the revoked Group may be sent.
+    const afterRemoval = await framesUntil(frames, 1_500);
+    for (const frame of afterRemoval) {
+      if (frame.type !== "event.deliver") continue;
+      const event = frame.event as { groupId?: string };
+      expect(event.groupId).not.toBe(groupId);
+    }
+    for (const deliveryId of [pending.id, unacked.id]) {
+      const row = ctx.db
+        .select()
+        .from(agentDeliveries)
+        .where(eq(agentDeliveries.id, deliveryId))
+        .get();
+      expect(row?.status).toBe("failed");
+    }
+
+    const late = appendEvent(ctx.db, {
+      type: "message.created",
+      actor: { type: "user", id: owner },
+      groupId,
+      payload: { messageId: "msg_late" },
+      createdAt: ctx.now(),
+    });
+    const lateDelivery = enqueueDelivery(ctx.db, {
+      agentId: agent.id,
+      eventId: late.id,
+      createdAt: ctx.now(),
+    });
+    const afterLate = await framesUntil(frames, 1_500);
+    for (const frame of afterLate) {
+      if (frame.type !== "event.deliver") continue;
+      const event = frame.event as { groupId?: string };
+      expect(event.groupId).not.toBe(groupId);
+    }
+    expect(
+      ctx.db.select().from(agentDeliveries).where(eq(agentDeliveries.id, lateDelivery.id)).get()
+        ?.status,
+    ).toBe("failed");
+
+    frames.close();
+    const reconnected = await openSocket(app, String(session.body.sessionToken));
+    await reconnected.nextOf("hello");
+    const replayed = await framesUntil(reconnected, 1_200);
+    for (const frame of replayed) {
+      if (frame.type !== "event.deliver") continue;
+      const event = frame.event as { groupId?: string; eventId?: string };
+      expect(event.groupId).not.toBe(groupId);
+      expect([pendingEvent.id, unackedEvent.id, late.id]).not.toContain(event.eventId);
+    }
+    reconnected.close();
+  });
+});

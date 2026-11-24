@@ -26,6 +26,7 @@ import {
 } from "../modules/agentAuth.js";
 import type { AgentHub, AgentSocket } from "../modules/agentHub.js";
 import type { RoomContext } from "../modules/context.js";
+import { isGroupMember } from "../modules/permissions.js";
 import { DomainError, UnauthorizedError, ValidationError } from "../modules/errors.js";
 import {
   ackDelivery,
@@ -215,6 +216,19 @@ export function registerAgentRoutes(app: FastifyInstance, deps: AgentRouteDepend
         }
         const event = ctx.db.select().from(events).where(eq(events.id, delivery.eventId)).get();
         if (!event) continue;
+        // Membership may have been revoked after the delivery row was listed.
+        if (event.groupId && !isGroupMember(ctx.db, event.groupId, "agent", agent.id)) {
+          try {
+            failDelivery(ctx, {
+              deliveryId: delivery.id,
+              agentId: agent.id,
+              error: "group membership revoked",
+            });
+          } catch (error) {
+            app.log.warn({ err: error, deliveryId: delivery.id }, "delivery revocation failed");
+          }
+          continue;
+        }
         if (delivery.status === "pending") {
           markDeliveryDelivered(ctx, { deliveryId: delivery.id, agentId: agent.id });
         } else {

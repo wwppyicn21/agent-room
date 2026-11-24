@@ -1,4 +1,4 @@
-import { and, asc, eq, gt, isNull, lte, or } from "drizzle-orm";
+import { and, asc, eq, gt, inArray, isNull, lte, or } from "drizzle-orm";
 import {
   agentDeliveries,
   type AgentDeliveryRow,
@@ -10,8 +10,8 @@ import {
 import { newId } from "@room/protocol";
 import { type EventType, eventPayloadSchema } from "@room/protocol";
 import type { RoomContext, RoomDb } from "./context.js";
-import { ConflictError, NotFoundError, ValidationError } from "./errors.js";
-import { requireAgent, requireGroupMember } from "./permissions.js";
+import { ConflictError, ForbiddenError, NotFoundError, ValidationError } from "./errors.js";
+import { isGroupMember, requireAgent, requireGroupMember } from "./permissions.js";
 import type { Actor } from "./permissions.js";
 
 export type SystemActor = { readonly type: "system"; readonly id: string };
@@ -126,6 +126,77 @@ export const DELIVERY_LEASE_MS = 30_000;
 /** Hard cap so a permanently stuck Agent cannot occupy the delivery window forever. */
 export const MAX_DELIVERY_ATTEMPTS = 10;
 
+export const DELIVERY_REVOKED_ERROR = "group membership revoked";
+
+function revokeDelivery(db: RoomDb, deliveryId: string): void {
+  db.update(agentDeliveries)
+    .set({ status: "failed", lastError: DELIVERY_REVOKED_ERROR })
+    .where(
+      and(
+        eq(agentDeliveries.id, deliveryId),
+        inArray(agentDeliveries.status, ["pending", "delivered"]),
+      ),
+    )
+    .run();
+}
+
+/**
+ * Revokes every pending/delivered-but-unacked delivery for one Agent in one
+ * Group. Membership removal calls this inside its transaction; the delivery
+ * loop still re-checks authorization before every send as a second boundary.
+ */
+export function revokeGroupAgentDeliveries(
+  db: RoomDb,
+  input: { agentId: string; groupId: string },
+): number {
+  const rows = db
+    .select({ id: agentDeliveries.id })
+    .from(agentDeliveries)
+    .innerJoin(events, eq(events.id, agentDeliveries.eventId))
+    .where(
+      and(
+        eq(agentDeliveries.agentId, input.agentId),
+        eq(events.groupId, input.groupId),
+        inArray(agentDeliveries.status, ["pending", "delivered"]),
+      ),
+    )
+    .all();
+  if (rows.length === 0) return 0;
+  db.update(agentDeliveries)
+    .set({ status: "failed", lastError: DELIVERY_REVOKED_ERROR })
+    .where(
+      inArray(
+        agentDeliveries.id,
+        rows.map((row) => row.id),
+      ),
+    )
+    .run();
+  return rows.length;
+}
+
+function deliveryGroupId(ctx: RoomContext, eventId: string): string | null {
+  const event = ctx.db
+    .select({ groupId: events.groupId })
+    .from(events)
+    .where(eq(events.id, eventId))
+    .get();
+  return event?.groupId ?? null;
+}
+
+function assertDeliveryGroupAccess(
+  ctx: RoomContext,
+  delivery: AgentDeliveryRow,
+  agentId: string,
+): void {
+  const groupId = deliveryGroupId(ctx, delivery.eventId);
+  if (groupId && !isGroupMember(ctx.db, groupId, "agent", agentId)) {
+    revokeDelivery(ctx.db, delivery.id);
+    throw new ForbiddenError(
+      `delivery ${delivery.id} is no longer authorized: ${DELIVERY_REVOKED_ERROR}`,
+    );
+  }
+}
+
 export function listOutstandingDeliveries(
   ctx: RoomContext,
   input: {
@@ -141,7 +212,7 @@ export function listOutstandingDeliveries(
   const limit = Math.min(Math.max(input.limit ?? 50, 1), 200);
   const now = input.now ?? ctx.now();
   const leaseCutoff = now - (input.leaseMs ?? DELIVERY_LEASE_MS);
-  return ctx.db
+  const rows = ctx.db
     .select()
     .from(agentDeliveries)
     .where(
@@ -162,8 +233,19 @@ export function listOutstandingDeliveries(
       ),
     )
     .orderBy(asc(agentDeliveries.createdAt), asc(agentDeliveries.id))
-    .limit(limit)
+    .limit(200)
     .all();
+  const authorized: AgentDeliveryRow[] = [];
+  for (const delivery of rows) {
+    const groupId = deliveryGroupId(ctx, delivery.eventId);
+    if (groupId && !isGroupMember(ctx.db, groupId, "agent", input.agentId)) {
+      revokeDelivery(ctx.db, delivery.id);
+      continue;
+    }
+    authorized.push(delivery);
+    if (authorized.length >= limit) break;
+  }
+  return authorized;
 }
 
 function getDeliveryForAgent(
@@ -187,6 +269,7 @@ export function markDeliveryDelivered(
   input: { deliveryId: string; agentId: string; now?: number },
 ): AgentDeliveryRow {
   const delivery = getDeliveryForAgent(ctx, input.deliveryId, input.agentId);
+  assertDeliveryGroupAccess(ctx, delivery, input.agentId);
   if (delivery.status !== "pending") {
     throw new ConflictError(
       `delivery ${delivery.id} is ${delivery.status}; only pending deliveries can be delivered`,
@@ -213,6 +296,7 @@ export function redeliverDelivery(
   input: { deliveryId: string; agentId: string; now?: number },
 ): AgentDeliveryRow {
   const delivery = getDeliveryForAgent(ctx, input.deliveryId, input.agentId);
+  assertDeliveryGroupAccess(ctx, delivery, input.agentId);
   if (delivery.status !== "delivered") {
     throw new ConflictError(
       `delivery ${delivery.id} is ${delivery.status}; only leased deliveries can be retried`,

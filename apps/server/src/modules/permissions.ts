@@ -115,6 +115,11 @@ export function isGroupMember(
   return membership !== undefined;
 }
 
+/** Membership is the authorization source; a Task assignment is not a standing grant. */
+export function isAgentGroupMember(db: RoomDb, groupId: string, agentId: string): boolean {
+  return isGroupMember(db, groupId, "agent", agentId);
+}
+
 export function requireGroupMember(db: RoomDb, groupId: string, actor: Actor): GroupMemberRow {
   requireGroup(db, groupId);
   requireActor(db, actor);
