@@ -180,6 +180,7 @@ M5 实现 Group 级 Workspace 元数据与权限边界，不实现执行环境�
 - Agent 只能读取分配给自己的 Task 及其 Workspace 元数据；Workspace 不授予文件系统访问；
 - Plugin 不得自行扩大权限；Room Server 不直接访问 Agent 本地文件；具体 allowlist 由 M6/M7 的 Plugin 与本机策略执行。
 - M5 不提供 Runtime binding、本地路径字段或文件访问代码；Workspace 只承载 Group 级元数据与 Task 映射，Runtime / Filesystem Allowlist 明确属于 M6 / M7。
+- M6 前置安全事项（不在 M5 实现）：本地路径穿越、符号链接解析、路径授权与读写边界，以及 Plugin 不得扩大 Server 下发权限的验证，由 M6/M7 Plugin 与本机策略执行并测试。
 
 ## 12. 事件与诊断
 

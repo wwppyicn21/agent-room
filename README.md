@@ -6,7 +6,7 @@
 
 ## 状态
 
-**M5 完成**（2026-11-24）：M1 骨架、M2 Room Core、M3 身份认证（Dev Auth / Cloudflare Access、RBAC、Owner bootstrap、Ed25519 Agent 密钥、Challenge/Response、Agent WSS、在线租约、durable inbox/ack）、M4 AI 自主群聊（participationMode、在线投递、Agent reply/skip、hop / 每 root 回复预算 / 每分钟限流、防自我触发与群组隔离）、M5 Thread / Task Engine（Thread 详情与隔离消息流 / 日志、Thread 消息定向投递、Task 状态机、Progress、Pause/Resume/Cancel、Approval 过期一致性 / assignee 定向投递、Workspace Policy、Agent 重启恢复、Agent Group 权限撤销、结果/失败摘要回流、REST API + OpenAPI 契约测试）与 Agent SDK 已就绪，**23 个测试文件 / 188 个测试通过**。
+**M5 完成**（2026-11-24）：M1 骨架、M2 Room Core、M3 身份认证（Dev Auth / Cloudflare Access、RBAC、Owner bootstrap、Ed25519 Agent 密钥、Challenge/Response、Agent WSS、在线租约、durable inbox/ack）、M4 AI 自主群聊（participationMode、在线投递、Agent reply/skip、hop / 每 root 回复预算 / 每分钟限流、防自我触发与群组隔离）、M5 Thread / Task Engine（Thread 详情与隔离消息流 / 日志、Thread 消息定向投递、Task 状态机、Progress、Pause/Resume/Cancel、Approval 过期一致性 / assignee 定向投递、Workspace Policy、Agent 重启恢复、Agent Group 权限撤销、Message 幂等一致性、Task 转换并发守卫、结果/失败摘要回流、REST API + OpenAPI 契约测试）与 Agent SDK 已就绪，**25 个测试文件 / 198 个测试通过**。
 
 REST API（groups / messages / threads / tasks / approvals / workspaces / events + Agent 恢复端点）见 `docs/openapi.yaml`；React Web UI 属 M8；DSH 的每群组 Session 映射属 M6 DSH Plugin。Agent 通过已认证的 WebSocket 接收事件并发送消息；Task 执行端点（start / progress / complete / approvals）与 Agent 恢复端点（active tasks / thread history）接受 Agent Bearer 会话 token。
 

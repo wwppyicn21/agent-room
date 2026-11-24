@@ -1505,6 +1505,15 @@ M5 已实现并通过测试：Thread 创建 / 详情 / 独立消息流 / 事件�
 - **文档**：ROADMAP M5 checklist 与已知限制、PROGRESS、THREAD_TASK_ENGINE 审批过期行为。
 - **状态**：完成（代码提交 `a9021ea`）。
 
+### M5 Review Fix 3B（Message Idempotency / Transition Guards，2026-11-24）
+
+- **FIX-01**：`postMessage` 对 `groupId + clientMessageId` 比较 sender / thread / content；原样重试返回原消息，不同内容、跨 Thread、不同 Sender 返回 `409`；并发 unique-violation 路径同样校验，不产生重复 Message / Event / Delivery。幂等查询前移到 Thread 校验之前。
+- **FIX-02**：`assignTask` / `startTask` / `completeTask` / `pauseTask` / `resumeTask` 使用 `id + 旧状态` 条件 UPDATE 并检查 `changes`；Task 先 claim 再更新 Run，失败返回 `ConflictError` 并回滚，合法状态集合不变。
+- **FIX-03**：复核 Workspace 归属（`workspaceForTask` 同 Group、`getWorkspace` 成员、Agent 恢复仅限仍为成员的 assignment），补非成员/非 assignee 断言；路径穿越、符号链接与本地路径访问控制记录为 M6 安全事项，不提前实现。
+- **Cursor**：Message cursor 为数字 seq，Event/Task cursor 为字符串 ID；OpenAPI 增加 `messageCursor` 并修正三处 messages 端点。
+- **测试**：新增 10 例；全量 25 files / 198 tests；`lint` / `typecheck` / `format:check` / `test` / `build` 实际执行全过。
+- **状态**：完成（代码提交 `aec3434`）。未开始 M6。
+
 ## M6：DSH Plugin
 
 ### 工作
@@ -1873,7 +1882,7 @@ M9  Cloudflare + Mini PC 原生部署、SQLite 备份/恢复、JSON 数据导入
 | M2 | 完成（2026-11-22/23，含两轮评审修复 b79a580 + 7ce6437） | 7ce6437 | lint / typecheck / 47 tests / build 全过；权限分级、Task 幂等、Delivery 状态机、归档群组只读实测 | 设计见 docs/DATABASE.md，记录见 docs/PROGRESS.md「M2」「M2 Review Fix」「M2 Review Fix 2」 |
 | M3 | 完成（2026-11-23：认证 + Agent SDK，83 tests；含 M3 Review Fix） | de8ef4d | lint / typecheck / 83 tests / build 全过；dev/access、Challenge 重放、吊销断连、重连补齐、ticket 重放、活跃 TTL、邮箱唯一实测 | 设计见 docs/AUTH.md，记录见 docs/PROGRESS.md「M3」与「M3 Review Fix」 |
 | M4 | 完成（2026-11-23：服务端参与引擎 + SDK reply/skip；Review Fix 3 后 126 tests；skip 诊断未实现） | e52a355 | lint / typecheck / 111 tests / build 全过；双 Agent WSS、Root/Hop 服务端推导、Max Hop 零 fan-out、投递租约重试、Dev Auth Loopback、按群组限流实测 | 记录见 docs/PROGRESS.md「M4」「M4 Review Fix」「M4 Review Fix 2」「M4 Review Fix 3」；REST/Web UI 属 M8，每群组 Session 映射属 M6；skip 诊断列为未完成 |
-| M5 | 完成（2026-11-24：Thread / Task / Approval / 摘要回流 / REST + Review Fix 2 + Review Fix 3 / 3A；188 tests） | a9021ea | lint / typecheck / format / 188 tests / build 全过；Thread 定向投递、审批过期竞态、Agent 恢复、Workspace Policy、Group 权限撤销（Recovery/Thread/Delivery/Task）、审批过期 assignee 定向投递、OpenAPI 契约实测 | 记录见 docs/PROGRESS.md「M5」「M5 Review Fix」「M5 Review Fix 2」「M5 Review Fix 3」「M5 Review Fix 3A」；Web UI 属 M8，DSH/Codex Plugin 属 M6/M7 |
+| M5 | 完成（2026-11-24：Thread / Task / Approval / 摘要回流 / REST + Review Fix 2 + Review Fix 3 / 3A / 3B；198 tests） | aec3434 | lint / typecheck / format / 198 tests / build 全过；Thread 定向投递、审批过期竞态、Agent 恢复、Workspace Policy、Group 权限撤销、审批过期 assignee 定向投递、Message 幂等一致性、Task 转换并发守卫、OpenAPI Cursor 契约实测 | 记录见 docs/PROGRESS.md「M5」「M5 Review Fix」「M5 Review Fix 2」「M5 Review Fix 3」「M5 Review Fix 3A」「M5 Review Fix 3B」；Web UI 属 M8，DSH/Codex Plugin 属 M6/M7 |
 | M6 | 未开始 | | | |
 | M7 | 未开始 | | | |
 | M8 | 未开始 | | | |

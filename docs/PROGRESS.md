@@ -681,3 +681,17 @@ Status: Completed / Verified
 - **Test summary**：Test Files 23，Tests Passed 188，Tests Failed 0。
 - **Remaining**：审批过期扫描仍是单实例 30 秒定时器；Server 不会自动重启 Agent 执行；Runtime/Filesystem Allowlist 属 M6/M7；Thread 多 Agent 协作、`request_task`、skip 诊断、Web UI 等边界不变。
 - **代码提交**：`a9021ea`。
+
+### M5 Review Fix 3B — Message Idempotency, Transition Guards and Workspace Boundary Audit（2026-11-24）
+
+Status: Completed / Verified
+
+- **FIX-01 Message 幂等一致性**：`postMessage` 现在把 `groupId + clientMessageId` 视为一次具体请求。相同 sender / thread / content 的重试返回原消息；不同内容、不同 Thread、不同 Sender 复用 ID 统一 `409`，unique-violation 并发路径做同样比较；重试不会新增 Message / Event / Delivery。幂等查询前移到 Thread 校验之前，因此已关闭 Thread 上的原样重试仍能拿到原消息。新增 `assertIdempotentReplay()`。
+- **FIX-02 Task 转换保护**：`assignTask`（queued/assigned）、`startTask`（assigned + assignee 匹配）、`completeTask`（running）、`pauseTask`（running）、`resumeTask`（paused）全部改为 `UPDATE ... WHERE id = ? AND status = ?` 条件更新并检查 `changes`；Task 先 claim，再条件更新对应 Run，任何影响行数不为 1 均抛 `ConflictError`，事务回滚保证 Task / Run / Event 一致。合法状态集合与既有 `TASK_TRANSITIONS` 不变。
+- **FIX-03 Workspace 边界核查**：确认 `workspaceForTask()` 拒绝跨 Group Task 引用、`getWorkspace()` 仅 Group 成员、`listAgentTasks()` / `getAgentTask()` 仅返回当前 Agent 仍为成员的 Group 内 assignment；补充非成员读取 Workspace 与非 assignee 通过 Task 端点读取 Workspace 的断言。路径穿越、符号链接、本地路径访问控制属于 M6 安全验收事项，本轮不提前实现。
+- **Cursor 契约**：`messages` / `thread messages` / `agent thread messages` 的 `cursor` 为数字 seq；`events` / `tasks` 的 `cursor` 为字符串 ID。`docs/openapi.yaml` 新增 `messageCursor`（integer）并替换误用的字符串 `cursorId`；REST / OpenAPI / SDK 三处一致。
+- **Changed files**：`apps/server/src/modules/messages.ts`、`apps/server/src/modules/tasks.ts`、新增 `apps/server/test/message-idempotency.test.ts`、新增 `apps/server/test/task-transition-guards.test.ts`、`apps/server/test/m5-review-round2.test.ts`、`apps/server/test/room.test.ts`（原幂等测试改为原样重试）、`docs/openapi.yaml`。
+- **Tests**：新增 10 例（相同重试、内容冲突、跨 Thread、不同 Sender、并发重复；重复 start、重复 complete、重复 pause、running 时 resume、并发 start），Workspace 边界测试补 2 个断言。
+- **Validation**（本轮实际执行）：`lint` exit 0；`typecheck` exit 0；`format:check` exit 0；`test` 25 files / 198 tests passed；`build` exit 0。
+- **Remaining / M6 前置安全事项**：Runtime binding 与 Local filesystem allowlist（含路径穿越、符号链接、本地路径访问控制、Plugin 不得扩大权限）属 M6/M7；审批过期扫描仍是单实例 30 秒定时器；Thread 投递仍只覆盖用户 → 当前 assignee；Server 不自动重启 Agent 执行。
+- **代码提交**：`aec3434`（实现 + 测试 + OpenAPI）。M5 状态保持 Completed；未开始 M6。
