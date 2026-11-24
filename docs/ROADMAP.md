@@ -149,7 +149,7 @@ Agent Room 是独立的 Agent 协作中心。
 | M2 | Room Core | Completed |
 | M3 | Identity & Agent SDK | Completed |
 | M4 | Autonomous Group Chat | Completed |
-| M5 | Thread / Task Engine | Completed (M5 Review Fix 2, 2026-11-24) |
+| M5 | Thread / Task Engine | Completed (M5 Review Fix 3, 2026-11-24) |
 | M6 | DSH Plugin | Planned |
 | M7 | Codex Plugin | Planned |
 | M8 | Web Client | Planned |
@@ -358,14 +358,19 @@ Task 失败：
 
 M5 只定义和实现基础 Workspace Policy。
 
-要求：
+M5 的“Workspace 与 Agent 执行环境关联”仅指 Task 与 Group 级 Workspace 的**元数据映射**（`tasks.workspaceId`），不代表 Server 绑定、访问或控制 Agent 的本地 Runtime / 文件系统。实际 Runtime 绑定、Local filesystem allowlist、路径授权与 Plugin 执行前策略校验属于 M6 / M7（见 §6.8），M5 不实现。
 
-- Workspace 与 Agent 执行环境关联；
-- Workspace 权限必须明确；
-- Workspace Policy 必须可被 Server 或 Plugin 验证；
+M5 要求：
+
+- Group 级 Workspace 元数据（id / groupId / name / createdBy）；
+- Workspace 权限必须明确：创建需群 owner/admin，成员可读；
 - 不允许跨 Group 使用未授权 Workspace；
-- Task 与 Workspace 的映射必须明确；
-- 不允许 Plugin 自行扩大权限。
+- Task 与 Workspace 的映射必须明确：`workspaceId` 必须属于同一 Group；
+- Agent 只能读取自己被分配 Task 的 Workspace 元数据；
+- 不允许 Plugin 自行扩大权限；
+- Server 不直接访问 Agent 本地文件，Workspace 元数据本身不授予文件系统权限。
+
+M6 / M7 再实现：Workspace 与 DSH / Codex 实际 Runtime 或本机执行环境绑定、Local filesystem allowlist、本机路径授权与读写边界、Plugin 执行前策略校验、以及相关安全测试。
 
 不要在 M5 开发完整 Workspace 管理 UI。
 

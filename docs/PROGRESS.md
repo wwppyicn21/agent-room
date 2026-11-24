@@ -633,3 +633,37 @@ $ pnpm build         # 全部 Done
 - 审批过期扫描仍是进程内定时器（单实例）；多实例部署在 M9 评估。
 - `request_task` 属 M6/M7；M4 skip 诊断未实现；Web UI 属 M8。
 - 代码提交：`6f8092a`（实现 + 测试 + 文档 + 迁移 0009）。
+
+### M5 Review Fix 3（2026-11-24）
+
+第三轮审查针对 Agent 被移出 Group 后的权限撤销完整性；保留 Review Fix 2 已有实现，未改变架构，未开始 M6/M7/M8。
+
+| 问题 | 状态 | 修复 | 测试 |
+| --- | --- | --- | --- |
+| FIX3-01 Recovery 仍可读原 Group | PASS | `listAgentTasks` join `group_members`；`getAgentTask` 非本人/非成员统一 `404`；`listThreadMessagesForAgent` 校验 membership（`403`）；写端点保留 `requireGroupMember` | `group-agent-revocation.test.ts`（T2/T3/T4/T16）；`http-room.test.ts` REST 用例 |
+| FIX3-02 Thread 仍投递给旧 assignee | PASS | 事务内校验 assignee 仍为该 Group 成员后才建 delivery；不广播；已移除 assignee 不阻塞用户消息 | `group-agent-revocation.test.ts` T5 |
+| FIX3-03 pending/unacked Delivery 可重放 | PASS | `listOutstandingDeliveries` 过滤/终止无权记录为 `failed`（`lastError = group membership revoked`）；`markDeliveryDelivered` / `redeliverDelivery` / WebSocket 发送前二次校验；`removeMember` 同事务批量撤销；`hello.outstanding` 不再计数 | `group-agent-revocation.test.ts` T6/T7；`agent-auth.test.ts` live socket 与重连用例 |
+| FIX3-04 非终态 Task 留下无效 assignment | PASS | `removeMember` 事务内抽取的取消 helper 取消该 Group 中该 Agent 的全部非终态 Task；Run / pending Approval / Thread / `task.cancelled` / audit 一致；reason `agent removed from group`；不向被移除 Agent 新建 delivery；User removal 不受影响 | `group-agent-revocation.test.ts` T1/T11/T12/T13/T14；事务回滚 T15 |
+| FIX3-05 回归覆盖 | PASS | Service、REST、WebSocket/Delivery、多 Group、事务回滚；未 mock membership | `group-agent-revocation.test.ts` 5 例；`http-room.test.ts` +1；`agent-auth.test.ts` +1 |
+| FIX3-06 Workspace 阶段边界 | PASS | ROADMAP §4.9 明确 M5 仅为 Task / Workspace 元数据映射，Runtime 与 Filesystem Allowlist 属 M6/M7；THREAD_TASK_ENGINE §11、PLAN、AUTH、README 同步 | 文档检查 |
+
+测试覆盖 T1–T16 的说明：T5 的“原 Thread”在 Task 取消后已关闭，因此用户消息按正常 Thread 规则被拒绝；仍然开放的 plain Thread 消息可正常保存且不创建 delivery（测试中显式区分）。T8 使用真实 WSS 连接，移除后 polling 不再发送该 Group 事件；T9/T10 用 Group A + Group B 验证只撤销 A。
+
+验证（实际执行）：
+
+```text
+$ pnpm lint          # exit 0
+$ pnpm typecheck     # exit 0
+$ pnpm format:check  # exit 0
+$ pnpm test          # 22 files / 181 tests passed
+$ pnpm build         # 全部 Done
+```
+
+剩余：
+
+- Runtime binding / Local filesystem allowlist 属 M6/M7；M5 不提供路径字段或文件访问代码。
+- Thread 投递仍只覆盖「用户 → 当前 assignee」；多 Agent Thread 协作不在 M5。
+- `running` Task 恢复依赖 Agent 主动拉取；Server 不自动重启执行。
+- 审批过期扫描仍是进程内 30s 定时器（单实例）；M9 评估多实例调度。
+- `request_task` 属 M6/M7；M4 skip 诊断未实现；Web UI 属 M8。
+- 代码提交：`eadb4a4`（实现 + 测试）。M5 状态：Completed（M5 Review Fix 3 验收通过，2026-11-24）。

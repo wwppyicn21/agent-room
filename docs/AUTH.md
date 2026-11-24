@@ -150,3 +150,13 @@ Agent Bearer（`Authorization: Bearer agt_…`）在 Task 执行端点与 Agent 
 - **Agent 恢复**：新增 Agent Bearer 的 `GET /agent/tasks`、`/agent/tasks/:taskId`、`/agent/threads/:threadId/messages`；SDK 在 `hello` 后调用 `onRecover`，并提供 `listTasks` / `getTask` / `listThreadMessages`。重启后 `running` Task 保持状态，Agent 重新拉取状态与 Thread 历史后继续。
 - **Workspace Policy**：新增 `workspaces` 表与 Group 边界校验；创建需群 owner/admin，成员可读，Task 只能引用同群 Workspace；Agent 仅能读取自己 Task 的 Workspace 元数据。
 - **来源与协议**：Thread / Task 的 source 必须是群主消息流中未删除消息；`TASK_RUN_STATUSES` 增加 `paused`；无效或跨 Group/Thread 的 cursor 统一 `400`。
+
+## 11. Group membership 撤销（2026-11-24，M5 Review Fix 3）
+
+- **授权事实来源是 Group membership**：`assignedAgentId` 仅表示分配关系，不构成永久授权。Agent Bearer 读取 Task / Thread / Workspace 时同时校验 `(groupId, memberType='agent', memberId)`。
+- **Recovery**：`GET /agent/tasks` 只返回仍属于对应 Group 的任务；`GET /agent/tasks/:taskId` 对非本人或已失去 Group 权限的任务统一 `404`；`GET /agent/threads/:threadId/messages` 在读取前校验当前 membership（失败 `403`）。`start / progress / complete / approval` 等写端点继续由 `requireGroupMember` 拒绝。
+- **Thread 投递**：用户向 Thread 发消息时，只有 assignee 仍是该 Group 成员才创建 durable delivery；已移除的 assignee 不会收到新投递，用户消息本身仍按 Thread 规则处理。
+- **Durable Delivery**：投递列表、标记 delivered / 重投、以及 WebSocket 实际发送前都会重新校验 `event.groupId` 对应的 membership；失去权限的 `pending` / `delivered` 记录终止为 `failed`，`lastError = "group membership revoked"`，不会重放。非 Group 事件（`groupId` 为空）保持原语义。
+- **移除 Agent 的事务**：删除 membership、取消该 Group 内该 Agent 的非终态 Task（含 Run、pending Approval、Thread 关闭、`task.cancelled` 事件与审计，reason `agent removed from group`）、撤销该 Group 的未完成 Delivery，全部在同一事务提交；不会向被移除 Agent 新建 `task.cancelled` delivery。
+- **作用范围**：只影响被移除的那个 Group；Agent 保持全局身份与连接，仍可读取/接收其所属其他 Group 的资源。移除 User Member 不触发 Agent Task 取消。
+- **不可追溯**：已经成功送达并被 Agent 保存的内容无法通过服务端撤回；本轮保证的是撤销生效后不再新增读取、重放或投递。

@@ -1482,6 +1482,21 @@ M5 已实现并通过测试：Thread 创建 / 详情 / 独立消息流 / 事件�
 
 剩余：Thread 多 Agent 协作不在 M5；`running` Task 恢复依赖 Agent 主动拉取，Server 不自动重启执行；审批过期扫描仍是单实例定时器（M9 评估）；`request_task` 属 M6/M7；skip 诊断未实现；Web UI 属 M8。
 
+### M5 Review Fix 3（2026-11-24）
+
+第三轮审查（`AgentRoom-M5-Review-Fix-3.md`）针对 Agent 被移出 Group 后的权限撤销完整性；只修复 M5，未开始 M6/M7/M8：
+
+- **FIX3-01 Recovery 权限**：`listAgentTasks` 通过 `group_members` join 只返回仍属于对应 Group 的任务；`getAgentTask` 对非本人或已失去 Group 权限统一 `404`；`listThreadMessagesForAgent` 在读取前校验 membership（失败 `403`）；`start` / `progress` / `complete` / `approval` 等写端点保留 `requireGroupMember`。
+- **FIX3-02 Thread 投递**：只有 assignee 仍是该 Group 成员时才在事务内创建 delivery；不广播、不因已移除 assignee 丢弃用户消息。
+- **FIX3-03 Delivery 撤销**：`listOutstandingDeliveries` 过滤并终止无权的 `pending` / `delivered` 为 `failed`（`lastError = "group membership revoked"`）；`markDeliveryDelivered` / `redeliverDelivery` 与 WebSocket 发送前二次校验；`removeMember` 同事务批量撤销该 Group 的未完成 delivery；非 Group 事件（`groupId` 为空）保持原语义。
+- **FIX3-04 Task 取消**：`removeMember` 事务内取消该 Group 中该 Agent 的所有非终态 Task（queued / assigned / running / waiting_approval / paused）；Run、pending Approval、Thread、`task.cancelled` Event/Audit 一致更新，reason `agent removed from group`，且不向被移除 Agent 新建 delivery；User removal 不触发该逻辑。
+- **FIX3-05 测试**：新增 `apps/server/test/group-agent-revocation.test.ts`（5 例，覆盖 T1–T16 的 service 与事务回滚）；`http-room.test.ts` +1（Recovery / Thread / 写端点 + 多 Group）；`agent-auth.test.ts` +1（移除后 live socket 与 pending/unacked 不重放）。22 files / 181 tests。
+- **FIX3-06 文档**：ROADMAP §4.9 与 THREAD_TASK_ENGINE §11 明确 M5 仅实现 Task / Workspace 元数据映射，Runtime 绑定与 Filesystem Allowlist 属 M6/M7；PLAN / PROGRESS / AUTH / README 同步。
+
+状态：完成（代码提交 `eadb4a4`；组件 22 files / 181 tests，验收命令全部实际执行通过）。
+
+剩余：Runtime / Filesystem Allowlist 属 M6/M7；Thread 多 Agent 协作不在 M5；审批过期扫描仍是单实例定时器（M9 评估）。
+
 ## M6：DSH Plugin
 
 ### 工作
@@ -1850,7 +1865,7 @@ M9  Cloudflare + Mini PC 原生部署、SQLite 备份/恢复、JSON 数据导入
 | M2 | 完成（2026-11-22/23，含两轮评审修复 b79a580 + 7ce6437） | 7ce6437 | lint / typecheck / 47 tests / build 全过；权限分级、Task 幂等、Delivery 状态机、归档群组只读实测 | 设计见 docs/DATABASE.md，记录见 docs/PROGRESS.md「M2」「M2 Review Fix」「M2 Review Fix 2」 |
 | M3 | 完成（2026-11-23：认证 + Agent SDK，83 tests；含 M3 Review Fix） | de8ef4d | lint / typecheck / 83 tests / build 全过；dev/access、Challenge 重放、吊销断连、重连补齐、ticket 重放、活跃 TTL、邮箱唯一实测 | 设计见 docs/AUTH.md，记录见 docs/PROGRESS.md「M3」与「M3 Review Fix」 |
 | M4 | 完成（2026-11-23：服务端参与引擎 + SDK reply/skip；Review Fix 3 后 126 tests；skip 诊断未实现） | e52a355 | lint / typecheck / 111 tests / build 全过；双 Agent WSS、Root/Hop 服务端推导、Max Hop 零 fan-out、投递租约重试、Dev Auth Loopback、按群组限流实测 | 记录见 docs/PROGRESS.md「M4」「M4 Review Fix」「M4 Review Fix 2」「M4 Review Fix 3」；REST/Web UI 属 M8，每群组 Session 映射属 M6；skip 诊断列为未完成 |
-| M5 | 完成（2026-11-24：Thread / Task / Approval / 摘要回流 / REST + Review Fix 2；174 tests） | 6f8092a | lint / typecheck / format / 174 tests / build 全过；Thread 定向投递、审批过期竞态、Agent 恢复、Workspace Policy、OpenAPI 契约实测 | 记录见 docs/PROGRESS.md「M5」「M5 Review Fix」「M5 Review Fix 2」；Web UI 属 M8，DSH/Codex Plugin 属 M6/M7 |
+| M5 | 完成（2026-11-24：Thread / Task / Approval / 摘要回流 / REST + Review Fix 2 + Review Fix 3；181 tests） | eadb4a4 | lint / typecheck / format / 181 tests / build 全过；Thread 定向投递、审批过期竞态、Agent 恢复、Workspace Policy、Group 权限撤销（Recovery/Thread/Delivery/Task）、OpenAPI 契约实测 | 记录见 docs/PROGRESS.md「M5」「M5 Review Fix」「M5 Review Fix 2」「M5 Review Fix 3」；Web UI 属 M8，DSH/Codex Plugin 属 M6/M7 |
 | M6 | 未开始 | | | |
 | M7 | 未开始 | | | |
 | M8 | 未开始 | | | |

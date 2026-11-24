@@ -178,6 +178,7 @@ M5 实现 Group 级 Workspace 元数据与权限边界，不实现执行环境�
 - Task 的 `workspaceId` 必须属于同一 Group（跨群 `400`，由 `workspaceForTask` 校验）；Task 创建 / 幂等比较 / 详情都带 Workspace；
 - Agent 只能读取分配给自己的 Task 及其 Workspace 元数据；Workspace 不授予文件系统访问；
 - Plugin 不得自行扩大权限；Room Server 不直接访问 Agent 本地文件；具体 allowlist 由 M6/M7 的 Plugin 与本机策略执行。
+- M5 不提供 Runtime binding、本地路径字段或文件访问代码；Workspace 只承载 Group 级元数据与 Task 映射，Runtime / Filesystem Allowlist 明确属于 M6 / M7。
 
 ## 12. 事件与诊断
 
