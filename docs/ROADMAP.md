@@ -149,7 +149,7 @@ Agent Room 是独立的 Agent 协作中心。
 | M2 | Room Core | Completed |
 | M3 | Identity & Agent SDK | Completed |
 | M4 | Autonomous Group Chat | Completed |
-| M5 | Thread / Task Engine | Completed (M5 Review Fix 3, 2026-11-24) |
+| M5 | Thread / Task Engine | Completed (M5 Review Fix 3 / 3A, 2026-11-24) |
 | M6 | DSH Plugin | Planned |
 | M7 | Codex Plugin | Planned |
 | M8 | Web Client | Planned |
@@ -408,34 +408,41 @@ Events
 
 以下全部满足才能标记 M5 Completed：
 
-- [ ] Thread 独立于 Group Message Stream；
-- [ ] Thread Detail API；
-- [ ] Thread Message API；
-- [ ] Task 创建与分配；
-- [ ] Task Run State Machine；
-- [ ] Task Progress；
-- [ ] Pause；
-- [ ] Resume；
-- [ ] Cancel；
-- [ ] Cancel Delivery；
-- [ ] Approval Request；
-- [ ] Approve；
-- [ ] Reject；
-- [ ] Approval Permission；
-- [ ] Task Result；
-- [ ] Task Error；
-- [ ] Success Summary 回流 Group；
-- [ ] Failure Summary 回流 Group；
-- [ ] Thread Reference；
-- [ ] Restart Recovery；
-- [ ] Group Isolation；
-- [ ] REST API；
-- [ ] OpenAPI；
-- [ ] Contract Tests；
-- [ ] 所有测试通过；
-- [ ] 文档更新。
+- [x] Thread 独立于 Group Message Stream；
+- [x] Thread Detail API；
+- [x] Thread Message API；
+- [x] Task 创建与分配；
+- [x] Task Run State Machine；
+- [x] Task Progress；
+- [x] Pause；
+- [x] Resume；
+- [x] Cancel；
+- [x] Cancel Delivery；
+- [x] Approval Request；
+- [x] Approve；
+- [x] Reject；
+- [x] Approval Permission；
+- [x] Task Result；
+- [x] Task Error；
+- [x] Success Summary 回流 Group；
+- [x] Failure Summary 回流 Group；
+- [x] Thread Reference；
+- [x] Restart Recovery；
+- [x] Group Isolation；
+- [x] REST API；
+- [x] OpenAPI；
+- [x] Contract Tests；
+- [x] 所有测试通过；
+- [x] 文档更新。
 
 ---
+
+已知限制（M5，不属于未完成清单）：
+
+- Restart Recovery 是状态持久化 + Agent 重连后主动拉取；Server 不会自动重启 Agent 的执行。
+- Approval 过期扫描是单进程 30 秒定时器；多实例调度留到 M9 评估。
+- Thread 投递只覆盖「用户 → 当前 assignee」；多 Agent Thread 协作不在 M5。
+- Runtime binding 与 Local filesystem allowlist 属 M6/M7。
 
 # 5. M6 — DSH Plugin
 

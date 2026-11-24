@@ -67,6 +67,7 @@ queued ──► assigned ──► running ──► succeeded
 - reject 必须给 `reason`；Task → `failed`，Run → `failed`，摘要写回群组；
 - Approval 状态、决策人、时间、原因持久化；写 `audit_logs` 与 `task.approval_decided` 事件；
 - `expiresAt` 可选；Server 启动时和每 30 秒扫描 `pending` 且到期的 Approval，事务内置 `expired`、Task/Run/Thread → `failed`、写失败摘要、`task.approval_expired` 事件与 `approval.expire` 审计；重复过期幂等（不重复摘要/事件/审计），已批准/已拒绝/已取消拒绝过期；扫描入口 `expireDueApprovals`，不暴露用户 API（Server Authority）。
+- 过期事件在同一事务内经现有 durable delivery 定向投递给原 Task assignee（仅当 assignee 记录存在、未 disabled 且仍是该 Group 成员）；无有效 assignee 时只做状态流转、摘要与审计，不创建 delivery。摘要仍按 Group 广播规则排除 assignee，二者互不替代。
 
 ## 5. Progress
 

@@ -634,7 +634,7 @@ $ pnpm build         # 全部 Done
 - `request_task` 属 M6/M7；M4 skip 诊断未实现；Web UI 属 M8。
 - 代码提交：`6f8092a`（实现 + 测试 + 文档 + 迁移 0009）。
 
-### M5 Review Fix 3（2026-11-24）
+### M5 Review Fix 3（Group membership 撤销，2026-11-24）
 
 第三轮审查针对 Agent 被移出 Group 后的权限撤销完整性；保留 Review Fix 2 已有实现，未改变架构，未开始 M6/M7/M8。
 
@@ -666,4 +666,18 @@ $ pnpm build         # 全部 Done
 - `running` Task 恢复依赖 Agent 主动拉取；Server 不自动重启执行。
 - 审批过期扫描仍是进程内 30s 定时器（单实例）；M9 评估多实例调度。
 - `request_task` 属 M6/M7；M4 skip 诊断未实现；Web UI 属 M8。
-- 代码提交：`eadb4a4`（实现 + 测试）。M5 状态：Completed（M5 Review Fix 3 验收通过，2026-11-24）。
+- 代码提交：`eadb4a4`（实现 + 测试）。M5 状态：Completed（M5 Review Fix 3 / 3A 验收通过，2026-11-24）。
+
+### M5 Review Fix 3A — Approval Expiration Assignee Durable Delivery（2026-11-24）
+
+Status: Completed / Verified
+
+- **Issue**：审批过期后 Approval/Task/Run/Thread 状态、失败摘要、`task.approval_expired` 事件和审计都已完成，但原 Task assignee 没有收到 durable delivery；Agent 可能一直停留在“等待审批结果”。
+- **Root Cause**：共享的 `failTask()` 只写生命周期事件并丢弃返回值；摘要广播 `enqueueGroupAgentDeliveries` 明确排除 assignee，因此唯一能通知 assignee 的路径缺失。
+- **Fix**：`failTask` 保存 `task.approval_expired` 事件引用，payload 增加 `threadId` / `status`；当事件类型为审批过期、task 有 `assignedAgentId`、assignee 未 disabled 且仍是该 Group 成员时，在同一事务内 `enqueueDelivery` 给 assignee。复用现有 delivery 状态机、租约与重试；无新事件、无新表、无迁移、无新依赖。无有效 assignee 时不创建 delivery。
+- **Changed files**：`apps/server/src/modules/approvals.ts`、新增 `apps/server/test/approval-expiration-delivery.test.ts`、`docs/ROADMAP.md`、`docs/PLAN.md`、`docs/PROGRESS.md`、`docs/THREAD_TASK_ENGINE.md`。
+- **Tests**：7 例——assignee delivery 与 event payload、引用既有事件且不重复创建、非 assignee 不收到到期 delivery 且摘要仍广播给其他在线 Agent、assignee 离线时 pending + 恢复 ack、重复过期幂等、事务回滚（Approval/Task/Run/Thread/Event/Delivery/Summary/Audit）、无 assignee 场景。
+- **Validation**：`lint` / `typecheck` / `format:check` / `test` / `build` 全部实际执行（结果见下）。
+- **Test summary**：Test Files 23，Tests Passed 188，Tests Failed 0。
+- **Remaining**：审批过期扫描仍是单实例 30 秒定时器；Server 不会自动重启 Agent 执行；Runtime/Filesystem Allowlist 属 M6/M7；Thread 多 Agent 协作、`request_task`、skip 诊断、Web UI 等边界不变。
+- **代码提交**：`a9021ea`。

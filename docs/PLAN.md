@@ -1482,7 +1482,7 @@ M5 已实现并通过测试：Thread 创建 / 详情 / 独立消息流 / 事件�
 
 剩余：Thread 多 Agent 协作不在 M5；`running` Task 恢复依赖 Agent 主动拉取，Server 不自动重启执行；审批过期扫描仍是单实例定时器（M9 评估）；`request_task` 属 M6/M7；skip 诊断未实现；Web UI 属 M8。
 
-### M5 Review Fix 3（2026-11-24）
+### M5 Review Fix 3（Group membership 撤销，2026-11-24）
 
 第三轮审查（`AgentRoom-M5-Review-Fix-3.md`）针对 Agent 被移出 Group 后的权限撤销完整性；只修复 M5，未开始 M6/M7/M8：
 
@@ -1496,6 +1496,14 @@ M5 已实现并通过测试：Thread 创建 / 详情 / 独立消息流 / 事件�
 状态：完成（代码提交 `eadb4a4`；组件 22 files / 181 tests，验收命令全部实际执行通过）。
 
 剩余：Runtime / Filesystem Allowlist 属 M6/M7；Thread 多 Agent 协作不在 M5；审批过期扫描仍是单实例定时器（M9 评估）。
+
+### M5 Review Fix 3A（Approval Expiration Assignee Delivery，2026-11-24）
+
+- **问题**：审批过期完成 Approval/Task/Run/Thread 状态、失败摘要、`task.approval_expired` 事件和审计，但没有通知原 assignee，Agent 可能一直等待审批结果。
+- **修复**：`failTask` 保存该事件并在事件 payload 增加 `threadId` / `status`；仅审批过期且 assignee 存在、未 disabled、仍为该 Group 成员时，在同一事务内用现有 durable delivery 定向投递；摘要广播继续排除 assignee。无有效 assignee 时不建 delivery。
+- **测试**：新增 `apps/server/test/approval-expiration-delivery.test.ts` 7 例（投递与 payload、唯一事件、非 assignee、离线/ack、重复过期幂等、事务回滚、无 assignee）。
+- **文档**：ROADMAP M5 checklist 与已知限制、PROGRESS、THREAD_TASK_ENGINE 审批过期行为。
+- **状态**：完成（代码提交 `a9021ea`）。
 
 ## M6：DSH Plugin
 
@@ -1865,7 +1873,7 @@ M9  Cloudflare + Mini PC 原生部署、SQLite 备份/恢复、JSON 数据导入
 | M2 | 完成（2026-11-22/23，含两轮评审修复 b79a580 + 7ce6437） | 7ce6437 | lint / typecheck / 47 tests / build 全过；权限分级、Task 幂等、Delivery 状态机、归档群组只读实测 | 设计见 docs/DATABASE.md，记录见 docs/PROGRESS.md「M2」「M2 Review Fix」「M2 Review Fix 2」 |
 | M3 | 完成（2026-11-23：认证 + Agent SDK，83 tests；含 M3 Review Fix） | de8ef4d | lint / typecheck / 83 tests / build 全过；dev/access、Challenge 重放、吊销断连、重连补齐、ticket 重放、活跃 TTL、邮箱唯一实测 | 设计见 docs/AUTH.md，记录见 docs/PROGRESS.md「M3」与「M3 Review Fix」 |
 | M4 | 完成（2026-11-23：服务端参与引擎 + SDK reply/skip；Review Fix 3 后 126 tests；skip 诊断未实现） | e52a355 | lint / typecheck / 111 tests / build 全过；双 Agent WSS、Root/Hop 服务端推导、Max Hop 零 fan-out、投递租约重试、Dev Auth Loopback、按群组限流实测 | 记录见 docs/PROGRESS.md「M4」「M4 Review Fix」「M4 Review Fix 2」「M4 Review Fix 3」；REST/Web UI 属 M8，每群组 Session 映射属 M6；skip 诊断列为未完成 |
-| M5 | 完成（2026-11-24：Thread / Task / Approval / 摘要回流 / REST + Review Fix 2 + Review Fix 3；181 tests） | eadb4a4 | lint / typecheck / format / 181 tests / build 全过；Thread 定向投递、审批过期竞态、Agent 恢复、Workspace Policy、Group 权限撤销（Recovery/Thread/Delivery/Task）、OpenAPI 契约实测 | 记录见 docs/PROGRESS.md「M5」「M5 Review Fix」「M5 Review Fix 2」「M5 Review Fix 3」；Web UI 属 M8，DSH/Codex Plugin 属 M6/M7 |
+| M5 | 完成（2026-11-24：Thread / Task / Approval / 摘要回流 / REST + Review Fix 2 + Review Fix 3 / 3A；188 tests） | a9021ea | lint / typecheck / format / 188 tests / build 全过；Thread 定向投递、审批过期竞态、Agent 恢复、Workspace Policy、Group 权限撤销（Recovery/Thread/Delivery/Task）、审批过期 assignee 定向投递、OpenAPI 契约实测 | 记录见 docs/PROGRESS.md「M5」「M5 Review Fix」「M5 Review Fix 2」「M5 Review Fix 3」「M5 Review Fix 3A」；Web UI 属 M8，DSH/Codex Plugin 属 M6/M7 |
 | M6 | 未开始 | | | |
 | M7 | 未开始 | | | |
 | M8 | 未开始 | | | |
