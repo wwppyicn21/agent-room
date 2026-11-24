@@ -39,6 +39,7 @@ erDiagram
     messages ||--o{ tasks : "source of"
     tasks ||--o{ task_runs : "runs"
     tasks ||--o{ approvals : "requests"
+    workspaces ||--o{ tasks : "scopes"
     agents ||--o{ tasks : "assigned to"
     agents ||--o{ approvals : "requests"
     users ||--o{ approvals : "decides"
@@ -80,7 +81,7 @@ erDiagram
 | `agent_deliveries`     | 每个 Agent 的投递队列            | `(agent_id, event_id)` 唯一、`status`                                              |
 | `audit_logs`           | 审计                             | `actor_type/actor_id`、`action`、`target_type/target_id`                           |
 
-## 4. 索引（45 个显式索引）
+## 4. 索引（47 个显式索引）
 
 | 表                     | 索引                                                                                                                                                             | 用途                                                            |
 | ---------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------- |
@@ -100,6 +101,7 @@ erDiagram
 | `events`               | `events_group_seq_idx`、`events_type_created_idx`、`events_id_unique`                                                                                            | 群内增量、类型检索、按事件 id                                   |
 | `agent_deliveries`     | `agent_deliveries_event_uq`、`agent_deliveries_pending_idx`、`agent_deliveries_lease_idx`                                                                        | 去重、待投递队列、租约到期重投                                  |
 | `approvals`            | `approvals_task_idx`、`approvals_status_idx`                                                                                                                     | 任务审批列表、待审批筛选                                        |
+| `workspaces`           | `workspaces_group_name_uq`、`workspaces_group_created_idx`                                                                                                       | 群内重名、按群组列出 Workspace                                  |
 | `audit_logs`           | `audit_logs_created_idx`、`audit_logs_actor_idx`                                                                                                                 | 时间线、按操作者                                                |
 
 `agent_challenges` 的 `used_at` 以 `UPDATE ... WHERE used_at IS NULL` 原子消费；`agent_sessions` 只存 token 的 SHA-256。
@@ -123,7 +125,7 @@ tasks by group: SEARCH tasks USING INDEX tasks_group_idx (group_id=?)
 pending deliveries: SEARCH agent_deliveries USING INDEX agent_deliveries_pending_idx (agent_id=? AND status=?)
 events by group: SEARCH events USING INDEX events_group_seq_idx (group_id=? AND seq>?)
 message idempotency: SEARCH messages USING INDEX messages_group_client_uq (group_id=? AND client_message_id=?)
-explicit indexes: 45
+explicit indexes: 47
 ```
 
 消息分页使用 `WHERE group_id = ? AND seq > ? ORDER BY seq LIMIT 50`，命中
@@ -172,10 +174,12 @@ pending ──deliver──▶ delivered ──ack──▶ acked
 - 状态枚举字段没有数据库 `CHECK` 约束，靠 zod 与服务层状态机保证；迁移中不手写 CHECK，避免 Drizzle snapshot 漂移。
 - `group_members.member_id` 是多态列、`threads.source_message_id` 因循环依赖无硬外键，均由服务层校验。
 - Task 状态机在 M5 实现 `queued/assigned/running/waiting_approval/paused/succeeded/failed/cancelled`；非法转换返回 409。
-- Approval 超时（`expiresAt` 已过）由调用方 `expireApproval` 显式推进为 `expired` 并 fail Task，没有后台定时器扫过期审批；审批的唯一通知渠道是 `task.approval_decided` 事件（durable delivery）。
+- Approval 超时：`decideApproval` 在事务内检查 `expiresAt`，已过期则先落 `expired`（Task/Run/Thread failed + 摘要 + `task.approval_expired` + `approval.expire`）并返回 409；决策 update 带 `status = 'pending' AND (expires_at IS NULL OR expires_at > now)`，与扫描器竞态时只有一方成功。`expireDueApprovals` 在 Server 启动时执行一次、之后每 30 秒扫描，作为兜底；审批的唯一通知渠道是 `task.approval_decided` 事件（durable delivery）。
 - Agent 发起的 `request_task`（自主创建 Task）尚未实现，属 M5 之后的 M6/M7 Plugin 能力。
 - 长连接投递与在线租约已在 M3 实现；M2 只提供状态机与恢复查询。
-- M4 起 Agent 发言与参与规则在 `postMessage` 事务内原子执行（allowAgentMessages / hop / maxRepliesPerRoot / maxAgentMessagesPerMinute）；消息只投递给在线 Agent。
+- M4 起 Agent 发言与参与规则在 `postMessage` 事务内原子执行（allowAgentMessages / hop / maxRepliesPerRoot / maxAgentMessagesPerMinute）；群聊消息只投递给在线 Agent。
+- M5 第二轮修复起，Thread 消息只投递给该 Thread 非终态 Task 的 assignee（不要求在线，durable delivery 离线补齐）；plain Thread 与发送者本人不投递。Thread 内 Agent 回复不经过群聊参与限制。
+- Workspace 为 Group 级元数据：`tasks.workspace_id` 外键到 `workspaces`，服务层 `workspaceForTask` 强制同 Group；创建 Workspace 需群 owner/admin，成员可读。M5 不授予文件系统访问。
 
 ## 8. 常用命令
 

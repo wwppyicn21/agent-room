@@ -96,18 +96,20 @@ protocolVersion=1
 
 M5 任务相关端点：
 
-| 方法     | 路径                                                                        | 权限                              |
-| -------- | --------------------------------------------------------------------------- | --------------------------------- |
-| GET/POST | `/api/v1/groups/:groupId/threads`、`/threads/:threadId/messages`、`/events` | 群成员                            |
-| POST     | `/api/v1/threads/:threadId/close`                                           | 创建者或群管理员                  |
-| GET/POST | `/api/v1/groups/:groupId/tasks`                                             | 成员读 / 写需可写用户             |
-| POST     | `/api/v1/tasks/:taskId/{assign,pause,resume,cancel}`                        | 群管理员                          |
-| POST     | `/api/v1/tasks/:taskId/{start,progress,complete}`                           | Agent Bearer（assignee）          |
-| GET/POST | `/api/v1/tasks/:taskId/approvals`                                           | 成员读 / Agent Bearer 请求        |
-| GET      | `/api/v1/approvals/:approvalId`                                             | 群成员                            |
-| POST     | `/api/v1/approvals/:approvalId/{approve,reject}`                            | 群 owner/admin 或系统 owner/admin |
+| 方法     | 路径                                                                               | 权限                              |
+| -------- | ---------------------------------------------------------------------------------- | --------------------------------- |
+| GET/POST | `/api/v1/groups/:groupId/threads`、`/threads/:threadId/messages`、`/events`        | 群成员                            |
+| POST     | `/api/v1/threads/:threadId/close`                                                  | 创建者或群管理员                  |
+| GET/POST | `/api/v1/groups/:groupId/tasks`                                                    | 成员读 / 写需可写用户             |
+| POST     | `/api/v1/tasks/:taskId/{assign,pause,resume,cancel}`                               | 群管理员                          |
+| POST     | `/api/v1/tasks/:taskId/{start,progress,complete}`                                  | Agent Bearer（assignee）          |
+| GET/POST | `/api/v1/tasks/:taskId/approvals`                                                  | 成员读 / Agent Bearer 请求        |
+| GET      | `/api/v1/approvals/:approvalId`                                                    | 群成员                            |
+| POST     | `/api/v1/approvals/:approvalId/{approve,reject}`                                   | 群 owner/admin 或系统 owner/admin |
+| GET      | `/api/v1/agent/tasks`、`/agent/tasks/:taskId`、`/agent/threads/:threadId/messages` | Agent Bearer（assignee）          |
+| GET/POST | `/api/v1/groups/:groupId/workspaces`、`GET /api/v1/workspaces/:workspaceId`        | 成员读 / 群 owner/admin 建        |
 
-Agent Bearer（`Authorization: Bearer agt_…`）只在 Task 执行端点上替代用户 Principal；这些路由自行校验会话 token 与 assignee，其他 `/api/v1` 路由仍要求用户 Principal。
+Agent Bearer（`Authorization: Bearer agt_…`）在 Task 执行端点与 Agent 恢复端点（tasks / threads 历史）上替代用户 Principal；这些路由自行校验会话 token 与 assignee，其他 `/api/v1` 路由仍要求用户 Principal。Thread 内用户消息只投递给该 Thread 活跃 Task 的 assignee（durable delivery），不广播给其他 Agent。
 
 `/healthz`、`/readyz` 与旧版 `/ws` 保持公开；其他路径必须先解析出 Principal。
 
@@ -115,7 +117,8 @@ Agent Bearer（`Authorization: Bearer agt_…`）只在 Task 执行端点上替�
 
 - 握手走「HTTP challenge → HTTP connect → WSS 带 token」；计划中的“在 WSS 内完成 challenge”尚未实现，
   但签名串、一次性消费与身份解析逻辑一致。后续可在不改变协议字符串的前提下迁移。
-- 群组/消息的 REST API 属 M8，因此浏览器与 mock Agent 目前只能通过 WebSocket 收发事件，不能主动拉取历史消息。
+- 群组 / 消息 / Thread / Task 的 REST API 已在 M5 提供；React Web UI 属 M8。Agent 可通过恢复端点主动拉取自己的 Task 与 Thread 历史。
+- Thread 投递只覆盖“用户 → 当前 assignee”；Thread 内多个 Agent 的协作、participant 列表不在 M5 范围。
 - 会话 token 目前固定 TTL，没有主动轮换；Access JWT 只做在线校验，不在服务端保存。
 - 审计覆盖注册、加/吊销密钥、用户与群组管理、任务操作；Agent 连接本身不逐条写审计（状态事件已足够）。
 
@@ -139,3 +142,11 @@ Agent Bearer（`Authorization: Bearer agt_…`）只在 Task 执行端点上替�
 - **SDK 决策**：`onEvent` 可返回 `{action:"reply", text}`（SDK 自动 `message.send`，带上事件里的 `messageId` / `rootMessageId`，并设置 `clientMessageId = sdk-reply-<deliveryId>`）或 `{action:"skip"}`（不发送，只 ack）。未返回或返回空文本等价于 skip。
 - **自动回复确认、重试与幂等**：自动回复不会立刻 ack 原 delivery；SDK 只有在收到 `message.sent` 且 `clientMessageId` 匹配后才 ack。SDK 为每个待确认回复保存原始 `content` 与稳定 `clientMessageId = sdk-reply-<deliveryId>`：`rate_limited` / `internal_error` 等可重试错误在 `replyRetryBackoffMs`（默认 5s）后自动重发同一 payload；`replyAckTimeoutMs`（默认 10s）到期也会重发同一 payload，不会重新生成文本。socket 关闭时保留 pending，重连 `open()` 后继续重发；`conflict` / `forbidden` / `validation_error` / `not_found` 视为终止并 ack，`close()` 清理所有 pending 与定时器。服务端的幂等查询位于预算与限流检查之前，因此重发（包括服务端已保存但 `message.sent` 丢失的情况）会返回原消息，不会产生重复消息或重复事件。
 - **未实现/边界**：`request_task` 属 M5；群组与消息的 REST API、Web UI 属 M8；每个群组独立的 DSH Session 映射属 M6 DSH Plugin。skip 不写公开消息；**skip 的内部诊断事件未实现**（SDK 当前只 ack，服务器无法区分 skip 与未回复），已在 PLAN/PROGRESS 列为未完成项。
+
+## 10. M5 审查修复（2026-11-24）
+
+- **Thread 消息投递**：`postMessage` 在 Thread 内查找非终态 Task 的 `assignedAgentId`，只给该 Agent 建 durable delivery；事件 payload 带 `threadId` / `taskId`；plain Thread 与发送者本人不投递。Agent 在 Thread 内回复不经过群组 `allowAgentMessages` / hop / budget / rate 检查。
+- **审批过期一致性**：`decideApproval` 在事务内检查 `expiresAt`，过期先落 `expired`（Task/Run/Thread `failed` + 摘要 + `task.approval_expired` + `approval.expire`）再返回 `409`；决策 update 带 `status = 'pending' AND (expires_at IS NULL OR expires_at > now)`，与 30 秒扫描器竞态时只有一方成功。
+- **Agent 恢复**：新增 Agent Bearer 的 `GET /agent/tasks`、`/agent/tasks/:taskId`、`/agent/threads/:threadId/messages`；SDK 在 `hello` 后调用 `onRecover`，并提供 `listTasks` / `getTask` / `listThreadMessages`。重启后 `running` Task 保持状态，Agent 重新拉取状态与 Thread 历史后继续。
+- **Workspace Policy**：新增 `workspaces` 表与 Group 边界校验；创建需群 owner/admin，成员可读，Task 只能引用同群 Workspace；Agent 仅能读取自己 Task 的 Workspace 元数据。
+- **来源与协议**：Thread / Task 的 source 必须是群主消息流中未删除消息；`TASK_RUN_STATUSES` 增加 `paused`；无效或跨 Group/Thread 的 cursor 统一 `400`。

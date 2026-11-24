@@ -6,7 +6,10 @@ import {
   tasks,
   type TaskRow,
   threads,
+  type ThreadRow,
   messages,
+  type WorkspaceRow,
+  workspaces,
 } from "@room/database";
 import { newId } from "@room/protocol";
 import { messageContentSchema } from "@room/protocol";
@@ -15,6 +18,7 @@ import { recordAudit } from "./audit.js";
 import { ConflictError, NotFoundError, ValidationError } from "./errors.js";
 import { appendEvent, enqueueDelivery, enqueueGroupAgentDeliveries } from "./events.js";
 import { getGroupMessageRow } from "./messages.js";
+import { workspaceForTask } from "./workspaces.js";
 import {
   agentActor,
   isGroupMember,
@@ -54,6 +58,7 @@ export function createTaskFromMessage(
     title: string;
     description?: string | null;
     assignedAgentId?: string | null;
+    workspaceId?: string | null;
     createdByUserId: string;
     idempotencyKey?: string | null;
   },
@@ -64,6 +69,7 @@ export function createTaskFromMessage(
   const title = validateTitle(input.title, "title");
   const description = input.description?.trim() || null;
   const assignedAgentId = input.assignedAgentId ?? null;
+  const workspaceId = input.workspaceId?.trim() || null;
   const idempotencyKey = input.idempotencyKey?.trim() || null;
   if (idempotencyKey) {
     const existing = ctx.db
@@ -76,7 +82,8 @@ export function createTaskFromMessage(
         existing.sourceMessageId === input.sourceMessageId &&
         existing.title === title &&
         (existing.description ?? null) === description &&
-        (existing.assignedAgentId ?? null) === assignedAgentId;
+        (existing.assignedAgentId ?? null) === assignedAgentId &&
+        (existing.workspaceId ?? null) === workspaceId;
       if (!samePayload) {
         throw new ConflictError(
           `idempotency key ${idempotencyKey} was already used with a different payload`,
@@ -87,6 +94,7 @@ export function createTaskFromMessage(
     }
   }
   getGroupMessageRow(ctx, input.groupId, input.sourceMessageId);
+  if (workspaceId) workspaceForTask(ctx, { workspaceId, groupId: input.groupId });
   if (assignedAgentId) {
     requireAgent(ctx.db, assignedAgentId);
     if (!isGroupMember(ctx.db, input.groupId, "agent", assignedAgentId)) {
@@ -122,6 +130,7 @@ export function createTaskFromMessage(
         status: assignedAgentId ? "assigned" : "queued",
         priority: 0,
         assignedAgentId,
+        workspaceId,
         createdByUserId: input.createdByUserId,
         createdAt: now,
         updatedAt: now,
@@ -142,7 +151,7 @@ export function createTaskFromMessage(
       groupId: input.groupId,
       threadId,
       taskId,
-      payload: { taskId, title, assignedAgentId },
+      payload: { taskId, title, assignedAgentId, workspaceId },
       createdAt: now,
     });
     enqueueGroupAgentDeliveries(db, {
@@ -176,6 +185,7 @@ export function createTaskFromMessage(
         groupId: input.groupId,
         threadId,
         assignedAgentId,
+        workspaceId,
       },
       createdAt: now,
     });
@@ -708,14 +718,15 @@ export function listTasks(
   if (input.status) conditions.push(eq(tasks.status, input.status));
   if (input.cursor) {
     const cursor = ctx.db.select().from(tasks).where(eq(tasks.id, input.cursor)).get();
-    if (cursor && cursor.groupId === input.groupId) {
-      conditions.push(
-        or(
-          lt(tasks.createdAt, cursor.createdAt),
-          and(eq(tasks.createdAt, cursor.createdAt), lt(tasks.id, cursor.id)),
-        )!,
-      );
+    if (!cursor || cursor.groupId !== input.groupId) {
+      throw new ValidationError("cursor does not belong to this group");
     }
+    conditions.push(
+      or(
+        lt(tasks.createdAt, cursor.createdAt),
+        and(eq(tasks.createdAt, cursor.createdAt), lt(tasks.id, cursor.id)),
+      )!,
+    );
   }
   const items = ctx.db
     .select()
@@ -732,4 +743,71 @@ export function getTaskRow(ctx: RoomContext, taskId: string): TaskRow {
   const task = ctx.db.select().from(tasks).where(eq(tasks.id, taskId)).get();
   if (!task) throw new NotFoundError(`task ${taskId} not found`);
   return task;
+}
+
+export interface AgentTaskView {
+  task: TaskRow;
+  run: TaskRunRow | null;
+  thread: ThreadRow | null;
+  workspace: WorkspaceRow | null;
+}
+
+function mostRecentRun(db: RoomDb, taskId: string): TaskRunRow | null {
+  return (
+    db
+      .select()
+      .from(taskRuns)
+      .where(eq(taskRuns.taskId, taskId))
+      .orderBy(desc(taskRuns.startedAt), desc(taskRuns.id))
+      .get() ?? null
+  );
+}
+
+function agentTaskView(db: RoomDb, task: TaskRow): AgentTaskView {
+  const thread = task.threadId
+    ? (db.select().from(threads).where(eq(threads.id, task.threadId)).get() ?? null)
+    : null;
+  const workspace = task.workspaceId
+    ? (db.select().from(workspaces).where(eq(workspaces.id, task.workspaceId)).get() ?? null)
+    : null;
+  return { task, run: mostRecentRun(db, task.id), thread, workspace };
+}
+
+/**
+ * Agent-authenticated recovery surface: the Agent can re-discover the tasks it
+ * still owns after a reconnect or a server restart, including the latest run
+ * and Thread so it can reload context (ROADMAP §4 task recovery).
+ */
+export function listAgentTasks(
+  ctx: RoomContext,
+  input: { agentId: string; includeTerminal?: boolean },
+): AgentTaskView[] {
+  const active: TaskRow["status"][] = [
+    "queued",
+    "assigned",
+    "running",
+    "waiting_approval",
+    "paused",
+  ];
+  const rows = ctx.db
+    .select()
+    .from(tasks)
+    .where(eq(tasks.assignedAgentId, input.agentId))
+    .orderBy(desc(tasks.createdAt), desc(tasks.id))
+    .all();
+  return rows
+    .filter((task) => input.includeTerminal || active.includes(task.status))
+    .map((task) => agentTaskView(ctx.db, task));
+}
+
+export function getAgentTask(
+  ctx: RoomContext,
+  input: { agentId: string; taskId: string },
+): AgentTaskView {
+  const task = getTaskRow(ctx, input.taskId);
+  if (task.assignedAgentId !== input.agentId) {
+    // Do not leak the existence of other Agents' tasks.
+    throw new NotFoundError(`task ${input.taskId} not found`);
+  }
+  return agentTaskView(ctx.db, task);
 }

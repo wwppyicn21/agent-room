@@ -68,6 +68,19 @@ export interface AgentClientOptions {
   replyAckTimeoutMs?: number;
   /** Backoff before retrying a reply after a retryable error (default 5s). */
   replyRetryBackoffMs?: number;
+  /**
+   * Called after a (re)connect with the tasks this Agent still owns. Use it to
+   * reload Thread context and resume work after a crash or a server restart.
+   */
+  onRecover?: (tasks: AgentTaskView[]) => void;
+}
+
+/** A task owned by this Agent, as returned by the recovery endpoints. */
+export interface AgentTaskView {
+  task: Record<string, unknown>;
+  run: Record<string, unknown> | null;
+  thread: Record<string, unknown> | null;
+  workspace: Record<string, unknown> | null;
 }
 
 export function publicKeyFingerprint(publicKey: KeyObject): string {
@@ -207,6 +220,59 @@ export class AgentClient {
     };
   }
 
+  private async getJson(path: string): Promise<Record<string, unknown>> {
+    if (!this.token) throw new Error("connect() first");
+    const base = this.options.baseUrl.replace(/\/+$/, "");
+    const response = await this.fetchImpl(`${base}${path}`, {
+      headers: { authorization: `Bearer ${this.token}` },
+    });
+    if (!response.ok) throw new Error(`request failed (${response.status})`);
+    return (await response.json()) as Record<string, unknown>;
+  }
+
+  /**
+   * Tasks this Agent still owns (queued/assigned/running/waiting_approval/paused).
+   * This is the supported recovery path after a reconnect.
+   */
+  async listTasks(options: { includeTerminal?: boolean } = {}): Promise<AgentTaskView[]> {
+    const suffix = options.includeTerminal ? "?includeTerminal=true" : "";
+    const body = await this.getJson(`/api/v1/agent/tasks${suffix}`);
+    return (body.tasks as AgentTaskView[]) ?? [];
+  }
+
+  async getTask(taskId: string): Promise<AgentTaskView> {
+    return (await this.getJson(
+      `/api/v1/agent/tasks/${encodeURIComponent(taskId)}`,
+    )) as unknown as AgentTaskView;
+  }
+
+  /** Thread history for a task this Agent is assigned to. */
+  async listThreadMessages(
+    threadId: string,
+    options: { limit?: number; cursor?: number } = {},
+  ): Promise<{ items: Record<string, unknown>[]; nextCursor: number | null }> {
+    const params = new URLSearchParams();
+    if (options.limit) params.set("limit", String(options.limit));
+    if (options.cursor !== undefined) params.set("cursor", String(options.cursor));
+    const suffix = params.size > 0 ? `?${params.toString()}` : "";
+    const body = await this.getJson(
+      `/api/v1/agent/threads/${encodeURIComponent(threadId)}/messages${suffix}`,
+    );
+    return {
+      items: (body.items as Record<string, unknown>[]) ?? [],
+      nextCursor: (body.nextCursor as number | null) ?? null,
+    };
+  }
+
+  private async recoverTasks(): Promise<void> {
+    try {
+      const tasks = await this.listTasks();
+      this.options.onRecover?.(tasks);
+    } catch {
+      // Recovery is best-effort; the next reconnect retries it.
+    }
+  }
+
   /**
    * Opens the authenticated socket; resolves after the server `hello`. The
    * long-lived session token never enters the URL: it is exchanged over HTTPS
@@ -242,6 +308,7 @@ export class AgentClient {
             outstanding: frame.outstanding as number,
           });
           this.flushPendingReplies();
+          if (this.options.onRecover) void this.recoverTasks();
           return;
         }
         if (frame.type === "event.deliver") {

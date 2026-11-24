@@ -98,6 +98,8 @@ queued ──► assigned ──► running ──► succeeded
 - Thread 消息不能跨群组；关闭 / 失败的 Thread 不能写入；
 - Thread 列表使用 keyset 分页（`createdAt DESC, id DESC`），返回 `{ items, nextCursor }`；cursor 是上一页最后一个 Thread id，必须属于同一 Group，否则 `400`；
 - Thread 回复隔离：Thread 内消息只能回复同 Thread 的消息或该 Thread 的源群消息；群聊消息不能回复 Thread 消息；跨 Thread / 跨群 / 不存在均拒绝；
+- **Agent 定向投递**：Thread 内用户消息只投递给该 Thread 当前活跃 Task 的 `assignedAgentId`（durable delivery；事件 payload 带 `threadId` / `taskId`），不广播给群内其他 Agent；plain Thread（无 Task）与发送者本人不产生投递。Agent 在 Thread 内回复不受群组 `allowAgentMessages` / hop / reply budget / 每分钟限流约束（这些只作用于群聊），但仍需群成员与 Thread 归属校验。
+- **来源消息限制**：创建 Thread / Task 的 `sourceMessageId` 必须是父群主消息流中的未删除消息（`threadId IS NULL`、`deletedAt IS NULL`），Thread 消息不能作为嵌套来源；
 - 手动关闭保护：关联 Task 未进入终态（succeeded / failed / cancelled）时 `closeThread` 返回 `409`，且不写事件/审计；普通 Thread 与终态 Task Thread 可关闭；
 - 权限：群成员读取；写需 `requireWriteUser`（与 M2 一致）。
 
@@ -120,6 +122,9 @@ POST            /api/v1/threads/:threadId/close
 GET/POST        /api/v1/threads/:threadId/messages
 GET             /api/v1/threads/:threadId/events
 
+GET/POST        /api/v1/groups/:groupId/workspaces
+GET             /api/v1/workspaces/:workspaceId
+
 GET/POST        /api/v1/groups/:groupId/tasks
 GET             /api/v1/tasks/:taskId
 POST            /api/v1/tasks/:taskId/assign
@@ -136,9 +141,13 @@ POST            /api/v1/approvals/:approvalId/approve
 POST            /api/v1/approvals/:approvalId/reject
 
 GET             /api/v1/events?groupId=&cursor=&limit=
+
+GET             /api/v1/agent/tasks?includeTerminal=true
+GET             /api/v1/agent/tasks/:taskId
+GET             /api/v1/agent/threads/:threadId/messages
 ```
 
-实现：`apps/server/src/routes/room.ts`；Task 执行端点使用 Agent Bearer 会话 token，其余端点使用用户 Principal。契约测试见 `apps/server/test/http-room.test.ts`。
+实现：`apps/server/src/routes/room.ts`；Task 执行端点与 Agent 恢复端点使用 Agent Bearer 会话 token，其余端点使用用户 Principal。REST 契约测试见 `apps/server/test/http-room.test.ts`，OpenAPI 与真实路由一致性由 `apps/server/test/openapi-contract.test.ts` 检查（每个文档化 operation 必须命中真实路由，不能 404）。
 
 认证：
 
@@ -152,17 +161,23 @@ GET             /api/v1/events?groupId=&cursor=&limit=
 
 - Task / Run / Approval 状态全部持久化；
 - 重启后：未终态 Task 保持原状态，Run 保留 progress；Agent 重连后按未 ack Delivery 补齐；
-- 不把 `cancelled` / `failed` 误恢复为 running；
-- 不自动把 `running` 改成失败（无法区分执行中与崩溃）；由人工 Cancel 或重新 Start 处理。
+- Agent 恢复接口（Agent Bearer，只允许 assignee）：
+  - `GET /api/v1/agent/tasks`（默认返回 queued / assigned / running / waiting_approval / paused，`includeTerminal=true` 可含终态）；
+  - `GET /api/v1/agent/tasks/:taskId`（Task + 最近 Run + Thread + Workspace）；
+  - `GET /api/v1/agent/threads/:threadId/messages`（仅该 Thread 的 assignee，用于重新加载上下文）。
+- SDK：`onRecover(tasks)` 在每次 `hello` 后触发；`listTasks` / `getTask` / `listThreadMessages` 可显式拉取。SDK 不在本地重放已执行的副作用，应用需用 Task/Run 状态与消息幂等自行去重。
+- `running` 任务的恢复语义是“重新获取状态与 Thread 历史后继续”，Server 不自动重启执行；无法区分执行中与崩溃，因此不自动把 `running` 改成失败；由人工 Cancel 或重新 Start 处理；
+- 不把 `cancelled` / `failed` 误恢复为 running。
 
 ## 11. Workspace Policy（基础）
 
-M5 只定义边界，不实现执行环境：
+M5 实现 Group 级 Workspace 元数据与权限边界，不实现执行环境：
 
-- Task 可带 `workspaceId`（后续 M6/M7 使用），Server 不做路径访问；
-- 执行 Agent 只能使用自己被授权的 Group / Task 工作区；
-- Plugin 不得自行扩大权限；Room Server 不直接访问 Agent 本地文件；
-- 具体 allowlist 由 M6/M7 的 Plugin 与本机策略执行。
+- `workspaces` 表：`id`、`groupId`（→ `groups`，cascade）、`name`、`createdByUserId`、`createdAt`；`(groupId, name)` 唯一；
+- 创建：群 owner/admin（`requireGroupManager` + 可写 + 群组 active），名称 ≤100，重复名 `409`，写 `workspace.create` 审计；成员可列出本群 Workspace 与读取详情，非成员 `403`；
+- Task 的 `workspaceId` 必须属于同一 Group（跨群 `400`，由 `workspaceForTask` 校验）；Task 创建 / 幂等比较 / 详情都带 Workspace；
+- Agent 只能读取分配给自己的 Task 及其 Workspace 元数据；Workspace 不授予文件系统访问；
+- Plugin 不得自行扩大权限；Room Server 不直接访问 Agent 本地文件；具体 allowlist 由 M6/M7 的 Plugin 与本机策略执行。
 
 ## 12. 事件与诊断
 
@@ -170,4 +185,4 @@ M5 只定义边界，不实现执行环境：
 
 ## 13. 验收映射
 
-见 `docs/ROADMAP.md` §4.11；每条验收在 `docs/PROGRESS.md` 的 M5 章节给出测试名或手动证据。
+见 `docs/ROADMAP.md` §4.11；每条验收在 `docs/PROGRESS.md` 的 M5 章节给出测试名或手动证据。第二轮审查修复的回归测试集中在 `apps/server/test/m5-review-round2.test.ts`、`apps/server/test/openapi-contract.test.ts` 与 `packages/agent-sdk/test/delivery.test.ts`（恢复流程）。

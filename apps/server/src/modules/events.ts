@@ -10,7 +10,7 @@ import {
 import { newId } from "@room/protocol";
 import { type EventType, eventPayloadSchema } from "@room/protocol";
 import type { RoomContext, RoomDb } from "./context.js";
-import { ConflictError, NotFoundError } from "./errors.js";
+import { ConflictError, NotFoundError, ValidationError } from "./errors.js";
 import { requireAgent, requireGroupMember } from "./permissions.js";
 import type { Actor } from "./permissions.js";
 
@@ -303,14 +303,15 @@ export function listThreadEvents(
   const conditions = [eq(events.threadId, thread.id), eq(events.groupId, thread.groupId)];
   if (input.cursor) {
     const cursor = ctx.db.select().from(events).where(eq(events.id, input.cursor)).get();
-    if (cursor && cursor.threadId === thread.id) {
-      conditions.push(
-        or(
-          gt(events.createdAt, cursor.createdAt),
-          and(eq(events.createdAt, cursor.createdAt), gt(events.id, cursor.id)),
-        )!,
-      );
+    if (!cursor || cursor.threadId !== thread.id) {
+      throw new ValidationError("cursor does not belong to this thread");
     }
+    conditions.push(
+      or(
+        gt(events.createdAt, cursor.createdAt),
+        and(eq(events.createdAt, cursor.createdAt), gt(events.id, cursor.id)),
+      )!,
+    );
   }
   const items = ctx.db
     .select()
@@ -339,14 +340,15 @@ export function listGroupEvents(
   const conditions = [eq(events.groupId, input.groupId)];
   if (input.cursor) {
     const cursor = ctx.db.select().from(events).where(eq(events.id, input.cursor)).get();
-    if (cursor && cursor.groupId === input.groupId) {
-      conditions.push(
-        or(
-          gt(events.createdAt, cursor.createdAt),
-          and(eq(events.createdAt, cursor.createdAt), gt(events.id, cursor.id)),
-        )!,
-      );
+    if (!cursor || cursor.groupId !== input.groupId) {
+      throw new ValidationError("cursor does not belong to this group");
     }
+    conditions.push(
+      or(
+        gt(events.createdAt, cursor.createdAt),
+        and(eq(events.createdAt, cursor.createdAt), gt(events.id, cursor.id)),
+      )!,
+    );
   }
   const items = ctx.db
     .select()

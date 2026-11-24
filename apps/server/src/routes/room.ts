@@ -11,20 +11,29 @@ import {
   updateGroup,
   updateGroupAISettings,
 } from "../modules/groups.js";
-import { getMessage, listMessages, listThreadMessages, postMessage } from "../modules/messages.js";
+import {
+  getMessage,
+  listMessages,
+  listThreadMessages,
+  listThreadMessagesForAgent,
+  postMessage,
+} from "../modules/messages.js";
 import { closeThread, createThread, getThreadDetail, listThreads } from "../modules/threads.js";
 import {
   assignTask,
   cancelTask,
   completeTask,
   createTaskFromMessage,
+  getAgentTask,
   getTask,
+  listAgentTasks,
   listTasks,
   pauseTask,
   reportTaskProgress,
   resumeTask,
   startTask,
 } from "../modules/tasks.js";
+import { createWorkspace, getWorkspace, listWorkspaces } from "../modules/workspaces.js";
 import {
   approveApproval,
   getApproval,
@@ -116,8 +125,11 @@ const createTaskBody = z.object({
   title: z.string().trim().min(1).max(200),
   description: z.string().trim().max(4000).nullish(),
   assignedAgentId: z.string().trim().min(1).nullish(),
+  workspaceId: z.string().trim().min(1).nullish(),
   idempotencyKey: z.string().trim().min(1).max(120).nullish(),
 });
+
+const createWorkspaceBody = z.object({ name: z.string().trim().min(1).max(100) });
 
 const assignTaskBody = z.object({ agentId: z.string().trim().min(1) });
 const progressBody = z.object({
@@ -365,11 +377,66 @@ export function registerRoomRoutes(app: FastifyInstance, deps: RoomRouteDependen
       title: body.title,
       description: body.description ?? null,
       assignedAgentId: body.assignedAgentId ?? null,
+      workspaceId: body.workspaceId ?? null,
       createdByUserId: actor.id,
       idempotencyKey: body.idempotencyKey ?? null,
     });
     reply.code(201);
     return created;
+  });
+
+  app.get("/api/v1/groups/:groupId/workspaces", async (request) => {
+    const actor = actorOf(request);
+    const { groupId } = params<{ groupId: string }>(request);
+    return { workspaces: listWorkspaces(ctx, { groupId, viewerUserId: actor.id }) };
+  });
+
+  app.post("/api/v1/groups/:groupId/workspaces", async (request, reply) => {
+    const actor = actorOf(request);
+    const { groupId } = params<{ groupId: string }>(request);
+    const body = parseBody(createWorkspaceBody, request.body);
+    const workspace = createWorkspace(ctx, {
+      groupId,
+      actorUserId: actor.id,
+      name: body.name,
+    });
+    reply.code(201);
+    return { workspace };
+  });
+
+  app.get("/api/v1/workspaces/:workspaceId", async (request) => {
+    const actor = actorOf(request);
+    const { workspaceId } = params<{ workspaceId: string }>(request);
+    return { workspace: getWorkspace(ctx, { workspaceId, viewerUserId: actor.id }) };
+  });
+
+  app.get("/api/v1/agent/tasks", async (request) => {
+    const agentId = agentOf(ctx, request);
+    const { includeTerminal } = query<{ includeTerminal?: string }>(request);
+    return {
+      tasks: listAgentTasks(ctx, {
+        agentId,
+        includeTerminal: includeTerminal === "true",
+      }),
+    };
+  });
+
+  app.get("/api/v1/agent/tasks/:taskId", async (request) => {
+    const agentId = agentOf(ctx, request);
+    const { taskId } = params<{ taskId: string }>(request);
+    return getAgentTask(ctx, { agentId, taskId });
+  });
+
+  app.get("/api/v1/agent/threads/:threadId/messages", async (request) => {
+    const agentId = agentOf(ctx, request);
+    const { threadId } = params<{ threadId: string }>(request);
+    const { limit, cursor } = query<{ limit?: string; cursor?: string }>(request);
+    return listThreadMessagesForAgent(ctx, {
+      agentId,
+      threadId,
+      limit: limitOf(limit, 50),
+      cursor: cursor ? Number(cursor) : undefined,
+    });
   });
 
   app.get("/api/v1/tasks/:taskId", async (request) => {

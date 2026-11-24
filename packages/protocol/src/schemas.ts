@@ -34,7 +34,7 @@ export const TASK_STATUSES = [
 ] as const;
 export const taskStatusSchema = z.enum(TASK_STATUSES);
 
-export const TASK_RUN_STATUSES = ["running", "succeeded", "failed", "cancelled"] as const;
+export const TASK_RUN_STATUSES = ["running", "paused", "succeeded", "failed", "cancelled"] as const;
 export const taskRunStatusSchema = z.enum(TASK_RUN_STATUSES);
 
 export const DELIVERY_STATUSES = ["pending", "delivered", "acked", "failed"] as const;

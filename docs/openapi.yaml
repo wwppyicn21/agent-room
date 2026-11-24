@@ -214,12 +214,14 @@ paths:
         - $ref: "#/components/parameters/threadId"
       responses:
         "200": { description: Thread detail }
+  /api/v1/threads/{threadId}/close:
     post:
-      summary: Close a thread
+      summary: Close a thread (409 while its task is still active)
       parameters:
         - $ref: "#/components/parameters/threadId"
       responses:
         "200": { description: Closed thread }
+        "409": { $ref: "#/components/responses/Error" }
   /api/v1/threads/{threadId}/messages:
     parameters:
       - $ref: "#/components/parameters/threadId"
@@ -278,6 +280,7 @@ paths:
                 description: { type: string, maxLength: 4000, nullable: true }
                 assignedAgentId: { type: string, nullable: true }
                 idempotencyKey: { type: string, maxLength: 120, nullable: true }
+                workspaceId: { type: string, nullable: true }
       responses:
         "201": { description: Task and thread }
         "403": { $ref: "#/components/responses/Error" }
@@ -458,6 +461,71 @@ paths:
       responses:
         "200": { description: Events }
         "403": { $ref: "#/components/responses/Error" }
+  /api/v1/groups/{groupId}/workspaces:
+    parameters:
+      - $ref: "#/components/parameters/groupId"
+    get:
+      summary: List workspaces visible to the group
+      responses:
+        "200": { description: Workspaces }
+    post:
+      summary: Create a workspace (group manager only)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name]
+              properties:
+                name: { type: string, maxLength: 100 }
+      responses:
+        "201": { description: Workspace created }
+        "403": { $ref: "#/components/responses/Error" }
+        "409": { $ref: "#/components/responses/Error" }
+  /api/v1/workspaces/{workspaceId}:
+    get:
+      summary: Workspace detail (group members only)
+      parameters:
+        - name: workspaceId
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        "200": { description: Workspace }
+        "403": { $ref: "#/components/responses/Error" }
+  /api/v1/agent/tasks:
+    get:
+      summary: Tasks assigned to the authenticated Agent (recovery)
+      security: [{ agentBearer: [] }]
+      parameters:
+        - name: includeTerminal
+          in: query
+          schema: { type: boolean }
+      responses:
+        "200": { description: Active or all assigned tasks }
+        "401": { $ref: "#/components/responses/Error" }
+  /api/v1/agent/tasks/{taskId}:
+    get:
+      summary: Assigned task, latest run, thread and workspace (recovery)
+      security: [{ agentBearer: [] }]
+      parameters:
+        - $ref: "#/components/parameters/taskId"
+      responses:
+        "200": { description: Agent task view }
+        "404": { $ref: "#/components/responses/Error" }
+  /api/v1/agent/threads/{threadId}/messages:
+    get:
+      summary: Thread history for the assigned Agent
+      security: [{ agentBearer: [] }]
+      parameters:
+        - $ref: "#/components/parameters/threadId"
+        - $ref: "#/components/parameters/limit"
+        - $ref: "#/components/parameters/cursorId"
+      responses:
+        "200": { description: Thread messages }
+        "403": { $ref: "#/components/responses/Error" }
+
 components:
   parameters:
     groupId:
@@ -566,6 +634,7 @@ components:
         error: { type: string, nullable: true }
         startedAt: { type: integer, nullable: true }
         completedAt: { type: integer, nullable: true }
+        workspaceId: { type: string, nullable: true }
         createdAt: { type: integer }
         updatedAt: { type: integer }
     Approval:

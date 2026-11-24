@@ -4,12 +4,15 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { loadConfig } from "@room/config";
 import {
+  agentDeliveries,
   agentKeys,
   agentSessions,
   type DatabaseHandle,
+  events,
   migrationsFolder,
   openDatabase,
 } from "@room/database";
+import { eq } from "drizzle-orm";
 import { newId } from "@room/protocol";
 import type { FastifyInstance } from "fastify";
 import { afterEach, describe, expect, it } from "vitest";
@@ -362,5 +365,178 @@ describe("M5 REST surface", () => {
       headers: { "x-dev-user-id": member },
     });
     expect(memberDecision.statusCode).toBe(403);
+  });
+});
+
+describe("M5 review round 2 REST surface", () => {
+  it("delivers Thread messages to the assigned Agent and exposes recovery endpoints", async () => {
+    const { app, ctx, owner } = await setup();
+    const groupId = createGroup(ctx, { name: "g", createdByUserId: owner }).id;
+    const agentA = registerAgent(ctx, { displayName: "a", runtime: "test", actorUserId: owner }).id;
+    const agentB = registerAgent(ctx, { displayName: "b", runtime: "test", actorUserId: owner }).id;
+    for (const agentId of [agentA, agentB]) {
+      addMember(ctx, { groupId, actorUserId: owner, memberType: "agent", memberId: agentId });
+    }
+    const tokenA = agentToken(ctx, agentA);
+    const tokenB = agentToken(ctx, agentB);
+    const headers = { "x-dev-user-id": owner };
+
+    const source = await app.inject({
+      method: "POST",
+      url: `/api/v1/groups/${groupId}/messages`,
+      headers,
+      payload: { content: "source" },
+    });
+    const created = await app.inject({
+      method: "POST",
+      url: `/api/v1/groups/${groupId}/tasks`,
+      headers,
+      payload: {
+        sourceMessageId: source.json().message.id,
+        title: "task",
+        assignedAgentId: agentA,
+      },
+    });
+    expect(created.statusCode).toBe(201);
+    const { task, threadId } = created.json();
+    const started = await app.inject({
+      method: "POST",
+      url: `/api/v1/tasks/${task.id}/start`,
+      headers: { authorization: `Bearer ${tokenA}` },
+    });
+    expect(started.statusCode).toBe(200);
+
+    const inThread = await app.inject({
+      method: "POST",
+      url: `/api/v1/threads/${threadId}/messages`,
+      headers,
+      payload: { content: "status?" },
+    });
+    expect(inThread.statusCode).toBe(201);
+    const event = ctx.db
+      .select()
+      .from(events)
+      .where(eq(events.threadId, threadId))
+      .all()
+      .filter((row) => row.type === "message.created")
+      .at(-1)!;
+    const deliveries = ctx.db
+      .select()
+      .from(agentDeliveries)
+      .where(eq(agentDeliveries.eventId, event.id))
+      .all();
+    expect(deliveries.map((delivery) => delivery.agentId)).toEqual([agentA]);
+
+    const recovery = await app.inject({
+      method: "GET",
+      url: "/api/v1/agent/tasks",
+      headers: { authorization: `Bearer ${tokenA}` },
+    });
+    expect(recovery.statusCode).toBe(200);
+    expect(recovery.json().tasks.map((view: { task: { id: string } }) => view.task.id)).toEqual([
+      task.id,
+    ]);
+    const detail = await app.inject({
+      method: "GET",
+      url: `/api/v1/agent/tasks/${task.id}`,
+      headers: { authorization: `Bearer ${tokenA}` },
+    });
+    expect(detail.json().run.status).toBe("running");
+    expect(detail.json().thread.id).toBe(threadId);
+
+    const history = await app.inject({
+      method: "GET",
+      url: `/api/v1/agent/threads/${threadId}/messages`,
+      headers: { authorization: `Bearer ${tokenA}` },
+    });
+    expect(history.statusCode).toBe(200);
+    expect(history.json().items.map((message: { content: string }) => message.content)).toContain(
+      "status?",
+    );
+
+    const otherAgentHistory = await app.inject({
+      method: "GET",
+      url: `/api/v1/agent/threads/${threadId}/messages`,
+      headers: { authorization: `Bearer ${tokenB}` },
+    });
+    expect(otherAgentHistory.statusCode).toBe(403);
+    const otherAgentTask = await app.inject({
+      method: "GET",
+      url: `/api/v1/agent/tasks/${task.id}`,
+      headers: { authorization: `Bearer ${tokenB}` },
+    });
+    expect(otherAgentTask.statusCode).toBe(404);
+  });
+
+  it("enforces workspace permissions and the group boundary through REST", async () => {
+    const { app, ctx, owner } = await setup();
+    const groupId = createGroup(ctx, { name: "g", createdByUserId: owner }).id;
+    const member = createUser(ctx, {
+      displayName: "member",
+      role: "member",
+      actorUserId: owner,
+    }).id;
+    addMember(ctx, { groupId, actorUserId: owner, memberType: "user", memberId: member });
+    const headers = { "x-dev-user-id": owner };
+
+    const created = await app.inject({
+      method: "POST",
+      url: `/api/v1/groups/${groupId}/workspaces`,
+      headers,
+      payload: { name: "repo" },
+    });
+    expect(created.statusCode).toBe(201);
+    const workspaceId = created.json().workspace.id;
+    const duplicate = await app.inject({
+      method: "POST",
+      url: `/api/v1/groups/${groupId}/workspaces`,
+      headers,
+      payload: { name: "repo" },
+    });
+    expect(duplicate.statusCode).toBe(409);
+    const memberCreate = await app.inject({
+      method: "POST",
+      url: `/api/v1/groups/${groupId}/workspaces`,
+      headers: { "x-dev-user-id": member },
+      payload: { name: "member-repo" },
+    });
+    expect(memberCreate.statusCode).toBe(403);
+    const listed = await app.inject({
+      method: "GET",
+      url: `/api/v1/groups/${groupId}/workspaces`,
+      headers,
+    });
+    expect(listed.json().workspaces).toHaveLength(1);
+
+    const otherGroup = createGroup(ctx, { name: "other", createdByUserId: owner }).id;
+    const otherWorkspace = await app.inject({
+      method: "POST",
+      url: `/api/v1/groups/${otherGroup}/workspaces`,
+      headers,
+      payload: { name: "other-repo" },
+    });
+    const source = await app.inject({
+      method: "POST",
+      url: `/api/v1/groups/${groupId}/messages`,
+      headers,
+      payload: { content: "source" },
+    });
+    const crossGroup = await app.inject({
+      method: "POST",
+      url: `/api/v1/groups/${groupId}/tasks`,
+      headers,
+      payload: {
+        sourceMessageId: source.json().message.id,
+        title: "cross",
+        workspaceId: otherWorkspace.json().workspace.id,
+      },
+    });
+    expect(crossGroup.statusCode).toBe(400);
+    const own = await app.inject({
+      method: "GET",
+      url: `/api/v1/workspaces/${workspaceId}`,
+      headers,
+    });
+    expect(own.statusCode).toBe(200);
   });
 });

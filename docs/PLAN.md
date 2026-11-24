@@ -1468,6 +1468,20 @@ M5 已实现并通过测试：Thread 创建 / 详情 / 独立消息流 / 事件�
 
 剩余：过期扫描目前是进程内定时器，多实例部署需在 M9 评估单实例执行或数据库级调度；`request_task` 仍属 M6/M7。
 
+### M5 Review Fix 2（2026-11-24）
+
+第二轮审查（`m04154`）阻断项为 Thread 消息没有通过 durable delivery 到达 Agent。修复范围（仍未开始 M6）：
+
+- **P0 Thread Agent 定向投递**：Thread 内用户消息只投递给该 Thread 非终态 Task 的 `assignedAgentId`，事件 payload 带 `threadId` / `taskId`；plain Thread 与发送者本人不投递；不广播给群内其他 Agent。
+- **P1 Approval 过期竞态**：`decideApproval` 在事务内检查 `expiresAt`，过期先落 `expired`（Task/Run/Thread `failed` + 摘要 + `task.approval_expired` + `approval.expire`）并返回 `409`；条件 update 与扫描器竞态时只有一方成功。
+- **P1 Agent 重启恢复**：新增 Agent Bearer 的 `GET /api/v1/agent/tasks`、`/agent/tasks/:taskId`、`/agent/threads/:threadId/messages`；SDK 增加 `onRecover`、`listTasks`、`getTask`、`listThreadMessages`；只允许 assignee。
+- **P1 Workspace Policy**：新增 `workspaces` 表（Group 级），创建需群 owner/admin，成员可读；`tasks.workspaceId` 必须同 Group；Agent 仅能读取自己 Task 的 Workspace 元数据。
+- **P2**：Thread/Task 的 source 必须是群主消息流中未删除消息；OpenAPI 修正 Thread close 路径并补 workspaces / agent 恢复端点，新增契约测试；`TASK_RUN_STATUSES` 增加 `paused`；无效/跨 Group/Thread cursor 统一 `400`。
+
+测试：`apps/server/test/m5-review-round2.test.ts` 9 例、`openapi-contract.test.ts` 2 例、`http-room.test.ts` +2 例、SDK 恢复 1 例；总计 21 files / 174 tests。
+
+剩余：Thread 多 Agent 协作不在 M5；`running` Task 恢复依赖 Agent 主动拉取，Server 不自动重启执行；审批过期扫描仍是单实例定时器（M9 评估）；`request_task` 属 M6/M7；skip 诊断未实现；Web UI 属 M8。
+
 ## M6：DSH Plugin
 
 ### 工作

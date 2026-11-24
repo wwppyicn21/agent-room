@@ -1,4 +1,4 @@
-import { and, desc, eq, lte, sql } from "drizzle-orm";
+import { and, desc, eq, gt, isNull, lte, or, sql } from "drizzle-orm";
 import {
   approvals,
   type ApprovalRow,
@@ -177,10 +177,20 @@ export function expireApproval(
   }
   return ctx.db.transaction((transaction) => {
     const db = transaction as unknown as RoomDb;
-    db.update(approvals)
+    const expired = db
+      .update(approvals)
       .set({ status: "expired", reason: "approval expired", updatedAt: now })
-      .where(eq(approvals.id, approval.id))
+      .where(
+        and(
+          eq(approvals.id, approval.id),
+          eq(approvals.status, "pending"),
+          lte(approvals.expiresAt, now),
+        ),
+      )
       .run();
+    if (expired.changes !== 1) {
+      throw new ConflictError(`approval ${approval.id} is no longer pending or has not expired`);
+    }
     failTask(
       db,
       task,
@@ -243,13 +253,20 @@ function decideApproval(
   if (approval.status !== "pending") {
     throw new ConflictError(`approval is ${approval.status} and cannot be decided`);
   }
+  // Expiry is enforced in the decision path itself, not only by the sweeper:
+  // approving a request whose deadline has passed is always rejected.
+  if (approval.expiresAt !== null && approval.expiresAt <= ctx.now()) {
+    expireApproval(ctx, { approvalId: approval.id });
+    throw new ConflictError(`approval ${approval.id} has expired`);
+  }
   if (task.status !== "waiting_approval") {
     throw new ConflictError(`task ${task.id} is ${task.status} and has no pending approval`);
   }
   const now = ctx.now();
   return ctx.db.transaction((transaction) => {
     const db = transaction as unknown as RoomDb;
-    db.update(approvals)
+    const claimed = db
+      .update(approvals)
       .set({
         status: decision,
         decidedByUserId: actorUserId,
@@ -257,8 +274,17 @@ function decideApproval(
         reason,
         updatedAt: now,
       })
-      .where(eq(approvals.id, approval.id))
+      .where(
+        and(
+          eq(approvals.id, approval.id),
+          eq(approvals.status, "pending"),
+          or(isNull(approvals.expiresAt), gt(approvals.expiresAt, now)),
+        ),
+      )
       .run();
+    if (claimed.changes !== 1) {
+      throw new ConflictError(`approval ${approval.id} is no longer pending or has expired`);
+    }
     if (decision === "approved") {
       db.update(tasks)
         .set({ status: "running", updatedAt: now })

@@ -600,3 +600,35 @@ $ pnpm build         # 全部 Done
 - Approval 过期扫描是进程内定时器；多实例部署需在 M9 评估单实例执行或数据库级调度。
 - `request_task` 仍属 M6/M7；M4 skip 诊断事件仍未实现；Web UI 属 M8。
 - 代码提交：`3ac5f64`（fix + tests + OpenAPI）；文档随本次 docs 提交更新。
+
+### M5 Review Fix 2（2026-11-24）
+
+第二轮审查（`m04154`）判定 M5 不通过，阻断项是 Thread 消息未通过 durable delivery 到达 Agent。逐项修复并补集成测试；未开始 M6。
+
+| 问题 | 状态 | 修复 | 测试 |
+| --- | --- | --- | --- |
+| P0 Thread 消息不投递 | PASS | `postMessage` 对 Thread 内消息只投递给该 Thread 非终态 Task 的 assignee；事件 payload 带 `threadId` / `taskId`；plain Thread / sender 本人不投递 | `m5-review-round2.test.ts` 3 例；`http-room.test.ts` REST 投递 |
+| P1 审批过期后仍可批准 | PASS | 决策事务内校验 `expiresAt`；过期先落 `expired` + fail Task/Run/Thread + 摘要；条件 update 防竞态 | `m5-review-round2.test.ts` 审批竞态 1 例 |
+| P1 Agent 重启恢复不完整 | PASS | Agent Bearer 恢复端点（active tasks / task detail / thread history）；SDK `onRecover` + `listTasks/getTask/listThreadMessages`；只允许 assignee | `m5-review-round2.test.ts` 重启恢复 1 例；SDK delivery 测试 |
+| P1 Workspace Policy 未实现 | PASS | `workspaces` 表 + Group 边界 + 创建权限/审计 + Task `workspaceId` 校验 + 成员读/Agent 读自己 Task 的元数据 | `m5-review-round2.test.ts` workspace 1 例；`http-room.test.ts` REST 权限/跨群 |
+| P2 来源消息校验 | PASS | 创建 Thread/Task 的 source 必须是群主消息流中未删除消息 | `m5-review-round2.test.ts` 1 例 |
+| P2 OpenAPI close 路由 | PASS | 移除 `/threads/{id}` POST，新增 `/threads/{id}/close`；补 workspaces / agent tasks 路径 | `openapi-contract.test.ts` 2 例 |
+| P2 TaskRun paused 协议 | PASS | `TASK_RUN_STATUSES` 增加 `paused` | `m5-review-round2.test.ts` 1 例 |
+| P2 Cursor 错误处理 | PASS | 无效/跨 Group 或 Thread 的 cursor 统一 `400` | `m5-review-round2.test.ts` 1 例 |
+
+验证（实际执行）：
+
+```text
+$ pnpm lint          # exit 0
+$ pnpm typecheck     # exit 0
+$ pnpm format:check  # exit 0
+$ pnpm test          # 21 files / 174 tests passed
+$ pnpm build         # 全部 Done
+```
+
+剩余：
+
+- Thread 投递只覆盖「用户 → 当前 assignee」；多个 Agent 在 Thread 内协作不在 M5 范围。
+- `running` Task 的恢复需要 Agent 主动拉取；Server 不会自动重启执行，也不会把 `running` 自动判失败。
+- 审批过期扫描仍是进程内定时器（单实例）；多实例部署在 M9 评估。
+- `request_task` 属 M6/M7；M4 skip 诊断未实现；Web UI 属 M8。

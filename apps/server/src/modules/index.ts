@@ -10,3 +10,4 @@ export * from "./messages.js";
 export * from "./threads.js";
 export * from "./tasks.js";
 export * from "./approvals.js";
+export * from "./workspaces.js";

@@ -4,6 +4,7 @@ import {
   AgentClient,
   type AgentClientOptions,
   type AgentEvent,
+  type AgentTaskView,
   type ParticipationResult,
   type WebSocketLike,
   publicKeyFingerprint,
@@ -89,6 +90,29 @@ function createHarness(
       ticketRequests.push(init ?? {});
       return Response.json({ ticket: "tkt_one", expiresAt: "2026-01-01T00:00:00.000Z" });
     }
+    if (path.includes("/api/v1/agent/tasks/task_1")) {
+      return Response.json({
+        task: { id: "task_1", status: "running", threadId: "thr_1" },
+        run: { id: "run_1", status: "running" },
+        thread: { id: "thr_1" },
+        workspace: null,
+      });
+    }
+    if (path.includes("/api/v1/agent/tasks")) {
+      return Response.json({
+        tasks: [
+          {
+            task: { id: "task_1", status: "running", threadId: "thr_1" },
+            run: { id: "run_1", status: "running" },
+            thread: { id: "thr_1" },
+            workspace: null,
+          },
+        ],
+      });
+    }
+    if (path.includes("/api/v1/agent/threads/thr_1/messages")) {
+      return Response.json({ items: [{ id: "msg_1", content: "hi" }], nextCursor: null });
+    }
     return new Response("not found", { status: 404 });
   }) as typeof fetch;
 
@@ -154,6 +178,25 @@ function replyFrames(socket: FakeSocket): Record<string, unknown>[] {
 }
 
 describe("agent sdk delivery handling", () => {
+  it("recovers active tasks and thread history when a socket reopens", async () => {
+    const recovered: AgentTaskView[][] = [];
+    const { client } = await openClient(undefined, {
+      onRecover: (tasks) => recovered.push(tasks),
+    });
+    await flush();
+    expect(recovered).toHaveLength(1);
+    expect(recovered[0]![0]!.task.id).toBe("task_1");
+
+    const tasks = await client.listTasks();
+    expect(tasks.map((view) => view.task.id)).toEqual(["task_1"]);
+    const detail = await client.getTask("task_1");
+    expect(detail.run?.status).toBe("running");
+    expect(detail.thread?.id).toBe("thr_1");
+    const history = await client.listThreadMessages("thr_1");
+    expect(history.items[0]!.content).toBe("hi");
+    expect(history.nextCursor).toBeNull();
+  });
+
   it("never acknowledges a delivery when no handler is configured", async () => {
     const { socket } = await openClient();
     socket.emit(eventFrame());

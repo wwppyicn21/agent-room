@@ -1,5 +1,13 @@
-import { and, asc, eq, gt, isNull, sql } from "drizzle-orm";
-import { messages, type MessageRow, type ThreadRow, threads } from "@room/database";
+import { and, asc, desc, eq, gt, isNull, sql } from "drizzle-orm";
+import {
+  agents,
+  messages,
+  type MessageRow,
+  tasks,
+  type TaskRow,
+  type ThreadRow,
+  threads,
+} from "@room/database";
 import { AGENT_PRESENCE_TTL_MS, newId } from "@room/protocol";
 import { messageContentSchema } from "@room/protocol";
 import type { RoomContext, RoomDb } from "./context.js";
@@ -137,7 +145,10 @@ function postMessageInTransaction(ctx: RoomContext, input: PostMessageInput): Me
     const hop = parent ? parent.hop + (isAgent ? 1 : 0) : 0;
     const effectiveRoot = parent ? rootMessageIdOf(parent) : null;
 
-    if (isAgent) {
+    if (isAgent && !thread) {
+      // Group discussion rules (allowAgentMessages, hop/budget/rate) do not
+      // apply inside a task Thread: the assigned Agent is replying to its task
+      // owner, not broadcasting into the group.
       if (!group.allowAgentMessages) {
         throw withParticipationReason(
           new ForbiddenError(`group ${input.groupId} does not allow agent messages`),
@@ -211,11 +222,31 @@ function postMessageInTransaction(ctx: RoomContext, input: PostMessageInput): Me
       throw error;
     }
 
+    // Thread messages are not broadcast to the group. They target the Agent
+    // currently assigned to the Thread's task; plain Threads (no active task)
+    // have no Agent subscriber.
+    let threadTask: TaskRow | null = null;
+    if (thread) {
+      const candidates = db
+        .select()
+        .from(tasks)
+        .where(eq(tasks.threadId, thread.id))
+        .orderBy(desc(tasks.createdAt))
+        .all();
+      threadTask =
+        candidates.find(
+          (task) =>
+            task.assignedAgentId !== null &&
+            !["succeeded", "failed", "cancelled"].includes(task.status),
+        ) ?? null;
+    }
+
     const event = appendEvent(db, {
       type: "message.created",
       actor: input.actor,
       groupId: input.groupId,
       threadId: input.threadId ?? null,
+      taskId: threadTask?.id ?? null,
       payload: {
         messageId: id,
         senderType: input.actor.type,
@@ -223,6 +254,8 @@ function postMessageInTransaction(ctx: RoomContext, input: PostMessageInput): Me
         content,
         rootMessageId: rootId,
         replyToMessageId: parent?.id ?? null,
+        threadId: thread?.id ?? null,
+        taskId: threadTask?.id ?? null,
         hop,
         seq,
       },
@@ -249,6 +282,16 @@ function postMessageInTransaction(ctx: RoomContext, input: PostMessageInput): Me
     }
     for (const agentId of decision.agentIds) {
       enqueueDelivery(db, { agentId, eventId: event.id, createdAt: now });
+    }
+    if (threadTask?.assignedAgentId && threadTask.assignedAgentId !== input.actor.id) {
+      const assignee = db
+        .select()
+        .from(agents)
+        .where(eq(agents.id, threadTask.assignedAgentId))
+        .get();
+      if (assignee && assignee.status !== "disabled") {
+        enqueueDelivery(db, { agentId: assignee.id, eventId: event.id, createdAt: now });
+      }
     }
     return saved;
   });
@@ -319,6 +362,40 @@ export function listThreadMessages(
   return { items, nextCursor: items.length === limit && last ? last.seq : null };
 }
 
+/**
+ * Thread history for the Agent assigned to the Thread's task. The assignment is
+ * the authorization boundary: an Agent can reload its own task context after a
+ * reconnect even without going through the user-facing REST API.
+ */
+export function listThreadMessagesForAgent(
+  ctx: RoomContext,
+  input: { agentId: string; threadId: string; limit?: number; cursor?: number },
+): { items: MessageRow[]; nextCursor: number | null } {
+  const limit = Math.min(Math.max(input.limit ?? 50, 1), 100);
+  const thread = ctx.db.select().from(threads).where(eq(threads.id, input.threadId)).get();
+  if (!thread) throw new NotFoundError(`thread ${input.threadId} not found`);
+  const assignment = ctx.db
+    .select({ id: tasks.id })
+    .from(tasks)
+    .where(and(eq(tasks.threadId, thread.id), eq(tasks.assignedAgentId, input.agentId)))
+    .get();
+  if (!assignment) {
+    throw new ForbiddenError(`agent ${input.agentId} is not assigned to thread ${thread.id}`);
+  }
+  const cursor = input.cursor ?? 0;
+  const items = ctx.db
+    .select()
+    .from(messages)
+    .where(
+      and(eq(messages.threadId, thread.id), gt(messages.seq, cursor), isNull(messages.deletedAt)),
+    )
+    .orderBy(asc(messages.seq))
+    .limit(limit)
+    .all();
+  const last = items.at(-1);
+  return { items, nextCursor: items.length === limit && last ? last.seq : null };
+}
+
 export function getMessage(
   ctx: RoomContext,
   input: { messageId: string; viewer: Actor },
@@ -338,5 +415,8 @@ export function getGroupMessageRow(
   if (!message) throw new NotFoundError(`message ${messageId} not found`);
   if (message.groupId !== groupId)
     throw new ValidationError("message belongs to a different group");
+  if (message.threadId !== null)
+    throw new ValidationError("source message must belong to the group stream");
+  if (message.deletedAt !== null) throw new ValidationError("source message is deleted");
   return message;
 }

@@ -310,6 +310,34 @@ export const messages = sqliteTable(
 );
 
 // ---------------------------------------------------------------------------
+// Workspaces (task execution scope, M5 §4.9)
+// ---------------------------------------------------------------------------
+
+/**
+ * A workspace is the server-verifiable execution scope of a task. It always
+ * belongs to exactly one group, so a task can never reference a workspace from
+ * another group and a plugin cannot widen its own permissions.
+ */
+export const workspaces = sqliteTable(
+  "workspaces",
+  {
+    id: text("id").primaryKey(),
+    groupId: text("group_id")
+      .notNull()
+      .references(() => groups.id, { onDelete: "cascade" }),
+    name: text("name").notNull(),
+    createdByUserId: text("created_by_user_id")
+      .notNull()
+      .references(() => users.id),
+    createdAt: integer("created_at").notNull(),
+  },
+  (table) => [
+    uniqueIndex("workspaces_group_name_uq").on(table.groupId, table.name),
+    index("workspaces_group_created_idx").on(table.groupId, table.createdAt),
+  ],
+);
+
+// ---------------------------------------------------------------------------
 // Tasks and runs
 // ---------------------------------------------------------------------------
 
@@ -356,7 +384,9 @@ export const tasks = sqliteTable(
     result: text("result"),
     summary: text("summary"),
     error: text("error"),
-    workspaceId: text("workspace_id"),
+    workspaceId: text("workspace_id").references(() => workspaces.id, {
+      onDelete: "set null",
+    }),
   },
   (table) => [
     index("tasks_group_idx").on(table.groupId, table.createdAt, table.id),
@@ -512,4 +542,5 @@ export type TaskRunRow = typeof taskRuns.$inferSelect;
 export type EventRow = typeof events.$inferSelect;
 export type AgentDeliveryRow = typeof agentDeliveries.$inferSelect;
 export type ApprovalRow = typeof approvals.$inferSelect;
+export type WorkspaceRow = typeof workspaces.$inferSelect;
 export type AuditLogRow = typeof auditLogs.$inferSelect;
