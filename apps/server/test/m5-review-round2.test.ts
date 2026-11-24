@@ -24,6 +24,7 @@ import {
   listThreadEvents,
   listThreadMessagesForAgent,
   listWorkspaces,
+  getWorkspace,
   postMessage,
   rejectApproval,
   requestApproval,
@@ -31,7 +32,12 @@ import {
 } from "../src/modules/index.js";
 import { addMember } from "../src/modules/groups.js";
 import { createRoomContext } from "../src/modules/context.js";
-import { ConflictError, ForbiddenError, ValidationError } from "../src/modules/errors.js";
+import {
+  ConflictError,
+  ForbiddenError,
+  NotFoundError,
+  ValidationError,
+} from "../src/modules/errors.js";
 import { createTestRoom, markAgentOnline, seedAgent, seedGroup, seedUser } from "./helpers.js";
 
 function setup(clock?: { value: number }) {
@@ -245,7 +251,7 @@ describe("M5 review round 2 — Thread delivery, approvals, recovery", () => {
   });
 
   it("enforces the workspace group boundary and permissions", () => {
-    const { room, ctx, owner, groupId, agentA, source } = setup();
+    const { room, ctx, owner, groupId, agentA, agentB, source } = setup();
     cleanup = room.close;
     const member = seedUser(ctx, "member", "member");
     addMember(ctx, { groupId, actorUserId: owner, memberType: "user", memberId: member });
@@ -290,6 +296,15 @@ describe("M5 review round 2 — Thread delivery, approvals, recovery", () => {
       workspace.id,
     );
     expect(listAgentTasks(ctx, { agentId: agentA })[0]?.workspace?.id).toBe(workspace.id);
+    // Workspace metadata is group-scoped: outsiders cannot read it, and a
+    // non-assignee Agent cannot recover it through the task endpoint.
+    const outsider = seedUser(ctx, "outsider", "member");
+    expect(() => getWorkspace(ctx, { workspaceId: workspace.id, viewerUserId: outsider })).toThrow(
+      ForbiddenError,
+    );
+    expect(() => getAgentTask(ctx, { agentId: agentB, taskId: created.task.id })).toThrow(
+      NotFoundError,
+    );
     // Reusing the key with a different workspace is a payload conflict.
     expect(() =>
       createTaskFromMessage(ctx, {

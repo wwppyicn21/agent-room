@@ -273,7 +273,7 @@ describe("Room Core: transactional outbox and idempotency", () => {
     const second = postMessage(ctx, {
       groupId,
       actor: { type: "user", id: owner },
-      content: "only once (retry)",
+      content: "only once",
       clientMessageId: "client-1",
     });
     expect(second.id).toBe(first.id);

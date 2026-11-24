@@ -86,6 +86,21 @@ function recordRejectedAgentMessage(
   }
 }
 
+function assertIdempotentReplay(
+  existing: MessageRow,
+  input: PostMessageInput,
+  content: string,
+): void {
+  const sameSender =
+    existing.senderType === input.actor.type && existing.senderId === input.actor.id;
+  const sameThread = (existing.threadId ?? null) === (input.threadId ?? null);
+  if (!sameSender || !sameThread || existing.content !== content) {
+    throw new ConflictError(
+      `clientMessageId ${existing.clientMessageId} was already used by a different message`,
+    );
+  }
+}
+
 function postMessageInTransaction(ctx: RoomContext, input: PostMessageInput): MessageRow {
   return ctx.db.transaction((transaction) => {
     const db = transaction as unknown as RoomDb;
@@ -94,6 +109,24 @@ function postMessageInTransaction(ctx: RoomContext, input: PostMessageInput): Me
     requireGroupMember(db, input.groupId, input.actor);
     const content = messageContentSchema.parse(input.content);
     const isAgent = input.actor.type === "agent";
+
+    // Idempotency is about the exact same request, not just the same id. The
+    // lookup happens before thread/reply validation so a retry of an already
+    // accepted message still returns the original row after its thread closed.
+    const clientMessageId = input.clientMessageId?.trim() || null;
+    if (clientMessageId) {
+      const existing = db
+        .select()
+        .from(messages)
+        .where(
+          and(eq(messages.groupId, input.groupId), eq(messages.clientMessageId, clientMessageId)),
+        )
+        .get();
+      if (existing) {
+        assertIdempotentReplay(existing, input, content);
+        return existing;
+      }
+    }
 
     let thread: ThreadRow | null = null;
     if (input.threadId) {
@@ -127,18 +160,6 @@ function postMessageInTransaction(ctx: RoomContext, input: PostMessageInput): Me
       } else if (parent.threadId !== null) {
         throw new ValidationError("thread messages cannot be replied to from the group stream");
       }
-    }
-
-    const clientMessageId = input.clientMessageId?.trim() || null;
-    if (clientMessageId) {
-      const existing = db
-        .select()
-        .from(messages)
-        .where(
-          and(eq(messages.groupId, input.groupId), eq(messages.clientMessageId, clientMessageId)),
-        )
-        .get();
-      if (existing) return existing;
     }
 
     // User replies inherit the parent's Agent depth; only Agent replies increase
@@ -218,7 +239,10 @@ function postMessageInTransaction(ctx: RoomContext, input: PostMessageInput): Me
             and(eq(messages.groupId, input.groupId), eq(messages.clientMessageId, clientMessageId)),
           )
           .get();
-        if (existing) return existing;
+        if (existing) {
+          assertIdempotentReplay(existing, input, content);
+          return existing;
+        }
       }
       throw error;
     }

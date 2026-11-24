@@ -215,10 +215,14 @@ export function assignTask(
   const now = ctx.now();
   return ctx.db.transaction((transaction) => {
     const db = transaction as unknown as RoomDb;
-    db.update(tasks)
+    const claimed = db
+      .update(tasks)
       .set({ status: "assigned", assignedAgentId: input.agentId, updatedAt: now })
-      .where(eq(tasks.id, task.id))
+      .where(and(eq(tasks.id, task.id), inArray(tasks.status, ["queued", "assigned"])))
       .run();
+    if (claimed.changes !== 1) {
+      throw new ConflictError(`task ${task.id} changed while assigning`);
+    }
     const event = appendEvent(db, {
       type: "task.assigned",
       actor: { type: "user", id: input.actorUserId },
@@ -261,10 +265,20 @@ export function startTask(
   const runId = newId("run");
   return ctx.db.transaction((transaction) => {
     const db = transaction as unknown as RoomDb;
-    db.update(tasks)
+    const claimed = db
+      .update(tasks)
       .set({ status: "running", startedAt: now, updatedAt: now })
-      .where(eq(tasks.id, task.id))
+      .where(
+        and(
+          eq(tasks.id, task.id),
+          eq(tasks.status, "assigned"),
+          eq(tasks.assignedAgentId, input.agentId),
+        ),
+      )
       .run();
+    if (claimed.changes !== 1) {
+      throw new ConflictError(`task ${task.id} changed while starting`);
+    }
     db.insert(taskRuns)
       .values({
         id: runId,
@@ -340,17 +354,8 @@ export function completeTask(
     if (!run || run.taskId !== task.id || run.agentId !== input.agentId) {
       throw new NotFoundError(`running task run for task ${task.id} not found`);
     }
-    db.update(taskRuns)
-      .set({
-        status: input.outcome,
-        finishedAt: now,
-        updatedAt: now,
-        summary,
-        error: input.error ?? null,
-      })
-      .where(eq(taskRuns.id, run.id))
-      .run();
-    db.update(tasks)
+    const claimed = db
+      .update(tasks)
       .set({
         status: input.outcome,
         updatedAt: now,
@@ -359,8 +364,25 @@ export function completeTask(
         summary,
         error: input.error ?? null,
       })
-      .where(eq(tasks.id, task.id))
+      .where(and(eq(tasks.id, task.id), eq(tasks.status, "running")))
       .run();
+    if (claimed.changes !== 1) {
+      throw new ConflictError(`task ${task.id} changed while completing`);
+    }
+    const finished = db
+      .update(taskRuns)
+      .set({
+        status: input.outcome,
+        finishedAt: now,
+        updatedAt: now,
+        summary,
+        error: input.error ?? null,
+      })
+      .where(and(eq(taskRuns.id, run.id), eq(taskRuns.status, "running")))
+      .run();
+    if (finished.changes !== 1) {
+      throw new ConflictError(`task run ${run.id} changed while completing`);
+    }
     db.update(threads)
       .set({
         status: input.outcome === "succeeded" ? "closed" : "failed",
@@ -458,13 +480,24 @@ export function pauseTask(
   const now = ctx.now();
   return ctx.db.transaction((transaction) => {
     const db = transaction as unknown as RoomDb;
+    const claimed = db
+      .update(tasks)
+      .set({ status: "paused", updatedAt: now })
+      .where(and(eq(tasks.id, task.id), eq(tasks.status, "running")))
+      .run();
+    if (claimed.changes !== 1) {
+      throw new ConflictError(`task ${task.id} changed while pausing`);
+    }
     const run = latestRun(db, task.id, "running");
     if (!run) throw new ConflictError(`task ${task.id} has no running task run`);
-    db.update(taskRuns)
+    const paused = db
+      .update(taskRuns)
       .set({ status: "paused", updatedAt: now })
-      .where(eq(taskRuns.id, run.id))
+      .where(and(eq(taskRuns.id, run.id), eq(taskRuns.status, "running")))
       .run();
-    db.update(tasks).set({ status: "paused", updatedAt: now }).where(eq(tasks.id, task.id)).run();
+    if (paused.changes !== 1) {
+      throw new ConflictError(`task run ${run.id} changed while pausing`);
+    }
     const event = appendEvent(db, {
       type: "task.paused",
       actor: { type: "user", id: input.actorUserId },
@@ -512,13 +545,24 @@ export function resumeTask(
   const now = ctx.now();
   return ctx.db.transaction((transaction) => {
     const db = transaction as unknown as RoomDb;
+    const claimed = db
+      .update(tasks)
+      .set({ status: "running", updatedAt: now })
+      .where(and(eq(tasks.id, task.id), eq(tasks.status, "paused")))
+      .run();
+    if (claimed.changes !== 1) {
+      throw new ConflictError(`task ${task.id} changed while resuming`);
+    }
     const run = latestRun(db, task.id, "paused");
     if (!run) throw new ConflictError(`task ${task.id} has no paused task run`);
-    db.update(taskRuns)
+    const resumed = db
+      .update(taskRuns)
       .set({ status: "running", updatedAt: now })
-      .where(eq(taskRuns.id, run.id))
+      .where(and(eq(taskRuns.id, run.id), eq(taskRuns.status, "paused")))
       .run();
-    db.update(tasks).set({ status: "running", updatedAt: now }).where(eq(tasks.id, task.id)).run();
+    if (resumed.changes !== 1) {
+      throw new ConflictError(`task run ${run.id} changed while resuming`);
+    }
     const event = appendEvent(db, {
       type: "task.resumed",
       actor: { type: "user", id: input.actorUserId },
