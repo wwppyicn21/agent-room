@@ -1,5 +1,6 @@
 import { and, desc, eq, gt, isNull, lte, or, sql } from "drizzle-orm";
 import {
+  agents,
   approvals,
   type ApprovalRow,
   messages,
@@ -17,6 +18,7 @@ import {
   agentActor,
   requireActiveGroup,
   requireAgent,
+  isGroupMember,
   requireGroupManager,
   requireGroupMember,
   requireWriteUser,
@@ -422,15 +424,44 @@ function failTask(
     createdAt: now,
     excludeAgentId: task.assignedAgentId,
   });
-  appendEvent(db, {
+  const lifecycleEvent = appendEvent(db, {
     type: options.eventType,
     actor,
     groupId: task.groupId,
     threadId: task.threadId,
     taskId: task.id,
-    payload: { taskId: task.id, approvalId: approval.id, reason, summaryMessageId },
+    payload: {
+      taskId: task.id,
+      approvalId: approval.id,
+      reason,
+      summaryMessageId,
+      threadId: task.threadId,
+      status: "failed",
+    },
     createdAt: now,
   });
+  // An expired approval leaves the assignee waiting forever unless the failure
+  // reaches it through the same durable inbox as the other lifecycle events.
+  // The assignment alone is not authorization: the agent must still belong to
+  // the task's group and stay enabled.
+  if (options.eventType === "task.approval_expired" && task.assignedAgentId) {
+    const assignee = db
+      .select({ id: agents.id, status: agents.status })
+      .from(agents)
+      .where(eq(agents.id, task.assignedAgentId))
+      .get();
+    if (
+      assignee &&
+      assignee.status !== "disabled" &&
+      isGroupMember(db, task.groupId, "agent", assignee.id)
+    ) {
+      enqueueDelivery(db, {
+        agentId: assignee.id,
+        eventId: lifecycleEvent.id,
+        createdAt: now,
+      });
+    }
+  }
   recordAudit(db, {
     actorType: actor.type === "system" ? "system" : "user",
     actorId: actor.id,
