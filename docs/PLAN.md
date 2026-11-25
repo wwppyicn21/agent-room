@@ -1609,6 +1609,8 @@ Plugin 侧 Room Tools 封装仍属 M7。
 - 浏览器 WebSocket：`POST /api/v1/realtime/ticket` 换取一次性 ticket，连接
   `/api/v1/realtime/ws`；订阅一个 Group，从 `events.seq` 断点续传；支持 ping/unsubscribe；
 - 细节与已知边界见 `docs/REALTIME.md`；React UI 本身尚未开始。
+- Delivery 诊断：`GET /api/v1/groups/:groupId/deliveries` 与 `/stats`（owner/admin）；
+- Agent Presence：浏览器实时通道的 `presence` 帧（Group 内 Agent 快照与在线 lease）。
 
 ### 页面
 

@@ -48,6 +48,21 @@ Server → Client 确认：
 { "type": "subscribed", "groupId": "grp_...", "afterSeq": 123 }
 ```
 
+订阅成功后，Server 立即推送一次 Agent 在线快照；之后每 300ms 检查一次，变化时才再推：
+
+```json
+{
+  "type": "presence",
+  "groupId": "grp_...",
+  "agents": [
+    { "agentId": "agt_...", "displayName": "dsh-linux", "status": "online", "online": true }
+  ]
+}
+```
+
+`status` 是 Agent 的持久状态（`online` / `offline` / `disabled`），`online` 是当前 lease
+（默认 60 秒）内是否有活跃 Agent Session；两者可能短暂不一致。
+
 事件帧：
 
 ```json
@@ -109,8 +124,8 @@ Server → Client 确认：
 
 ## 已知边界
 
-- Agent 在线状态目前不是 Group 级事件（`agent.status.changed` 没有 `groupId`），
-  因此不会进入该通道；M8 的 Agent 在线列表先使用 REST。
+- Agent 在线状态走 `presence` 轮询帧，不依赖 `agent.status.changed` 事件；同一快照
+  不重复推送，但每 300ms 会重新计算一次 lease（当前为单进程 SQLite 查询）。
 - ticket 存储是单进程内存，符合当前单机部署；多实例部署需改为数据库或共享存储（M9 评估）。
 - WebSocket Origin 校验、每用户连接数/速率限制尚未实现，属于上线前加固项。
 - Delivery 诊断、`thread` 级订阅与多 Group 单连接尚未提供。

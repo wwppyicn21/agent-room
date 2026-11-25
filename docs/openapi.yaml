@@ -482,6 +482,36 @@ paths:
                   expiresAt: { type: integer }
         "401": { $ref: "#/components/responses/Error" }
         "403": { $ref: "#/components/responses/Error" }
+  /api/v1/groups/{groupId}/deliveries:
+    get:
+      summary: Delivery diagnostics for one Group (owner/admin only)
+      security: [{ accessJWT: [] }, { devUser: [] }]
+      parameters:
+        - $ref: "#/components/parameters/groupId"
+        - name: status
+          in: query
+          schema:
+            type: string
+            enum: [pending, delivered, acked, failed]
+        - name: agentId
+          in: query
+          schema: { type: string }
+        - $ref: "#/components/parameters/limit"
+        - $ref: "#/components/parameters/cursorId"
+      responses:
+        "200": { description: Deliveries with agent and event type }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+  /api/v1/groups/{groupId}/deliveries/stats:
+    get:
+      summary: Delivery status counts and oldest pending (owner/admin only)
+      security: [{ accessJWT: [] }, { devUser: [] }]
+      parameters:
+        - $ref: "#/components/parameters/groupId"
+      responses:
+        "200": { description: Counts by status and oldest pending timestamp }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
   /api/v1/groups/{groupId}/workspaces:
     parameters:
       - $ref: "#/components/parameters/groupId"

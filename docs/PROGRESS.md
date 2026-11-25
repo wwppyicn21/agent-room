@@ -833,3 +833,29 @@ OpenAPI 与 AUTH §13 已同步；代码提交：`783ead7`。
 - 不提供 Agent 创建 Group / Thread、成员管理、审批决策；
 - Thread 消息读取仍走 `/api/v1/agent/threads/:threadId/messages`（按 Task assignee 授权）；
 - 这组 REST 端点与 WSS 的投递语义独立：读取历史不会自动 ACK delivery。
+
+### Delivery 诊断 + Agent Presence（M8 服务端前置，2026-11-25）
+
+已实现：
+
+- `GET /api/v1/groups/:groupId/deliveries`：Group owner/admin 查看投递诊断；支持
+  `status`（pending / delivered / acked / failed）、`agentId`、`limit`、`cursor`
+  （上一页最后一条 delivery id）；返回 delivery 字段 + Agent displayName + event type；
+  cursor 必须属于该 Group，否则 `400`；非 manager `403`。
+- `GET /api/v1/groups/:groupId/deliveries/stats`：按状态计数与最老 pending 的
+  `createdAt`；同样仅 owner/admin。
+- 浏览器实时通道新增 `presence` 帧：订阅成功后立即推送该 Group 的 Agent 快照
+  （agentId / displayName / status / online），之后每 300ms 检查，变化时才推送；
+  `online` 依据 `agentPresenceTtlMs` 的活跃 Session lease。
+- 不新增表/迁移；投递查询走 `agent_deliveries` + `events(group_id)` 索引。
+
+测试：`apps/server/test/delivery-diagnostics.test.ts` 4 例（manager 列表、delivery cursor
+分页 / 非法 cursor、非 manager 与未认证、状态统计 + 最老 pending + Group 隔离）；
+`realtime.test.ts` 增 presence 快照与上线更新 1 例。全量 32 files / 246 tests。
+代码提交：`1432b42`。
+
+已知边界：
+
+- 只读诊断，不提供重试/终止操作；Agent 侧 ACK 语义仍以 WSS 为准；
+- presence 依赖会话 lease 轮询，单进程 SQLite 下可接受；多实例需改为事件驱动（M9）；
+- 每连接每 300ms 一次 presence 查询，连接数增长时需评估去重/共享快照。
