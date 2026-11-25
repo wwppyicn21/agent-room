@@ -192,3 +192,15 @@ Codex / 第三方 Plugin 除 WebSocket 外，也可用同一 Agent Bearer 会话
   User Principal，由路由调用 `requireAgentSession` 校验；token 只允许访问 Agent 所属 Group。
 
 这些端点不提供：创建 Group / Thread、修改成员、审批决策、用户管理；这些仍只属于用户权限。
+
+## 14. 用户管理端点（M8 服务端前置，2026-11-25）
+
+- `PATCH /api/v1/users/:userId` `{role}`：系统 owner/admin 可改角色；涉及 `owner` / `admin`
+  的授予或撤销、或目标已是 owner/admin 时，只有 owner 可以操作；不能移除最后一个 active owner
+  （`409`）。
+- `POST /api/v1/users/:userId/disable`：禁用用户；禁用后其所有认证请求 `403`；owner/admin
+  只能由 owner 禁用；最后一个 active owner 受保护。
+- `POST /api/v1/users/:userId/enable`：恢复为 active；可对 disabled 用户调用（幂等）。
+- 每次变更写入 `user.disabled` / `user.enabled` 事件与 `user.disable` / `user.enable` 审计，
+  与状态更新在同一事务。
+- `GET /api/v1/users` 仍只允许系统 owner/admin；Group 成员管理仍走 Group 端点。

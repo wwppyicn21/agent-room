@@ -20,6 +20,77 @@ paths:
       summary: Current user and server identity
       responses:
         "200": { description: Current principal }
+  /api/v1/users:
+    get:
+      summary: List users (system owner/admin)
+      responses:
+        "200": { description: Users }
+        "403": { $ref: "#/components/responses/Error" }
+    post:
+      summary: Create a user (system owner/admin)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [displayName]
+              properties:
+                displayName: { type: string, maxLength: 120 }
+                email: { type: string, format: email, nullable: true }
+                role:
+                  type: string
+                  enum: [owner, admin, member, readonly]
+      responses:
+        "201": { description: Created }
+        "403": { $ref: "#/components/responses/Error" }
+        "409": { $ref: "#/components/responses/Error" }
+  /api/v1/users/{userId}:
+    patch:
+      summary: Change a user role (owner for admin/owner changes)
+      parameters:
+        - name: userId
+          in: path
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [role]
+              properties:
+                role:
+                  type: string
+                  enum: [owner, admin, member, readonly]
+      responses:
+        "200": { description: Updated }
+        "403": { $ref: "#/components/responses/Error" }
+        "409": { $ref: "#/components/responses/Error" }
+  /api/v1/users/{userId}/disable:
+    post:
+      summary: Disable a user (last active owner is protected)
+      parameters:
+        - name: userId
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        "200": { description: Disabled }
+        "403": { $ref: "#/components/responses/Error" }
+        "409": { $ref: "#/components/responses/Error" }
+  /api/v1/users/{userId}/enable:
+    post:
+      summary: Re-enable a disabled user
+      parameters:
+        - name: userId
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        "200": { description: Enabled }
+        "403": { $ref: "#/components/responses/Error" }
   /api/v1/groups:
     get:
       summary: List groups visible to the caller

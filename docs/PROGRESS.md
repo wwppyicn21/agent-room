@@ -859,3 +859,23 @@ OpenAPI 与 AUTH §13 已同步；代码提交：`783ead7`。
 - 只读诊断，不提供重试/终止操作；Agent 侧 ACK 语义仍以 WSS 为准；
 - presence 依赖会话 lease 轮询，单进程 SQLite 下可接受；多实例需改为事件驱动（M9）；
 - 每连接每 300ms 一次 presence 查询，连接数增长时需评估去重/共享快照。
+
+### 用户管理端点（M8 服务端前置，2026-11-25）
+
+已实现：
+
+- `PATCH /api/v1/users/:userId`：修改角色；owner/admin 授予/撤销与 owner/admin 目标仅 owner 可操作；
+- `POST /api/v1/users/:userId/disable` 与 `/enable`：禁用/恢复；禁用后认证 403；最后一个 active
+  owner 受保护（409）；启用对 disabled 用户幂等；
+- 状态变更与 `user.disabled` / `user.enabled` 事件、`user.disable` / `user.enable` 审计同事务；
+- `/api/v1/users` 列表仍仅系统 owner/admin。
+
+测试：新增 `apps/server/test/users-admin.test.ts` 3 例（admin 不能授予 admin / 成员不能列表、
+禁用后 403 且启用恢复 + 事件、最后 owner 保护）。全量 33 files / 249 tests。
+代码提交：1432b42。
+
+已知边界：
+
+- 不支持删除用户（保留审计与消息归属）；
+- 角色变更不影响已有 Group membership 的 owner/admin 角色；
+- 被禁用用户的 Agent Session / Delivery 不在本端点级联处理。
