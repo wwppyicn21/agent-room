@@ -910,3 +910,28 @@ OpenAPI 与 AUTH §13 已同步；代码提交：`783ead7`。
 - 不支持删除用户（保留审计与消息归属）；
 - 角色变更不影响已有 Group membership 的 owner/admin 角色；
 - 被禁用用户的 Agent Session / Delivery 不在本端点级联处理。
+
+### Agent / 成员 / 消息管理端点（M8 服务端前置，2026-11-26）
+
+已实现：
+
+- `POST /api/v1/agents/:agentId/disable` / `enable`：系统 owner/admin 禁用/恢复 Agent；
+  禁用时同事务关闭全部 Session、写 `agent.status.changed` 与审计，路由层关闭在线 WebSocket；
+  `enable` 恢复为 `offline`；两者幂等。
+- `GET /api/v1/agents` 与 `GET /api/v1/agents/:agentId` 返回 `online`（Session lease）。
+- `PATCH /api/v1/groups/:groupId/members/:memberType/:memberId`：调整成员角色；Agent 仅
+  `member`；owner 角色变更仅系统 owner/admin 或 Group owner；最后一个 Group owner 不可降级
+  （409）；写 `group.member_updated` 事件与审计。
+- `DELETE /api/v1/messages/:messageId`：软删除；发送者或 Group manager 可删；重复删除幂等；
+  写 `message.deleted` 事件与审计；列表已过滤。
+- 新增事件类型 `group.member_updated`、`message.deleted`。
+
+测试：新增 `apps/server/test/admin-endpoints.test.ts` 4 例（Agent 禁用/会话关闭/恢复/幂等、
+成员角色提升与 owner 保护、消息软删除权限/幂等/列表隐藏、HTTP 路由）。全量 34 files / 253 tests。
+代码提交：`ff20d5e`。
+
+已知边界：
+
+- Agent 禁用不撤销其 Key，也不清理已 ack 的 Delivery；恢复后需重新连接。
+- 消息删除不追溯已投递 Delivery，也不删除引用它的 Thread/Task；客户端需按事件刷新。
+- 成员角色变更不转移 Group 所有权语义，也不影响系统角色。

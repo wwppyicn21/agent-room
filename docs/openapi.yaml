@@ -173,7 +173,68 @@ paths:
         "201": { description: Member added }
         "403": { $ref: "#/components/responses/Error" }
         "409": { $ref: "#/components/responses/Error" }
+  /api/v1/agents:
+    get:
+      summary: List agents with live online flag (system owner/admin)
+      responses:
+        "200": { description: Agents }
+        "403": { $ref: "#/components/responses/Error" }
+  /api/v1/agents/{agentId}/disable:
+    post:
+      summary: Disable an agent and close its sessions (system owner/admin)
+      parameters:
+        - name: agentId
+          in: path
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                reason: { type: string, maxLength: 500, nullable: true }
+      responses:
+        "200": { description: Disabled }
+        "403": { $ref: "#/components/responses/Error" }
+  /api/v1/agents/{agentId}/enable:
+    post:
+      summary: Re-enable an agent as offline (system owner/admin)
+      parameters:
+        - name: agentId
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        "200": { description: Enabled }
+        "403": { $ref: "#/components/responses/Error" }
   /api/v1/groups/{groupId}/members/{memberType}/{memberId}:
+    patch:
+      summary: Change a member role (group manager; owner role is owner-only)
+      parameters:
+        - $ref: "#/components/parameters/groupId"
+        - name: memberType
+          in: path
+          required: true
+          schema: { type: string, enum: [user, agent] }
+        - name: memberId
+          in: path
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [memberRole]
+              properties:
+                memberRole: { type: string, enum: [owner, admin, member] }
+      responses:
+        "200": { description: Updated }
+        "403": { $ref: "#/components/responses/Error" }
+        "409": { $ref: "#/components/responses/Error" }
     delete:
       summary: Remove a member (group manager)
       parameters:
@@ -224,6 +285,16 @@ paths:
         "201": { description: Created }
         "403": { $ref: "#/components/responses/Error" }
   /api/v1/messages/{messageId}:
+    delete:
+      summary: Soft-delete a message (sender or group manager)
+      parameters:
+        - name: messageId
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        "204": { description: Deleted }
+        "403": { $ref: "#/components/responses/Error" }
     get:
       summary: Message detail (members only)
       parameters:

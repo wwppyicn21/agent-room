@@ -204,3 +204,20 @@ Codex / 第三方 Plugin 除 WebSocket 外，也可用同一 Agent Bearer 会话
 - 每次变更写入 `user.disabled` / `user.enabled` 事件与 `user.disable` / `user.enable` 审计，
   与状态更新在同一事务。
 - `GET /api/v1/users` 仍只允许系统 owner/admin；Group 成员管理仍走 Group 端点。
+
+## 15. Agent / Group 成员 / 消息管理（M8 服务端前置，2026-11-26）
+
+- `POST /api/v1/agents/:agentId/disable`：系统 owner/admin 禁用 Agent；同一事务写
+  `agent.status.changed` 事件（含 previousStatus / reason）与 `agent.disable` 审计，并关闭该
+  Agent 的所有活跃 Session；路由层同时关闭在线 WebSocket（1008）。禁用幂等。
+- `POST /api/v1/agents/:agentId/enable`：把 disabled Agent 恢复为 `offline`，等待其重新连接；
+  写事件与 `agent.enable` 审计；对非 disabled 幂等。
+- `GET /api/v1/agents` / `GET /api/v1/agents/:agentId`：返回 `online`（基于 Agent Session
+  lease），供管理界面显示在线状态。
+- `PATCH /api/v1/groups/:groupId/members/:memberType/:memberId`：Group manager 调整成员角色；
+  Agent 只能是 `member`；涉及 `owner` 的授予/撤销仅系统 owner/admin 或 Group owner 可操作；
+  不能降级最后一个 Group owner（`409`）；写 `group.member_updated` 事件与
+  `group.member_role` 审计。
+- `DELETE /api/v1/messages/:messageId`：软删除；发送者本人或 Group manager 可删；写
+  `message.deleted` 事件与 `message.delete` 审计；重复删除幂等；列表查询已过滤 `deletedAt`。
+- 上述写操作均在事务内完成，失败整体回滚。
