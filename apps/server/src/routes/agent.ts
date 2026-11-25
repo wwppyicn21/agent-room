@@ -27,6 +27,12 @@ import {
 import type { AgentHub, AgentSocket } from "../modules/agentHub.js";
 import type { RoomContext } from "../modules/context.js";
 import { isGroupMember } from "../modules/permissions.js";
+import {
+  ackCommand,
+  countUnackedCommands,
+  listAgentCommands,
+  markCommandDelivered,
+} from "../modules/agentCommands.js";
 import { DomainError, UnauthorizedError, ValidationError } from "../modules/errors.js";
 import {
   ackDelivery,
@@ -260,6 +266,27 @@ export function registerAgentRoutes(app: FastifyInstance, deps: AgentRouteDepend
       }
     };
 
+    const deliverCommands = (includeDelivered = false): void => {
+      const commands = listAgentCommands(ctx, { agentId: agent.id, includeDelivered });
+      for (const command of commands) {
+        if (command.status === "pending") {
+          markCommandDelivered(ctx, { commandId: command.id, agentId: agent.id });
+        }
+        send(socket, {
+          type: "command",
+          protocolVersion: AGENT_PROTOCOL_VERSION,
+          command: {
+            commandId: command.id,
+            type: command.commandType,
+            taskId: command.taskId,
+            runId: command.runId,
+            reason: command.reason,
+            createdAt: toIso(command.createdAt),
+          },
+        });
+      }
+    };
+
     send(socket, {
       type: "hello",
       protocolVersion: AGENT_PROTOCOL_VERSION,
@@ -277,8 +304,10 @@ export function registerAgentRoutes(app: FastifyInstance, deps: AgentRouteDepend
         limit: 200,
         includeUnacked: true,
       }).length,
+      outstandingCommands: countUnackedCommands(ctx, agent.id),
     });
     deliverOutstanding(true);
+    deliverCommands(true);
 
     timers.poll = setInterval(() => {
       if (closed) return;
@@ -288,6 +317,7 @@ export function registerAgentRoutes(app: FastifyInstance, deps: AgentRouteDepend
           return;
         }
         deliverOutstanding();
+        deliverCommands();
       } catch (error) {
         app.log.warn({ err: error, agentId: agent.id }, "delivery poll failed");
       }
@@ -328,6 +358,11 @@ export function registerAgentRoutes(app: FastifyInstance, deps: AgentRouteDepend
             time: toIso(ctx.now()),
             serverId: getServerId(ctx),
           });
+          return;
+        }
+        if (message.type === "command.ack") {
+          const command = ackCommand(ctx, { commandId: message.commandId, agentId: agent.id });
+          send(socket, { type: "command.ack.ok", commandId: command.id });
           return;
         }
         if (message.type === "event.ack") {
@@ -384,7 +419,7 @@ export function registerAgentRoutes(app: FastifyInstance, deps: AgentRouteDepend
       } catch (error) {
         send(socket, {
           type: "error",
-          code: "command_failed",
+          code: error instanceof DomainError ? error.code : "command_failed",
           message: error instanceof Error ? error.message : "command failed",
         });
       }

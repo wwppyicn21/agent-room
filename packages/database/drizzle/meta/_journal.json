@@ -71,6 +71,13 @@
       "when": 1795513028485,
       "tag": "0009_curious_young_avengers",
       "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "6",
+      "when": 1795625420071,
+      "tag": "0010_dark_silver_samurai",
+      "breakpoints": true
     }
   ]
 }

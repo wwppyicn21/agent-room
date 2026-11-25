@@ -6,6 +6,7 @@ import {
   type AgentEvent,
   type AgentTaskView,
   type ParticipationResult,
+  type TaskCancelCommand,
   type WebSocketLike,
   publicKeyFingerprint,
 } from "../src/index.js";
@@ -461,5 +462,69 @@ describe("agent sdk delivery handling", () => {
     expect((harness.ticketRequests[0]!.headers as Record<string, string>).authorization).toBe(
       "Bearer ses_secret_token",
     );
+  });
+});
+
+describe("agent sdk control commands", () => {
+  function commandFrame(commandId = "cmd_1"): Record<string, unknown> {
+    return {
+      type: "command",
+      protocolVersion: 1,
+      command: {
+        commandId,
+        type: "task.cancel",
+        taskId: "task_1",
+        runId: "run_1",
+        reason: "agent removed from group",
+        createdAt: "2026-01-01T00:00:00.000Z",
+      } satisfies TaskCancelCommand,
+    };
+  }
+
+  function commandAcks(socket: FakeSocket): Record<string, unknown>[] {
+    return socket.frames().filter((frame) => frame.type === "command.ack");
+  }
+
+  it("runs the cancel handler and acknowledges the command", async () => {
+    const seen: TaskCancelCommand[] = [];
+    const { socket } = await openClient(undefined, {
+      onTaskCancel: (command) => {
+        seen.push(command);
+      },
+    });
+    socket.emit(commandFrame());
+    await flush();
+    expect(seen).toHaveLength(1);
+    expect(seen[0]).toMatchObject({ commandId: "cmd_1", taskId: "task_1", runId: "run_1" });
+    expect(commandAcks(socket)).toEqual([
+      { type: "command.ack", commandId: "cmd_1", protocolVersion: 1 },
+    ]);
+
+    // A redelivered command is acknowledged again but does not run twice.
+    socket.emit(commandFrame());
+    await flush();
+    expect(seen).toHaveLength(1);
+    expect(commandAcks(socket)).toHaveLength(2);
+  });
+
+  it("does not acknowledge a command whose handler failed", async () => {
+    let calls = 0;
+    const { socket } = await openClient(undefined, {
+      onTaskCancel: () => {
+        calls += 1;
+        throw new Error("still writing");
+      },
+    });
+    socket.emit(commandFrame("cmd_fail"));
+    await flush();
+    expect(calls).toBe(1);
+    expect(commandAcks(socket)).toHaveLength(0);
+  });
+
+  it("leaves commands unacknowledged when no cancel handler is configured", async () => {
+    const { socket } = await openClient();
+    socket.emit(commandFrame("cmd_unhandled"));
+    await flush();
+    expect(commandAcks(socket)).toHaveLength(0);
   });
 });

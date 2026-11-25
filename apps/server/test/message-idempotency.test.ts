@@ -4,7 +4,7 @@ import { messages } from "@room/database";
 import { createThread, postMessage } from "../src/modules/index.js";
 import { addMember } from "../src/modules/groups.js";
 import { ConflictError } from "../src/modules/errors.js";
-import { createTestRoom, seedGroup, seedUser } from "./helpers.js";
+import { createTestRoom, seedAgent, seedGroup, seedUser } from "./helpers.js";
 
 function setup() {
   const room = createTestRoom();
@@ -134,5 +134,97 @@ describe("M5 Review Fix 3B — message idempotency payload matching", () => {
     expect(
       ctx.db.select().from(messages).where(eq(messages.clientMessageId, "cid-5")).all(),
     ).toHaveLength(1);
+  });
+
+  it("returns the original message for an identical reply retry", () => {
+    const { room, ctx, owner, groupId, source } = setup();
+    cleanup = room.close;
+    const first = postMessage(ctx, {
+      groupId,
+      actor: { type: "user", id: owner },
+      content: "same reply",
+      replyToMessageId: source.id,
+      clientMessageId: "cid-parent",
+    });
+    const retry = postMessage(ctx, {
+      groupId,
+      actor: { type: "user", id: owner },
+      content: "same reply",
+      replyToMessageId: source.id,
+      clientMessageId: "cid-parent",
+    });
+    expect(retry.id).toBe(first.id);
+    expect(retry.replyToMessageId).toBe(source.id);
+  });
+
+  it("rejects a retry that changes the reply target", () => {
+    const { room, ctx, owner, groupId, source } = setup();
+    cleanup = room.close;
+    const other = postMessage(ctx, {
+      groupId,
+      actor: { type: "user", id: owner },
+      content: "another message",
+    });
+    postMessage(ctx, {
+      groupId,
+      actor: { type: "user", id: owner },
+      content: "reply",
+      replyToMessageId: source.id,
+      clientMessageId: "cid-parent-change",
+    });
+    expect(() =>
+      postMessage(ctx, {
+        groupId,
+        actor: { type: "user", id: owner },
+        content: "reply",
+        replyToMessageId: other.id,
+        clientMessageId: "cid-parent-change",
+      }),
+    ).toThrow(ConflictError);
+  });
+
+  it("compares the legacy Agent root fallback as the effective reply target", () => {
+    const { room, ctx, owner, groupId, source } = setup();
+    cleanup = room.close;
+    const agent = seedAgent(ctx, owner, "agent");
+    addMember(ctx, { groupId, actorUserId: owner, memberType: "agent", memberId: agent });
+    const thread = createThread(ctx, {
+      groupId,
+      sourceMessageId: source.id,
+      title: "thread",
+      createdByUserId: owner,
+    });
+    const other = postMessage(ctx, {
+      groupId,
+      actor: { type: "user", id: owner },
+      content: "other root candidate",
+    });
+    const first = postMessage(ctx, {
+      groupId,
+      threadId: thread.id,
+      actor: { type: "agent", id: agent },
+      content: "legacy root reply",
+      rootMessageId: source.id,
+      clientMessageId: "cid-agent-root",
+    });
+    const retry = postMessage(ctx, {
+      groupId,
+      threadId: thread.id,
+      actor: { type: "agent", id: agent },
+      content: "legacy root reply",
+      rootMessageId: source.id,
+      clientMessageId: "cid-agent-root",
+    });
+    expect(retry.id).toBe(first.id);
+    expect(() =>
+      postMessage(ctx, {
+        groupId,
+        threadId: thread.id,
+        actor: { type: "agent", id: agent },
+        content: "legacy root reply",
+        rootMessageId: other.id,
+        clientMessageId: "cid-agent-root",
+      }),
+    ).toThrow(ConflictError);
   });
 });

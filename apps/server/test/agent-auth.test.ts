@@ -2,13 +2,14 @@ import { generateKeyPairSync, sign, type KeyObject } from "node:crypto";
 import { eq } from "drizzle-orm";
 import type { FastifyInstance } from "fastify";
 import { loadConfig } from "@room/config";
-import { agentDeliveries, agents, events, users } from "@room/database";
+import { agentCommands, agentDeliveries, agents, events, users } from "@room/database";
 import { buildAgentChallengeString } from "@room/protocol";
 import { afterEach, describe, expect, it } from "vitest";
 import { buildApp } from "../src/app.js";
 import { sweepStaleSessions } from "../src/modules/agentAuth.js";
 import { addMember, removeMember } from "../src/modules/groups.js";
 import { postMessage } from "../src/modules/messages.js";
+import { createTaskFromMessage, startTask } from "../src/modules/tasks.js";
 import { registerAgentWithKey } from "../src/modules/agents.js";
 import { appendEvent, enqueueDelivery, markDeliveryDelivered } from "../src/modules/events.js";
 import { createTestRoom, seedGroup, seedUser, type TestRoom } from "./helpers.js";
@@ -730,5 +731,137 @@ describe("M5 review fix 3 delivery revocation", () => {
       expect([pendingEvent.id, unackedEvent.id, late.id]).not.toContain(event.eventId);
     }
     reconnected.close();
+  });
+});
+
+describe("M5 review fix 4 control command delivery", () => {
+  it("pushes a durable task.cancel command to a live removed agent and records the ack", async () => {
+    const { room, app } = await setup();
+    const ctx = room.ctx;
+    const owner = seedUser(ctx, "owner", "owner");
+    const groupId = seedGroup(ctx, owner, "commands");
+    const keys = pair();
+    const { agent, key } = registerAgentWithKey(ctx, {
+      displayName: "commanded",
+      runtime: "dsh",
+      publicKey: keys.pem,
+      actorUserId: owner,
+    });
+    addMember(ctx, { groupId, actorUserId: owner, memberType: "agent", memberId: agent.id });
+    const source = postMessage(ctx, {
+      groupId,
+      actor: { type: "user", id: owner },
+      content: "build it",
+    });
+    const { task } = createTaskFromMessage(ctx, {
+      groupId,
+      sourceMessageId: source.id,
+      title: "write report",
+      createdByUserId: owner,
+      assignedAgentId: agent.id,
+    });
+    startTask(ctx, { taskId: task.id, agentId: agent.id });
+
+    const session = await completeConnect(app, keys, key.fingerprint);
+    const frames = await openSocket(app, String(session.body.sessionToken));
+    await frames.nextOf("hello");
+
+    removeMember(ctx, { groupId, actorUserId: owner, memberType: "agent", memberId: agent.id });
+
+    const commandFrame = await frames.nextOf("command");
+    const command = commandFrame.command as Record<string, unknown>;
+    expect(command).toMatchObject({
+      type: "task.cancel",
+      taskId: task.id,
+      reason: "agent removed from group",
+    });
+    expect(typeof command.runId).toBe("string");
+
+    frames.send({ type: "command.ack", commandId: command.commandId });
+    const ack = await frames.nextOf("command.ack.ok");
+    expect(ack.commandId).toBe(command.commandId);
+    const row = ctx.db
+      .select()
+      .from(agentCommands)
+      .where(eq(agentCommands.id, String(command.commandId)))
+      .get();
+    expect(row?.status).toBe("acked");
+    frames.close();
+  });
+
+  it("recovers an unacked command on reconnect and refuses another agent's ack", async () => {
+    const { room, app } = await setup();
+    const ctx = room.ctx;
+    const owner = seedUser(ctx, "owner", "owner");
+    const groupId = seedGroup(ctx, owner, "commands-recovery");
+    const keys = pair();
+    const { agent, key } = registerAgentWithKey(ctx, {
+      displayName: "offline-commanded",
+      runtime: "dsh",
+      publicKey: keys.pem,
+      actorUserId: owner,
+    });
+    addMember(ctx, { groupId, actorUserId: owner, memberType: "agent", memberId: agent.id });
+    const source = postMessage(ctx, {
+      groupId,
+      actor: { type: "user", id: owner },
+      content: "build offline",
+    });
+    const { task } = createTaskFromMessage(ctx, {
+      groupId,
+      sourceMessageId: source.id,
+      title: "offline work",
+      createdByUserId: owner,
+      assignedAgentId: agent.id,
+    });
+    startTask(ctx, { taskId: task.id, agentId: agent.id });
+
+    const firstSession = await completeConnect(app, keys, key.fingerprint);
+    const firstSocket = await openSocket(app, String(firstSession.body.sessionToken));
+    await firstSocket.nextOf("hello");
+    firstSocket.close();
+
+    removeMember(ctx, { groupId, actorUserId: owner, memberType: "agent", memberId: agent.id });
+
+    const secondSession = await completeConnect(app, keys, key.fingerprint);
+    const reconnected = await openSocket(app, String(secondSession.body.sessionToken));
+    const commandFrame = await reconnected.nextOf("command");
+    const command = commandFrame.command as Record<string, unknown>;
+    expect(command).toMatchObject({ type: "task.cancel", taskId: task.id });
+
+    // Another Agent cannot acknowledge (or probe) this command.
+    const otherKeys = pair();
+    const bystander = registerAgentWithKey(ctx, {
+      displayName: "bystander",
+      runtime: "dsh",
+      publicKey: otherKeys.pem,
+      actorUserId: owner,
+    });
+    const otherSession = await completeConnect(app, otherKeys, bystander.key.fingerprint);
+    const otherSocket = await openSocket(app, String(otherSession.body.sessionToken));
+    await otherSocket.nextOf("hello");
+    otherSocket.send({ type: "command.ack", commandId: command.commandId });
+    const error = await otherSocket.nextOf("error");
+    expect(error.code).toBe("not_found");
+    expect(
+      ctx.db
+        .select()
+        .from(agentCommands)
+        .where(eq(agentCommands.id, String(command.commandId)))
+        .get()?.status,
+    ).not.toBe("acked");
+
+    reconnected.send({ type: "command.ack", commandId: command.commandId });
+    expect((await reconnected.nextOf("command.ack.ok")).commandId).toBe(command.commandId);
+    reconnected.close();
+    otherSocket.close();
+
+    const thirdSession = await completeConnect(app, keys, key.fingerprint);
+    const reopened = await openSocket(app, String(thirdSession.body.sessionToken));
+    const hello = await reopened.nextOf("hello");
+    expect(hello.outstandingCommands).toBe(0);
+    const after = await framesUntil(reopened, 1_200);
+    expect(after.some((frame) => frame.type === "command")).toBe(false);
+    reopened.close();
   });
 });

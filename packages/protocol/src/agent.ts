@@ -103,6 +103,7 @@ export const agentServerMessageSchema = z.discriminatedUnion("type", [
       capabilities: z.array(z.string()),
     }),
     outstanding: z.number().int().nonnegative(),
+    outstandingCommands: z.number().int().nonnegative().optional(),
   }),
   z.object({
     type: z.literal("event.deliver"),
@@ -119,6 +120,22 @@ export const agentServerMessageSchema = z.discriminatedUnion("type", [
       taskId: z.string().nullable(),
       payload: z.record(z.string(), z.unknown()),
     }),
+  }),
+  z.object({
+    type: z.literal("command"),
+    protocolVersion: z.number().int(),
+    command: z.object({
+      commandId: z.string(),
+      type: z.literal("task.cancel"),
+      taskId: z.string(),
+      runId: z.string().nullable(),
+      reason: z.string().nullable(),
+      createdAt: z.string(),
+    }),
+  }),
+  z.object({
+    type: z.literal("command.ack.ok"),
+    commandId: z.string(),
   }),
   z.object({
     type: z.literal("ack.ok"),
@@ -148,6 +165,10 @@ export const agentClientMessageSchema = z.discriminatedUnion("type", [
   z.object({
     type: z.literal("event.ack"),
     deliveryIds: z.array(z.string()).min(1).max(200),
+  }),
+  z.object({
+    type: z.literal("command.ack"),
+    commandId: z.string().trim().min(1).max(64),
   }),
   z.object({
     type: z.literal("ping"),

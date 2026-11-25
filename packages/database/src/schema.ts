@@ -504,6 +504,37 @@ export const agentDeliveries = sqliteTable(
   ],
 );
 
+/**
+ * Agent-scoped control commands (M5 Review Fix 4). Unlike events/deliveries,
+ * these are addressed to one Agent and carry an execution instruction that must
+ * survive reconnects until the Agent acknowledges it.
+ */
+export const agentCommands = sqliteTable(
+  "agent_commands",
+  {
+    id: text("id").primaryKey(),
+    agentId: text("agent_id")
+      .notNull()
+      .references(() => agents.id, { onDelete: "cascade" }),
+    commandType: text("command_type", { enum: ["task.cancel"] }).notNull(),
+    taskId: text("task_id")
+      .notNull()
+      .references(() => tasks.id, { onDelete: "cascade" }),
+    runId: text("run_id").references(() => taskRuns.id, { onDelete: "set null" }),
+    reason: text("reason"),
+    status: text("status", { enum: ["pending", "delivered", "acked"] })
+      .notNull()
+      .default("pending"),
+    createdAt: integer("created_at").notNull(),
+    deliveredAt: integer("delivered_at"),
+    ackedAt: integer("acked_at"),
+  },
+  (table) => [
+    uniqueIndex("agent_commands_task_uq").on(table.agentId, table.commandType, table.taskId),
+    index("agent_commands_agent_status_idx").on(table.agentId, table.status, table.createdAt),
+  ],
+);
+
 export const auditLogs = sqliteTable(
   "audit_logs",
   {
@@ -541,6 +572,7 @@ export type TaskRow = typeof tasks.$inferSelect;
 export type TaskRunRow = typeof taskRuns.$inferSelect;
 export type EventRow = typeof events.$inferSelect;
 export type AgentDeliveryRow = typeof agentDeliveries.$inferSelect;
+export type AgentCommandRow = typeof agentCommands.$inferSelect;
 export type ApprovalRow = typeof approvals.$inferSelect;
 export type WorkspaceRow = typeof workspaces.$inferSelect;
 export type AuditLogRow = typeof auditLogs.$inferSelect;

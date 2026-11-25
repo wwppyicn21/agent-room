@@ -73,6 +73,22 @@ export interface AgentClientOptions {
    * reload Thread context and resume work after a crash or a server restart.
    */
   onRecover?: (tasks: AgentTaskView[]) => void;
+  /**
+   * A server-issued control command. The SDK awaits the handler and only then
+   * acknowledges the command; throwing leaves it unacknowledged so a reconnect
+   * retries it. Use `commandId` to deduplicate side effects.
+   */
+  onTaskCancel?: (command: TaskCancelCommand) => void | Promise<void>;
+}
+
+/** A durable control instruction addressed to this Agent. */
+export interface TaskCancelCommand {
+  commandId: string;
+  type: "task.cancel";
+  taskId: string;
+  runId: string | null;
+  reason: string | null;
+  createdAt: string;
 }
 
 /** A task owned by this Agent, as returned by the recovery endpoints. */
@@ -146,6 +162,7 @@ export class AgentClient {
   private readonly fingerprint: string;
   private readonly deliveryAttempts = new Map<string, number>();
   private readonly pendingReplies = new Map<string, PendingReply>();
+  private readonly ackedCommands = new Set<string>();
   private readonly replyTimers = new Map<string, ReturnType<typeof setTimeout>>();
 
   constructor(options: AgentClientOptions) {
@@ -315,6 +332,10 @@ export class AgentClient {
           void this.handleDelivery(frame);
           return;
         }
+        if (frame.type === "command") {
+          void this.handleCommand(frame.command);
+          return;
+        }
         if (frame.type === "ack.ok") {
           this.forgetAcknowledged(frame.deliveryIds);
           return;
@@ -353,6 +374,31 @@ export class AgentClient {
         }
       });
     });
+  }
+
+  /** Executes a control command, then acknowledges it only after success. */
+  private async handleCommand(command: unknown): Promise<void> {
+    const value = command as Record<string, unknown> | null;
+    if (!value || value.type !== "task.cancel" || typeof value.commandId !== "string") return;
+    const commandId = value.commandId;
+    if (this.ackedCommands.has(commandId)) {
+      this.sendCommandAck(commandId);
+      return;
+    }
+    const handler = this.options.onTaskCancel;
+    if (!handler) return;
+    try {
+      await handler(value as unknown as TaskCancelCommand);
+      this.ackedCommands.add(commandId);
+      this.sendCommandAck(commandId);
+    } catch {
+      // Leave the command unacknowledged; the next reconnect retries it.
+    }
+  }
+
+  private sendCommandAck(commandId: string): void {
+    if (!this.socketOpen || !this.socket) return;
+    this.send({ type: "command.ack", commandId });
   }
 
   /** Drops attempt counters once the server confirms the ack. */

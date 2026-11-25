@@ -19,6 +19,7 @@ import { recordAudit } from "./audit.js";
 import { ConflictError, NotFoundError, ValidationError } from "./errors.js";
 import { appendEvent, enqueueDelivery, enqueueGroupAgentDeliveries } from "./events.js";
 import { getGroupMessageRow } from "./messages.js";
+import { createTaskCancelCommand } from "./agentCommands.js";
 import { workspaceForTask } from "./workspaces.js";
 import {
   agentActor,
@@ -604,7 +605,7 @@ function cancelTaskInTransaction(
     now: number;
     notifyAssignee: boolean;
   },
-): TaskRow {
+): { task: TaskRow; runId: string | null } {
   const { task } = input;
   const run = latestRun(db, task.id, "running") ?? latestRun(db, task.id, "paused");
   if (run) {
@@ -657,7 +658,10 @@ function cancelTaskInTransaction(
     metadata: { runId: run?.id ?? null, reason: input.reason },
     createdAt: input.now,
   });
-  return db.select().from(tasks).where(eq(tasks.id, task.id)).get()!;
+  return {
+    task: db.select().from(tasks).where(eq(tasks.id, task.id)).get()!,
+    runId: run?.id ?? null,
+  };
 }
 
 /**
@@ -681,12 +685,19 @@ export function cancelAgentTasksForGroupRemoval(
     )
     .all();
   for (const task of rows) {
-    cancelTaskInTransaction(db, {
+    const cancelled = cancelTaskInTransaction(db, {
       task,
       actorUserId: input.actorUserId,
       reason: "agent removed from group",
       now: input.now,
       notifyAssignee: false,
+    });
+    createTaskCancelCommand(db, {
+      agentId: input.agentId,
+      taskId: task.id,
+      runId: cancelled.runId,
+      reason: "agent removed from group",
+      now: input.now,
     });
   }
   return rows.length;
@@ -714,7 +725,7 @@ export function cancelTask(
       reason,
       now,
       notifyAssignee: true,
-    });
+    }).task;
   });
 }
 

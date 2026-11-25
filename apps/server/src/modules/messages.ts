@@ -94,7 +94,12 @@ function assertIdempotentReplay(
   const sameSender =
     existing.senderType === input.actor.type && existing.senderId === input.actor.id;
   const sameThread = (existing.threadId ?? null) === (input.threadId ?? null);
-  if (!sameSender || !sameThread || existing.content !== content) {
+  // A retry must resolve to the same attachment point. `rootMessageId` is only
+  // the legacy fallback parent for Agents that do not send `replyToMessageId`.
+  const effectiveParent =
+    input.replyToMessageId ?? (input.actor.type === "agent" ? (input.rootMessageId ?? null) : null);
+  const sameParent = (existing.replyToMessageId ?? null) === effectiveParent;
+  if (!sameSender || !sameThread || !sameParent || existing.content !== content) {
     throw new ConflictError(
       `clientMessageId ${existing.clientMessageId} was already used by a different message`,
     );
