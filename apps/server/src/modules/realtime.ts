@@ -1,7 +1,8 @@
 import { createHash, randomBytes } from "node:crypto";
 import { and, asc, desc, eq, gt } from "drizzle-orm";
-import { events, type EventRow } from "@room/database";
+import { agents, events, type EventRow, groupMembers } from "@room/database";
 import type { RoomContext } from "./context.js";
+import { liveSessionAgentIds } from "./agentAuth.js";
 import { requireGroupMember } from "./permissions.js";
 
 /** How long a browser has to redeem its one-time WebSocket ticket. */
@@ -100,11 +101,13 @@ export function handleRealtimeSocket(
   socket: RealtimeSocket,
   userId: string,
   pollMs = 300,
+  presenceTtlMs = 60_000,
 ): void {
   const actor = { type: "user" as const, id: userId };
   let groupId: string | null = null;
   let cursor = 0;
   let closed = false;
+  let presenceSignature = "";
 
   const send = (frame: Record<string, unknown>): void => {
     if (closed) return;
@@ -130,7 +133,36 @@ export function handleRealtimeSocket(
     }
   };
 
-  const poll = setInterval(deliver, pollMs);
+  const presence = (): Array<Record<string, unknown>> => {
+    if (groupId === null) return [];
+    const online = liveSessionAgentIds(ctx, presenceTtlMs);
+    return ctx.db
+      .select({
+        agentId: agents.id,
+        displayName: agents.displayName,
+        status: agents.status,
+      })
+      .from(groupMembers)
+      .innerJoin(agents, eq(agents.id, groupMembers.memberId))
+      .where(and(eq(groupMembers.groupId, groupId), eq(groupMembers.memberType, "agent")))
+      .orderBy(asc(agents.createdAt), asc(agents.id))
+      .all()
+      .map((agent) => ({ ...agent, online: online.has(agent.agentId) }));
+  };
+
+  const sendPresence = (force = false): void => {
+    if (groupId === null) return;
+    const snapshot = presence();
+    const signature = JSON.stringify(snapshot);
+    if (!force && signature === presenceSignature) return;
+    presenceSignature = signature;
+    send({ type: "presence", groupId, agents: snapshot });
+  };
+
+  const poll = setInterval(() => {
+    deliver();
+    sendPresence();
+  }, pollMs);
   poll.unref();
 
   const cleanup = (): void => {
@@ -179,6 +211,7 @@ export function handleRealtimeSocket(
     }
     if (type === "unsubscribe") {
       groupId = null;
+      presenceSignature = "";
       send({ type: "unsubscribed" });
       return;
     }
@@ -209,6 +242,7 @@ export function handleRealtimeSocket(
     groupId = value.groupId;
     cursor = value.afterSeq === undefined ? latestSeq(value.groupId) : (value.afterSeq as number);
     send({ type: "subscribed", groupId, afterSeq: cursor });
+    sendPresence(true);
   });
 
   send({ type: "hello", userId, now: ctx.now(), pollMs });

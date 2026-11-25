@@ -102,7 +102,7 @@ export async function buildApp({
   registerAgentRoutes(app, { config, ctx, hub });
   registerHttpRoutes(app, { ctx, hub });
   registerRoomRoutes(app, { ctx });
-  registerRealtimeRoutes(app, { ctx });
+  registerRealtimeRoutes(app, { ctx, agentPresenceTtlMs: config.agentPresenceTtlMs });
 
   // Legacy shell endpoint kept for compatibility; business traffic uses the
   // authenticated `/api/v1/agent/connect` socket.

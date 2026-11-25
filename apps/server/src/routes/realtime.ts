@@ -10,13 +10,14 @@ import {
 
 export interface RealtimeRouteDependencies {
   ctx: RoomContext;
+  agentPresenceTtlMs?: number;
 }
 
 export function registerRealtimeRoutes(
   app: FastifyInstance,
   dependencies: RealtimeRouteDependencies,
 ): void {
-  const { ctx } = dependencies;
+  const { ctx, agentPresenceTtlMs } = dependencies;
 
   // Browsers cannot attach an Authorization header to a WebSocket upgrade, so
   // they exchange their authenticated REST session for a one-time ticket.
@@ -33,6 +34,12 @@ export function registerRealtimeRoutes(
       socket.close(1008, "invalid realtime ticket");
       return;
     }
-    handleRealtimeSocket(ctx, socket as unknown as RealtimeSocket, userId);
+    handleRealtimeSocket(
+      ctx,
+      socket as unknown as RealtimeSocket,
+      userId,
+      undefined,
+      agentPresenceTtlMs,
+    );
   });
 }

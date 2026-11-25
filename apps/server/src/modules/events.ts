@@ -1,7 +1,8 @@
-import { and, asc, eq, gt, inArray, isNull, lte, or } from "drizzle-orm";
+import { and, asc, desc, eq, gt, inArray, isNull, lt, lte, or, sql } from "drizzle-orm";
 import {
   agentDeliveries,
   type AgentDeliveryRow,
+  agents,
   type EventRow,
   events,
   groupMembers,
@@ -11,7 +12,12 @@ import { newId } from "@room/protocol";
 import { type EventType, eventPayloadSchema } from "@room/protocol";
 import type { RoomContext, RoomDb } from "./context.js";
 import { ConflictError, ForbiddenError, NotFoundError, ValidationError } from "./errors.js";
-import { isGroupMember, requireAgent, requireGroupMember } from "./permissions.js";
+import {
+  isGroupMember,
+  requireAgent,
+  requireGroupManager,
+  requireGroupMember,
+} from "./permissions.js";
 import type { Actor } from "./permissions.js";
 
 export type SystemActor = { readonly type: "system"; readonly id: string };
@@ -264,6 +270,104 @@ function getDeliveryForAgent(
 }
 
 /** pending -> delivered. Every attempt increments `attempts`. */
+export interface GroupDeliveryItem {
+  delivery: AgentDeliveryRow;
+  agentDisplayName: string;
+  eventType: string;
+}
+
+export interface ListGroupDeliveriesInput {
+  groupId: string;
+  viewer: Actor;
+  status?: AgentDeliveryRow["status"];
+  agentId?: string;
+  limit?: number;
+  cursor?: string;
+}
+
+/** Manager-only delivery diagnostics for one Group (M8 Delivery Diagnostics). */
+export function listGroupDeliveries(
+  ctx: RoomContext,
+  input: ListGroupDeliveriesInput,
+): { items: GroupDeliveryItem[]; nextCursor: string | null } {
+  requireGroupManager(ctx.db, input.groupId, input.viewer);
+  const limit = Math.min(Math.max(input.limit ?? 50, 1), 200);
+  const conditions = [eq(events.groupId, input.groupId)];
+  if (input.status) conditions.push(eq(agentDeliveries.status, input.status));
+  if (input.agentId) conditions.push(eq(agentDeliveries.agentId, input.agentId));
+  if (input.cursor) {
+    const cursor = ctx.db
+      .select({ delivery: agentDeliveries })
+      .from(agentDeliveries)
+      .innerJoin(events, eq(events.id, agentDeliveries.eventId))
+      .where(and(eq(agentDeliveries.id, input.cursor), eq(events.groupId, input.groupId)))
+      .get();
+    if (!cursor) {
+      throw new ValidationError(`delivery cursor ${input.cursor} does not belong to this group`);
+    }
+    conditions.push(
+      or(
+        lt(agentDeliveries.createdAt, cursor.delivery.createdAt),
+        and(
+          eq(agentDeliveries.createdAt, cursor.delivery.createdAt),
+          lt(agentDeliveries.id, cursor.delivery.id),
+        ),
+      )!,
+    );
+  }
+  const rows = ctx.db
+    .select({
+      delivery: agentDeliveries,
+      agentDisplayName: agents.displayName,
+      eventType: events.type,
+    })
+    .from(agentDeliveries)
+    .innerJoin(events, eq(events.id, agentDeliveries.eventId))
+    .innerJoin(agents, eq(agents.id, agentDeliveries.agentId))
+    .where(and(...conditions))
+    .orderBy(desc(agentDeliveries.createdAt), desc(agentDeliveries.id))
+    .limit(limit)
+    .all();
+  const last = rows.at(-1);
+  return {
+    items: rows,
+    nextCursor: rows.length === limit && last ? last.delivery.id : null,
+  };
+}
+
+export function groupDeliveryStats(
+  ctx: RoomContext,
+  input: { groupId: string; viewer: Actor },
+): {
+  statuses: Record<AgentDeliveryRow["status"], number>;
+  oldestPendingAt: number | null;
+} {
+  requireGroupManager(ctx.db, input.groupId, input.viewer);
+  const counts = ctx.db
+    .select({ status: agentDeliveries.status, count: sql<number>`count(*)` })
+    .from(agentDeliveries)
+    .innerJoin(events, eq(events.id, agentDeliveries.eventId))
+    .where(eq(events.groupId, input.groupId))
+    .groupBy(agentDeliveries.status)
+    .all();
+  const statuses: Record<AgentDeliveryRow["status"], number> = {
+    pending: 0,
+    delivered: 0,
+    acked: 0,
+    failed: 0,
+  };
+  for (const row of counts) statuses[row.status] = Number(row.count);
+  const oldest = ctx.db
+    .select({ createdAt: agentDeliveries.createdAt })
+    .from(agentDeliveries)
+    .innerJoin(events, eq(events.id, agentDeliveries.eventId))
+    .where(and(eq(events.groupId, input.groupId), eq(agentDeliveries.status, "pending")))
+    .orderBy(asc(agentDeliveries.createdAt))
+    .limit(1)
+    .get();
+  return { statuses, oldestPendingAt: oldest?.createdAt ?? null };
+}
+
 export function markDeliveryDelivered(
   ctx: RoomContext,
   input: { deliveryId: string; agentId: string; now?: number },

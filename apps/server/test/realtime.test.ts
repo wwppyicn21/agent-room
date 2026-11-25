@@ -1,9 +1,12 @@
 import type { FastifyInstance } from "fastify";
 import { loadConfig } from "@room/config";
-import { events } from "@room/database";
+import { agentKeys, agentSessions, events } from "@room/database";
 import { asc, eq } from "drizzle-orm";
 import { afterEach, describe, expect, it } from "vitest";
 import { buildApp } from "../src/app.js";
+import { newId } from "@room/protocol";
+import { registerAgent } from "../src/modules/agents.js";
+import { addMember } from "../src/modules/groups.js";
 import { postMessage } from "../src/modules/messages.js";
 import { createTestRoom, seedGroup, seedUser, type TestRoom } from "./helpers.js";
 
@@ -139,6 +142,49 @@ async function issueTicket(harness: Harness, userId: string): Promise<string> {
   return response.json().ticket as string;
 }
 
+function seedAgent(harness: Harness, displayName: string): string {
+  const agent = registerAgent(harness.room.ctx, {
+    displayName,
+    runtime: "test",
+    actorUserId: harness.owner,
+  });
+  addMember(harness.room.ctx, {
+    groupId: harness.groupId,
+    actorUserId: harness.owner,
+    memberType: "agent",
+    memberId: agent.id,
+  });
+  return agent.id;
+}
+
+function markAgentOnline(harness: Harness, agentId: string): void {
+  const ctx = harness.room.ctx;
+  const keyId = newId("key");
+  const now = ctx.now();
+  ctx.db
+    .insert(agentKeys)
+    .values({
+      id: keyId,
+      agentId,
+      publicKey: `pem-${keyId}`,
+      fingerprint: `fp-${keyId}`,
+      createdAt: now,
+    })
+    .run();
+  ctx.db
+    .insert(agentSessions)
+    .values({
+      id: newId("ses"),
+      agentId,
+      keyId,
+      tokenHash: `hash-${keyId}`,
+      createdAt: now,
+      expiresAt: now + 3_600_000,
+      lastSeenAt: now,
+    })
+    .run();
+}
+
 async function connect(harness: Harness, ticket: string): Promise<Frames> {
   const Constructor = (globalThis as unknown as { WebSocket: WebSocketConstructor }).WebSocket;
   const socket = new Constructor(`ws://${harness.origin}/api/v1/realtime/ws?ticket=${ticket}`);
@@ -184,6 +230,29 @@ describe("browser realtime", () => {
     const second = await connect(harness, ticket);
     const closed = await second.closeEvent();
     expect(closed.code).toBe(1008);
+  });
+
+  it("sends an agent presence snapshot and updates it on connect", async () => {
+    const harness = await setup();
+    const agentId = seedAgent(harness, "presence-agent");
+    const ticket = await issueTicket(harness, harness.owner);
+    const frames = await connect(harness, ticket);
+    await frames.nextOf("hello");
+    frames.send({ type: "subscribe", groupId: harness.groupId });
+    await frames.nextOf("subscribed");
+
+    const first = await frames.nextOf("presence");
+    const before = (first.agents as Array<{ agentId: string; online: boolean }>).find(
+      (agent) => agent.agentId === agentId,
+    );
+    expect(before?.online).toBe(false);
+
+    markAgentOnline(harness, agentId);
+    const updated = await frames.nextOf("presence", 6_000);
+    const after = (updated.agents as Array<{ agentId: string; online: boolean }>).find(
+      (agent) => agent.agentId === agentId,
+    );
+    expect(after?.online).toBe(true);
   });
 
   it("streams persisted group events to a member", async () => {

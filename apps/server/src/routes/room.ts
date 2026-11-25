@@ -42,7 +42,12 @@ import {
   rejectApproval,
   requestApproval,
 } from "../modules/approvals.js";
-import { listGroupEvents, listThreadEvents } from "../modules/events.js";
+import {
+  groupDeliveryStats,
+  listGroupDeliveries,
+  listGroupEvents,
+  listThreadEvents,
+} from "../modules/events.js";
 import { requireAgentSession } from "../modules/agentAuth.js";
 import { UnauthorizedError, ValidationError } from "../modules/errors.js";
 import { requireGroupMember } from "../modules/permissions.js";
@@ -410,6 +415,34 @@ export function registerRoomRoutes(app: FastifyInstance, deps: RoomRouteDependen
     const actor = actorOf(request);
     const { workspaceId } = params<{ workspaceId: string }>(request);
     return { workspace: getWorkspace(ctx, { workspaceId, viewerUserId: actor.id }) };
+  });
+
+  app.get("/api/v1/groups/:groupId/deliveries/stats", async (request) => {
+    const actor = actorOf(request);
+    const { groupId } = params<{ groupId: string }>(request);
+    return groupDeliveryStats(ctx, { groupId, viewer: actor });
+  });
+
+  app.get("/api/v1/groups/:groupId/deliveries", async (request) => {
+    const actor = actorOf(request);
+    const { groupId } = params<{ groupId: string }>(request);
+    const { limit, cursor, status, agentId } = query<{
+      limit?: string;
+      cursor?: string;
+      status?: string;
+      agentId?: string;
+    }>(request);
+    return listGroupDeliveries(ctx, {
+      groupId,
+      viewer: actor,
+      limit: limitOf(limit, 50),
+      cursor,
+      status:
+        status === "pending" || status === "delivered" || status === "acked" || status === "failed"
+          ? status
+          : undefined,
+      agentId,
+    });
   });
 
   app.get("/api/v1/agent/groups", async (request) => {
