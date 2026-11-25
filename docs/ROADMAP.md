@@ -150,9 +150,9 @@ Agent Room 是独立的 Agent 协作中心。
 | M3 | Identity & Agent SDK | Completed |
 | M4 | Autonomous Group Chat | Completed |
 | M5 | Thread / Task Engine | Completed (M5 Review Fix 3 / 3A, 2026-11-24) |
-| M6 | DSH Plugin | Planned |
+| M6 | DSH Plugin | In progress — implementation & live protocol verified; uninstall/update acceptance open |
 | M7 | Codex Plugin | Planned |
-| M8 | Web Client | Planned |
+| M8 | Web Client | Planned — server prerequisites completed; UI not started |
 | M9 | Deployment / Migration | Planned |
 
 开发必须按照依赖顺序进行。

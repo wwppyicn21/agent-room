@@ -1569,8 +1569,15 @@ M6 完成代码、测试与文档（**29 files / 228 tests**）。实现要点�
 - socket 断开指数退避重连；`task.cancel` → `sessionController.cancel`；恢复 task→session；
 - 新增 13 个插件测试（含真实 Room Server + AgentClient 的端到端）。
 
-偏差：未在当前 DSH profile 实际安装 bundle（需操作者确认），install/uninstall/update
-实机验收待操作；结构化 Progress/Approval/Result/Error 工具属 M7 Room Tools。
+实机验证（2026-11-25）：已在 `web` profile 安装 `@room/dsh-plugin` 并启用，完成一次
+真实 Room 消息 → 映射 DSH Session → assistant 回复 → Room Agent 回复（`replyToMessageId`
+指向原消息）；修复 `prompt` 缺少 `AbortSignal`、冷 Session 未 `resolveAgent`、归档 Session
+被 blocked、`/api/v1/agent/*` 被 dev auth 拦截等问题。实机后清空映射、禁用插件、停止临时
+Room Server（安装保留）。
+
+偏差：install/uninstall/update 的**实机验收**尚未完成（安装已实测，卸载/更新未实测）；
+结构化 Progress/Approval/Result/Error 工具属 M7 Room Tools；M6 文档验收未关闭（用户确认
+只要协议验证通过即可，不阻塞后续开发）。
 
 ## M7：Codex Plugin
 
@@ -1927,9 +1934,9 @@ M9  Cloudflare + Mini PC 原生部署、SQLite 备份/恢复、JSON 数据导入
 | M3 | 完成（2026-11-23：认证 + Agent SDK，83 tests；含 M3 Review Fix） | de8ef4d | lint / typecheck / 83 tests / build 全过；dev/access、Challenge 重放、吊销断连、重连补齐、ticket 重放、活跃 TTL、邮箱唯一实测 | 设计见 docs/AUTH.md，记录见 docs/PROGRESS.md「M3」与「M3 Review Fix」 |
 | M4 | 完成（2026-11-23：服务端参与引擎 + SDK reply/skip；Review Fix 3 后 126 tests；skip 诊断未实现） | e52a355 | lint / typecheck / 111 tests / build 全过；双 Agent WSS、Root/Hop 服务端推导、Max Hop 零 fan-out、投递租约重试、Dev Auth Loopback、按群组限流实测 | 记录见 docs/PROGRESS.md「M4」「M4 Review Fix」「M4 Review Fix 2」「M4 Review Fix 3」；REST/Web UI 属 M8，每群组 Session 映射属 M6；skip 诊断列为未完成 |
 | M5 | 完成（2026-11-25：Thread / Task / Approval / 摘要回流 / REST + Review Fix 2 / 3 / 3A / 3B / 3C / 4；215 tests） | 8df761a | lint / typecheck / format / 215 tests / build 全过；Thread 定向投递、审批过期竞态、Agent 恢复、Workspace Policy、Group 权限撤销、审批过期 assignee 定向投递、Message 幂等一致性、Task 转换并发守卫、持久化 Agent 取消指令 / ACK、OpenAPI Cursor 契约实测 | 记录见 docs/PROGRESS.md「M5」「M5 Review Fix」「M5 Review Fix 2」「M5 Review Fix 3」「M5 Review Fix 3A」「M5 Review Fix 3B」「M5 Review Fix 3C」「M5 Review Fix 4」；Web UI 属 M8，DSH/Codex Plugin 属 M6/M7 |
-| M6 | 完成（2026-11-25：DSH Plugin bundle、显式 Session 映射、Message/Thread/Task 上下文、Delivery 幂等、重连恢复；228 tests） | baedbe4 | lint / typecheck / format / 228 tests / build 全过；插件单测 12 + 真实 Room 端到端 1；未在 profile 实机安装 | 记录见 docs/PROGRESS.md「M6」与 docs/DSH_PLUGIN.md；安装/卸载/更新实机项待操作者确认 |
-| M7 | 未开始 | | | |
-| M8 | 未开始 | | | |
+| M6 | 实现完成并实机验证（2026-11-25：DSH Plugin bundle、显式 Session 映射、Message/Thread/Task 上下文、Delivery 幂等、重连恢复；230 tests）；卸载/更新实机验收未关闭 | 12c12ea | lint / typecheck / format / 230 tests / build 全过；插件单测 14 + 真实 Room 端到端 1；web profile 安装、真实消息→Session→回复实测 | 记录见 docs/PROGRESS.md「M6」「实机验证」与 docs/DSH_PLUGIN.md；安装保留、映射清空、插件禁用；卸载/更新未实测 |
+| M7 | 未开始（由 ChatGPT 开发）；服务端 Agent Room Tools HTTP 已提供 | | | |
+| M8 | UI 未开始；服务端前置完成（realtime / Agent HTTP tools / delivery 诊断 / presence / user admin） | 9dae94e | 249 tests 全过；realtime 7 例、agent tools 4 例、delivery 诊断 4 例、presence 1 例、user admin 3 例 | 代码提交 9dae94e、783ead7、1432b42、8b30fed；详见 docs/PROGRESS.md 各节 |
 | M9 | 未开始 | | | |
 
 ---

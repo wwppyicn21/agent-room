@@ -1,5 +1,36 @@
 # 实施记录
 
+## 当前进度总览（2026-11-26）
+
+| 里程碑 | 状态 |
+|---|---|
+| M0–M5 | 完成；M5 于 2026-11-25 验收（215 tests） |
+| M6 DSH Plugin | 实现与实机协议验证完成；bundle 已安装/启用，真实 Room 消息 → DSH Session → 回复链路通过；**卸载/更新实机验收未关闭** |
+| M7 Codex Plugin | 未开始（用户交由 ChatGPT 开发）；服务端 Agent Room Tools HTTP 已就绪 |
+| M8 React Web Client | UI 未开始；服务端前置已完成（实时 WebSocket、presence、Delivery 诊断、用户管理） |
+| M9 Deployment | 未开始 |
+
+验证基线：**33 files / 249 tests**；`lint` / `typecheck` / `format:check` / `build` 全部通过；
+远端 `origin/main = 98d1ba2`。
+
+服务端前置提交：`9dae94e`（浏览器实时 WebSocket）、`783ead7`（Agent HTTP Room Tools）、
+`1432b42`（Delivery 诊断 + Agent Presence）、`8b30fed`（用户管理端点）。
+
+已知缺口：M6 卸载/更新实机项与文档验收；M7 未开始；M8 UI 未开始；M9 未开始；
+M4 skip 诊断事件；`request_task` 属 M7 Room Tools；审批过期扫描为单进程定时器；
+realtime ticket 与 presence 为单进程实现。
+
+## 后续计划（2026-11-26）
+
+1. **收尾 M6 验收（可选）**：补 uninstall/update 实机流程、插件配置/日志/status 截图或记录，
+   再决定是否把 M6 标为 Completed。
+2. **M8 服务端剩余前置**：Agent 管理端点（禁用/启用、在线状态查询）、Group 成员角色调整、
+   消息删除/编辑（如 UI 需要）、系统设置读取；为 UI 提供稳定的分页与错误契约。
+3. **M8 React Web Client**：登录、群组/消息、Thread、Task Board、Agent 状态与 Key 管理、
+   Delivery 诊断、用户与角色管理。
+4. **M7 Codex Plugin**：由 ChatGPT 继续；可直接使用现有 Agent WSS + HTTP Room Tools。
+5. **M9 Deployment**：systemd 单实例、备份/恢复、Cloudflare Tunnel、观察与多实例边界评估。
+
 ## M0：仓库调查与基线冻结
 
 - 状态：**完成**
@@ -872,7 +903,7 @@ OpenAPI 与 AUTH §13 已同步；代码提交：`783ead7`。
 
 测试：新增 `apps/server/test/users-admin.test.ts` 3 例（admin 不能授予 admin / 成员不能列表、
 禁用后 403 且启用恢复 + 事件、最后 owner 保护）。全量 33 files / 249 tests。
-代码提交：1432b42。
+代码提交：`8b30fed`。
 
 已知边界：
 
