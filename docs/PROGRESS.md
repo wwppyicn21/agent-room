@@ -707,3 +707,18 @@ Status: Completed / Verified
 - **Validation**（本轮实际执行）：`lint` exit 0；`typecheck` exit 0；`format:check` exit 0；`test` 26 files / 201 tests passed；`build` exit 0。
 - **Remaining**：Runtime / Filesystem Allowlist 仍属 M6/M7；审批过期扫描单实例 30 秒定时器；Thread 投递仅用户 → assignee；M5 最终验收仍以审查确认和远端代码为准。
 - **代码提交**：`6498911`（实现 + 测试）。
+
+### M5 Review Fix 4 — Durable Agent Control Command（2026-11-25）
+
+Status: Completed / Verified
+
+- **Issue**：`removeMember` 已取消被移除 Agent 的非终态 Task、撤销其 pending / unacked Delivery，但 Agent 运行中的执行循环不会收到“停止”指令；仅靠事件流不可行，因为同一事务会撤销该 Agent 的 Delivery。Message 幂等重试也未比较有效回复目标（`replyToMessageId` / Agent legacy `rootMessageId`）。
+- **FIX-01 持久化控制指令**：新增 `agent_commands` 表（`command_type = task.cancel`，状态 `pending → delivered → acked`，唯一 `(agent_id, command_type, task_id)`），迁移 `0010_dark_silver_samurai.sql`。`cancelAgentTasksForGroupRemoval` 在 `removeMember` 事务内为每个被取消的非终态 Task 创建指令（含 `run_id`、`reason = "agent removed from group"`），与 Task / Run / Approval / Thread / Event / Audit 同事务；同一任务重复创建幂等。
+- **WSS 投递与 ACK**：`hello` 增加 `outstandingCommands`；连接后立即补发未 ACK 指令（含 `delivered`），1s poll 只发 `pending` 并标记 `delivered`；`command` 帧携带 `commandId/type/taskId/runId/reason/createdAt`；`command.ack` 仅目标 Agent 可确认，未知/他人 ID 返回 `not_found`，重复 ACK 幂等。ACK 只更新指令状态，不重放事件。
+- **SDK**：`AgentClientOptions.onTaskCancel`；handler resolve 后自动 ACK，抛错或无 handler 不 ACK；`ackedCommands` 去重。未改变既有 `onEvent` / `onRecover` / `autoAck` 语义。
+- **FIX-02 Message 幂等**：`assertIdempotentReplay` 增加有效回复目标比较；用户为 `replyToMessageId ?? null`，Agent 为 `replyToMessageId ?? rootMessageId ?? null`；相同 ID 但回复目标不同返回 `409`；并发 unique-violation 分支同样比较。原样重试仍返回原消息，不新增 Message / Event / Delivery。
+- **Changed files**：`packages/database/src/schema.ts` + 迁移 `0010_dark_silver_samurai.sql`、`packages/protocol/src/agent.ts`、`packages/protocol/src/ids.ts`、`packages/agent-sdk/src/index.ts`、`apps/server/src/modules/agentCommands.ts`（新增）、`apps/server/src/modules/tasks.ts`、`apps/server/src/routes/agent.ts`、`apps/server/src/modules/messages.ts`；测试新增 `apps/server/test/agent-commands.test.ts`，扩展 `apps/server/test/agent-auth.test.ts`、`apps/server/test/message-idempotency.test.ts`、`packages/agent-sdk/test/delivery.test.ts`。
+- **Tests**：`agent-commands.test.ts` 6 例（移除创建指令与 Run/Approval/Thread 一致性且不建 `task.cancelled` delivery、delivered/ack/幂等/他人 ACK 拒绝、多 Group 与终态隔离、移除 User 不触发、指令去重、移除后执行端点仍被拒绝）；`agent-auth.test.ts` +2（live socket 收指令并 ACK、离线重连补发 + 他人 ACK 拒绝 + 已 ACK 不再重发）；`message-idempotency.test.ts` +3（相同回复目标重试、不同回复目标 409、Agent legacy root 比较）；SDK +3（handler 后 ACK、handler 抛错不 ACK、无 handler 不 ACK）。
+- **Validation**（本轮实际执行）：`lint` exit 0；`typecheck` exit 0；`format:check` exit 0；`test` 27 files / 215 tests passed；`build` exit 0。
+- **Remaining**：控制指令目前只有 `task.cancel`；手动 Cancel 仍使用 `task.cancelled` durable delivery；审批过期扫描仍是单实例 30 秒定时器；Runtime / Filesystem Allowlist 属 M6/M7；Thread 多 Agent 协作、`request_task`、skip 诊断、Web UI 边界不变。
+- **代码提交**：`8df761a`（实现 + 测试）。

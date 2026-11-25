@@ -79,6 +79,7 @@ queued ──► assigned ──► running ──► succeeded
 - 产生事件并复用 durable delivery：`task.paused`、`task.resumed`、`task.cancelled`；
 - Agent 离线时 Delivery 保留，重连后按租约补齐；
 - Cancel 后不允许把 Task 恢复为 running；恢复逻辑只对非终态 Task 生效。
+- 因 Group membership 撤销而取消 Task（`removeMember`）时，除 `task.cancelled` 事件外还创建持久化 `task.cancel` 控制指令（`agent_commands`），通过 WSS `command` / `command.ack` 投递并要求 ACK；该场景不向被移除 Agent 创建 `task.cancelled` delivery。手动 Cancel 仍使用 `task.cancelled` durable delivery。
 
 ## 7. Result / Error / Summary
 

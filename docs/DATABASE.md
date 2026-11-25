@@ -60,28 +60,29 @@ erDiagram
 
 ## 3. 表
 
-| 表                     | 作用                             | 关键列                                                                             |
-| ---------------------- | -------------------------------- | ---------------------------------------------------------------------------------- |
-| `system_meta`          | 运行时元数据（M1 保留）          | `key` PK                                                                           |
-| `users`                | 平台用户与全局角色               | `role`（owner/admin/member/readonly）、`status`                                    |
-| `external_identities`  | Cloudflare Access 等外部身份映射 | `(issuer, subject)` 唯一                                                           |
-| `groups`               | 群组 + AI 参与策略               | `participation_mode`、`allow_agent_messages`、`max_hops`、`max_replies_per_root`   |
-| `group_members`        | 群体成员（用户/Agent）           | `(group_id, member_type, member_id)` 唯一、`member_role`                           |
-| `agents`               | Agent 注册表                     | `runtime`、`status`、`capabilities`(JSON)                                          |
-| `agent_keys`           | Agent 公钥（Ed25519）            | `fingerprint` 唯一、`status`                                                       |
-| `agent_challenges`     | 一次性 Challenge（M3）           | `nonce` 唯一、`used_at`（重放保护）、`expires_at`                                  |
-| `agent_sessions`       | Agent WSS 会话（M3）             | `token_hash` 唯一、`last_seen_at`、`closed_at`、`close_reason`                     |
-| `agent_socket_tickets` | WSS 一次性升级票据（M3）         | `ticket_hash` 唯一、`used_at`、`expires_at`、`session_id`                          |
-| `threads`              | 由源消息派生的讨论串             | `source_message_id`、`status`                                                      |
-| `messages`             | 群消息                           | `seq`（群内单调）、`client_message_id`（幂等）、`root_message_id`、`hop`           |
-| `tasks`                | 任务                             | `status`、`assigned_agent_id`、`thread_id`、`source_message_id`、`result`、`error` |
-| `task_runs`            | 任务执行轮次                     | `status`、`summary`、`started_at`/`finished_at`、`progress_percent`                |
-| `approvals`            | Task 审批请求与决策              | `status`、`decided_by_user_id`、`decided_at`、`reason`、`expires_at`               |
-| `events`               | 事务性 Outbox 事件               | `seq` 自增、`id` 唯一、`payload`(JSON)                                             |
-| `agent_deliveries`     | 每个 Agent 的投递队列            | `(agent_id, event_id)` 唯一、`status`                                              |
-| `audit_logs`           | 审计                             | `actor_type/actor_id`、`action`、`target_type/target_id`                           |
+| 表                     | 作用                              | 关键列                                                                             |
+| ---------------------- | --------------------------------- | ---------------------------------------------------------------------------------- |
+| `system_meta`          | 运行时元数据（M1 保留）           | `key` PK                                                                           |
+| `users`                | 平台用户与全局角色                | `role`（owner/admin/member/readonly）、`status`                                    |
+| `external_identities`  | Cloudflare Access 等外部身份映射  | `(issuer, subject)` 唯一                                                           |
+| `groups`               | 群组 + AI 参与策略                | `participation_mode`、`allow_agent_messages`、`max_hops`、`max_replies_per_root`   |
+| `group_members`        | 群体成员（用户/Agent）            | `(group_id, member_type, member_id)` 唯一、`member_role`                           |
+| `agents`               | Agent 注册表                      | `runtime`、`status`、`capabilities`(JSON)                                          |
+| `agent_keys`           | Agent 公钥（Ed25519）             | `fingerprint` 唯一、`status`                                                       |
+| `agent_challenges`     | 一次性 Challenge（M3）            | `nonce` 唯一、`used_at`（重放保护）、`expires_at`                                  |
+| `agent_sessions`       | Agent WSS 会话（M3）              | `token_hash` 唯一、`last_seen_at`、`closed_at`、`close_reason`                     |
+| `agent_socket_tickets` | WSS 一次性升级票据（M3）          | `ticket_hash` 唯一、`used_at`、`expires_at`、`session_id`                          |
+| `threads`              | 由源消息派生的讨论串              | `source_message_id`、`status`                                                      |
+| `messages`             | 群消息                            | `seq`（群内单调）、`client_message_id`（幂等）、`root_message_id`、`hop`           |
+| `tasks`                | 任务                              | `status`、`assigned_agent_id`、`thread_id`、`source_message_id`、`result`、`error` |
+| `task_runs`            | 任务执行轮次                      | `status`、`summary`、`started_at`/`finished_at`、`progress_percent`                |
+| `approvals`            | Task 审批请求与决策               | `status`、`decided_by_user_id`、`decided_at`、`reason`、`expires_at`               |
+| `events`               | 事务性 Outbox 事件                | `seq` 自增、`id` 唯一、`payload`(JSON)                                             |
+| `agent_deliveries`     | 每个 Agent 的投递队列             | `(agent_id, event_id)` 唯一、`status`                                              |
+| `agent_commands`       | Agent 定向控制指令（task.cancel） | `(agent_id, command_type, task_id)` 唯一、`status`、`run_id`                       |
+| `audit_logs`           | 审计                              | `actor_type/actor_id`、`action`、`target_type/target_id`                           |
 
-## 4. 索引（47 个显式索引）
+## 4. 索引（49 个显式索引）
 
 | 表                     | 索引                                                                                                                                                             | 用途                                                            |
 | ---------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------- |
@@ -99,7 +100,8 @@ erDiagram
 | `tasks`                | `tasks_group_idx`、`tasks_status_idx`、`tasks_thread_idx`、`tasks_assignee_idx`                                                                                  | 群内任务分页、状态、Thread、Agent 队列                          |
 | `task_runs`            | `task_runs_task_idx`                                                                                                                                             | 任务执行历史                                                    |
 | `events`               | `events_group_seq_idx`、`events_type_created_idx`、`events_id_unique`                                                                                            | 群内增量、类型检索、按事件 id                                   |
-| `agent_deliveries`     | `agent_deliveries_event_uq`、`agent_deliveries_pending_idx`、`agent_deliveries_lease_idx`                                                                        | 去重、待投递队列、租约到期重投                                  |
+| `agent_deliveries`     | `agent_deliveries_event_uq`、`agent_deliveries_pending_idx`、`agent_deliveries_lease_idx`                                                                        |
+| `agent_commands`       | `agent_commands_task_uq`、`agent_commands_agent_status_idx`                                                                                                      | 去重、待投递队列、租约到期重投                                  |
 | `approvals`            | `approvals_task_idx`、`approvals_status_idx`                                                                                                                     | 任务审批列表、待审批筛选                                        |
 | `workspaces`           | `workspaces_group_name_uq`、`workspaces_group_created_idx`                                                                                                       | 群内重名、按群组列出 Workspace                                  |
 | `audit_logs`           | `audit_logs_created_idx`、`audit_logs_actor_idx`                                                                                                                 | 时间线、按操作者                                                |
@@ -125,7 +127,7 @@ tasks by group: SEARCH tasks USING INDEX tasks_group_idx (group_id=?)
 pending deliveries: SEARCH agent_deliveries USING INDEX agent_deliveries_pending_idx (agent_id=? AND status=?)
 events by group: SEARCH events USING INDEX events_group_seq_idx (group_id=? AND seq>?)
 message idempotency: SEARCH messages USING INDEX messages_group_client_uq (group_id=? AND client_message_id=?)
-explicit indexes: 47
+explicit indexes: 49
 ```
 
 消息分页使用 `WHERE group_id = ? AND seq > ? ORDER BY seq LIMIT 50`，命中
@@ -133,14 +135,14 @@ explicit indexes: 47
 
 ## 6. 事务边界（服务层）
 
-| 操作                         | 同一事务内写入                                                                                                |
-| ---------------------------- | ------------------------------------------------------------------------------------------------------------- |
-| `postMessage`                | `messages` + `events(message.created)` + `agent_deliveries`                                                   |
-| `createGroup`                | `groups` + 群主 `group_members` + `events` + `audit_logs`                                                     |
-| `addMember` / `removeMember` | `group_members` + `events` + `audit_logs`                                                                     |
-| `createThread`               | `threads` + `events` + `audit_logs`                                                                           |
-| `createTaskFromMessage`      | `threads` + `tasks` + `events(thread.created/task.created/task.assigned)` + `agent_deliveries` + `audit_logs` |
-| `completeTask`               | `task_runs` + `tasks` + 汇总 `messages` + `events` + `agent_deliveries` + `audit_logs`                        |
+| 操作                         | 同一事务内写入                                                                                                                     |
+| ---------------------------- | ---------------------------------------------------------------------------------------------------------------------------------- |
+| `postMessage`                | `messages` + `events(message.created)` + `agent_deliveries`                                                                        |
+| `createGroup`                | `groups` + 群主 `group_members` + `events` + `audit_logs`                                                                          |
+| `addMember` / `removeMember` | `group_members` + （Agent 移除时）Task/Run/Approval/Thread + `events` + `agent_commands` + `agent_deliveries`(撤销) + `audit_logs` |
+| `createThread`               | `threads` + `events` + `audit_logs`                                                                                                |
+| `createTaskFromMessage`      | `threads` + `tasks` + `events(thread.created/task.created/task.assigned)` + `agent_deliveries` + `audit_logs`                      |
+| `completeTask`               | `task_runs` + `tasks` + 汇总 `messages` + `events` + `agent_deliveries` + `audit_logs`                                             |
 
 所有函数都在 `ctx.db.transaction(...)` 内完成上述写入；zod 校验、权限判断失败时整个事务回滚。
 事务内没有 `fetch`、模型调用或等待用户输入。
@@ -160,6 +162,7 @@ pending ──deliver──▶ delivered ──ack──▶ acked
 - `listPendingDeliveries` 只取 `pending`；`listOutstandingDeliveries` 默认取 `pending + 租约已过期的 delivered`，连接/重连时用 `includeUnacked` 立即补发所有已送达未 ack 的投递，避免“已送达但断线未 ack”的投递永久消失。
 - 投递租约：`DELIVERY_LEASE_MS = 30_000`；已送达未 ack 的投递在租约到期后以同一 `deliveryId` 重投并 `attempts + 1`，不会创建新的 Message/Event。超过 `MAX_DELIVERY_ATTEMPTS = 10` 时连接循环将其置为 `failed`（诊断状态），离开可投递窗口，长期未 ack 不会阻塞新投递。
 - 重连仍会补发未完成投递；`ackDelivery` 校验 Agent 归属，`failed` 后不能再 ack。
+- `agent_commands.status`：`pending → delivered → acked`；连接后补发全部未 ACK 指令（含 `delivered`），之后每 1s 只发 `pending` 并置 `delivered`。`acked` 重复 ACK 幂等；仅目标 Agent 可确认（其他 Agent / 未知 ID 统一 `404`）。该表与 Delivery 分离，确保撤权后仍能投递 `task.cancel`。
 - `tasks(group_id, idempotency_key)` 唯一索引把 HTTP 重试折叠成同一个 Task；`createTaskFromMessage` 命中已有 key 时直接返回原 Task 与 Thread。
 - Task 状态只由服务层状态机（`TASK_TRANSITIONS`）推进：Agent 通过 start/progress/pause?（pause 属管理员）/complete 或审批请求改变状态；REST 与 Plugin 不能直接写 `tasks.status`。
 - 审批决策与 Task 状态在**同一事务**提交：approve 把 Task 从 `waiting_approval` 拉回 `running`；reject/expire 把 Task/Run 置 `failed`、Thread 置 `failed`，并在父群写一条 system 摘要消息（`client_message_id = task-summary:<taskId>`，`thread_id = null`，正文含 `Thread: <threadId>`），同时写 `task.approval_decided` + `task.failed` 事件与审计。

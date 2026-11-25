@@ -160,3 +160,12 @@ Agent Bearer（`Authorization: Bearer agt_…`）在 Task 执行端点与 Agent 
 - **移除 Agent 的事务**：删除 membership、取消该 Group 内该 Agent 的非终态 Task（含 Run、pending Approval、Thread 关闭、`task.cancelled` 事件与审计，reason `agent removed from group`）、撤销该 Group 的未完成 Delivery，全部在同一事务提交；不会向被移除 Agent 新建 `task.cancelled` delivery。
 - **作用范围**：只影响被移除的那个 Group；Agent 保持全局身份与连接，仍可读取/接收其所属其他 Group 的资源。移除 User Member 不触发 Agent Task 取消。
 - **不可追溯**：已经成功送达并被 Agent 保存的内容无法通过服务端撤回；本轮保证的是撤销生效后不再新增读取、重放或投递。
+
+## 12. Agent 控制指令（2026-11-25，M5 Review Fix 4）
+
+- **持久化指令**：新增 `agent_commands` 表（`command_type = task.cancel`，状态 `pending → delivered → acked`；唯一 `(agent_id, command_type, task_id)`）。它与 `removeMember` 的 membership 删除、Task 取消、Run / Approval / Thread 更新在同一事务创建，不依赖 event / delivery 流，因此 Agent 被撤权后仍能收到“停止执行”指令。
+- **撤销语义**：只为被移除 Agent 在目标 Group 的非终态 Task 创建 `task.cancel`（`task_id`、`run_id`、`reason = "agent removed from group"`）；同一事务把对应 `pending` / `delivered` Delivery 终止为 `failed`，**不会**再向该 Agent 创建 `task.cancelled` delivery。手动 Cancel 不走该表，仍使用 `task.cancelled` durable delivery。
+- **WSS 投递**：`hello` 增加 `outstandingCommands`；连接建立后立即补发全部未 ACK 指令（含 `delivered`），之后每 1s 只轮询 `pending`；帧为 `{type:"command", command:{commandId,type,taskId,runId,reason,createdAt}}`。`delivered` 但未 ACK 的指令只在重连时重发，不会按秒重发。
+- **ACK**：客户端发送 `{type:"command.ack", commandId}`；服务端只允许目标 Agent ACK（未知 ID 或他人指令统一 `404`），重复 ACK 幂等，成功回 `command.ack.ok`。ACK 只更新 `agent_commands`，不能用于重放事件。
+- **SDK**：`onTaskCancel(command)` 在 handler resolve 后自动 ACK；handler 抛错或未配置 handler 时不 ACK，保持未确认以便重连重试；`ackedCommands` 防止重复执行，重复帧只补 ACK。上层可据 `taskId` / `runId` 中止本地执行。
+- **边界**：取消后 `start / progress / complete / approval` 仍由 Group membership 校验拒绝；指令只针对被移除的 Group，Agent 仍可读取和接收其他 Group 的 Task / 事件；不新增 Delivery 状态，不全局关闭 Agent Session。

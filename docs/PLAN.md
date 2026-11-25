@@ -1522,6 +1522,14 @@ M5 已实现并通过测试：Thread 创建 / 详情 / 独立消息流 / 事件�
 - **验证**：`lint` / `typecheck` / `format:check` / `test`（26 files / 201 tests）/ `build` 全部实际执行通过。
 - **状态**：完成（代码提交 `6498911`）。未开始 M6。
 
+### M5 Review Fix 4（Durable Agent Control Command / Message Idempotency Parent，2026-11-25）
+
+- **问题**：`removeMember` 取消 Task 并撤销 Delivery 后，被移除 Agent 没有收到停止执行指令；Message 幂等未比较有效回复目标。
+- **修复**：新增 `agent_commands`（`task.cancel`，`pending → delivered → acked`，唯一 `(agent_id, command_type, task_id)`，迁移 `0010_dark_silver_samurai.sql`），在 `removeMember` 事务内为每个被取消的非终态 Task 创建；WSS `hello.outstandingCommands`、连接补发未 ACK 指令、1s poll 只发 `pending`、`command.ack` 仅目标 Agent 可确认且幂等；SDK `onTaskCancel` 在 handler resolve 后 ACK。`assertIdempotentReplay` 比较 `replyToMessageId ?? (Agent ? rootMessageId : null)`，不同回复目标复用 `clientMessageId` 返回 `409`。
+- **测试**：新增 `agent-commands.test.ts` 6 例；`agent-auth.test.ts` +2（真实 WSS 在线/离线重连/他人 ACK）；`message-idempotency.test.ts` +3；SDK +3。全量 27 files / 215 tests。
+- **验证**：`lint` / `typecheck` / `format:check` / `test`（27 files / 215 tests）/ `build` 实际执行通过。
+- **状态**：完成（代码提交 `8df761a`）。未开始 M6。
+
 ## M6：DSH Plugin
 
 ### 工作
@@ -1890,7 +1898,7 @@ M9  Cloudflare + Mini PC 原生部署、SQLite 备份/恢复、JSON 数据导入
 | M2 | 完成（2026-11-22/23，含两轮评审修复 b79a580 + 7ce6437） | 7ce6437 | lint / typecheck / 47 tests / build 全过；权限分级、Task 幂等、Delivery 状态机、归档群组只读实测 | 设计见 docs/DATABASE.md，记录见 docs/PROGRESS.md「M2」「M2 Review Fix」「M2 Review Fix 2」 |
 | M3 | 完成（2026-11-23：认证 + Agent SDK，83 tests；含 M3 Review Fix） | de8ef4d | lint / typecheck / 83 tests / build 全过；dev/access、Challenge 重放、吊销断连、重连补齐、ticket 重放、活跃 TTL、邮箱唯一实测 | 设计见 docs/AUTH.md，记录见 docs/PROGRESS.md「M3」与「M3 Review Fix」 |
 | M4 | 完成（2026-11-23：服务端参与引擎 + SDK reply/skip；Review Fix 3 后 126 tests；skip 诊断未实现） | e52a355 | lint / typecheck / 111 tests / build 全过；双 Agent WSS、Root/Hop 服务端推导、Max Hop 零 fan-out、投递租约重试、Dev Auth Loopback、按群组限流实测 | 记录见 docs/PROGRESS.md「M4」「M4 Review Fix」「M4 Review Fix 2」「M4 Review Fix 3」；REST/Web UI 属 M8，每群组 Session 映射属 M6；skip 诊断列为未完成 |
-| M5 | 完成（2026-11-25：Thread / Task / Approval / 摘要回流 / REST + Review Fix 2 + Review Fix 3 / 3A / 3B / 3C；201 tests） | 6498911 | lint / typecheck / format / 198 tests / build 全过；Thread 定向投递、审批过期竞态、Agent 恢复、Workspace Policy、Group 权限撤销、审批过期 assignee 定向投递、Message 幂等一致性、Task 转换并发守卫、OpenAPI Cursor 契约实测 | 记录见 docs/PROGRESS.md「M5」「M5 Review Fix」「M5 Review Fix 2」「M5 Review Fix 3」「M5 Review Fix 3A」「M5 Review Fix 3B」「M5 Review Fix 3C」；Web UI 属 M8，DSH/Codex Plugin 属 M6/M7 |
+| M5 | 完成（2026-11-25：Thread / Task / Approval / 摘要回流 / REST + Review Fix 2 / 3 / 3A / 3B / 3C / 4；215 tests） | 8df761a | lint / typecheck / format / 215 tests / build 全过；Thread 定向投递、审批过期竞态、Agent 恢复、Workspace Policy、Group 权限撤销、审批过期 assignee 定向投递、Message 幂等一致性、Task 转换并发守卫、持久化 Agent 取消指令 / ACK、OpenAPI Cursor 契约实测 | 记录见 docs/PROGRESS.md「M5」「M5 Review Fix」「M5 Review Fix 2」「M5 Review Fix 3」「M5 Review Fix 3A」「M5 Review Fix 3B」「M5 Review Fix 3C」「M5 Review Fix 4」；Web UI 属 M8，DSH/Codex Plugin 属 M6/M7 |
 | M6 | 未开始 | | | |
 | M7 | 未开始 | | | |
 | M8 | 未开始 | | | |
