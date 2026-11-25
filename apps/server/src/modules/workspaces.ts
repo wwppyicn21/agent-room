@@ -2,7 +2,7 @@ import { asc, eq } from "drizzle-orm";
 import { type WorkspaceRow, workspaces } from "@room/database";
 import { newId } from "@room/protocol";
 import { recordAudit } from "./audit.js";
-import type { RoomContext } from "./context.js";
+import type { RoomContext, RoomDb } from "./context.js";
 import { ConflictError, NotFoundError, ValidationError, isUniqueViolation } from "./errors.js";
 import {
   requireActiveGroup,
@@ -22,33 +22,35 @@ export function createWorkspace(
   const name = validateTitle(input.name, "name", 100);
   const now = ctx.now();
   const id = newId("wks");
-  try {
-    ctx.db
-      .insert(workspaces)
-      .values({
-        id,
-        groupId: input.groupId,
-        name,
-        createdByUserId: input.actorUserId,
-        createdAt: now,
-      })
-      .run();
-  } catch (error) {
-    if (isUniqueViolation(error)) {
-      throw new ConflictError(`workspace ${name} already exists in group ${input.groupId}`);
+  return ctx.db.transaction((transaction) => {
+    const db = transaction as unknown as RoomDb;
+    try {
+      db.insert(workspaces)
+        .values({
+          id,
+          groupId: input.groupId,
+          name,
+          createdByUserId: input.actorUserId,
+          createdAt: now,
+        })
+        .run();
+    } catch (error) {
+      if (isUniqueViolation(error)) {
+        throw new ConflictError(`workspace ${name} already exists in group ${input.groupId}`);
+      }
+      throw error;
     }
-    throw error;
-  }
-  recordAudit(ctx.db, {
-    actorType: "user",
-    actorId: input.actorUserId,
-    action: "workspace.create",
-    targetType: "workspace",
-    targetId: id,
-    metadata: { groupId: input.groupId, name },
-    createdAt: now,
+    recordAudit(db, {
+      actorType: "user",
+      actorId: input.actorUserId,
+      action: "workspace.create",
+      targetType: "workspace",
+      targetId: id,
+      metadata: { groupId: input.groupId, name },
+      createdAt: now,
+    });
+    return db.select().from(workspaces).where(eq(workspaces.id, id)).get()!;
   });
-  return ctx.db.select().from(workspaces).where(eq(workspaces.id, id)).get()!;
 }
 
 export function listWorkspaces(
