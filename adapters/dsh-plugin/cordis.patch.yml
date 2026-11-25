@@ -1,0 +1,13 @@
+# Bundle patch for @room/dsh-plugin.
+#
+# Inserts one Host-only row. Group -> Session mappings are intentionally empty:
+# every mapping must be explicit, and the plugin never creates or guesses a
+# Session. Fill `groups` in the profile's own patch or through the DSH Settings
+# config form after verifying each Session id.
+- insert:
+    - id: agent-room
+      name: "@room/dsh-plugin"
+      config:
+        enabled: true
+        roomBaseUrl: http://127.0.0.1:8787
+        groups: []

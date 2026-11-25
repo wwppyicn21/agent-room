@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "Agent Room",
+    "description": "Bridges explicitly mapped Agent Room groups to independent DSH sessions, with durable delivery idempotency and reconnect recovery."
+  }
+}

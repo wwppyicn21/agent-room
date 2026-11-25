@@ -1,0 +1,40 @@
+{
+  "name": "@room/dsh-plugin",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Agent Room DSH plugin: bridge Room groups to explicitly mapped DSH sessions",
+  "type": "module",
+  "main": "./lib/index.js",
+  "exports": {
+    ".": "./lib/index.js",
+    "./package.json": "./package.json",
+    "./locale/*.json": "./locale/*.json",
+    "./icon": "./icon.svg"
+  },
+  "files": [
+    "lib",
+    "locale",
+    "icon.svg",
+    "cordis.patch.yml",
+    "README.md"
+  ],
+  "dependencies": {
+    "@deepseek-ai/schemastery": "~3.19.0",
+    "@room/agent-sdk": "workspace:*",
+    "@room/protocol": "workspace:*"
+  },
+  "devDependencies": {
+    "esbuild": "^0.27.0",
+    "@room/config": "workspace:*"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  },
+  "scripts": {
+    "build": "node build.mjs",
+    "typecheck": "tsc --noEmit -p tsconfig.json"
+  },
+  "license": "MIT"
+}

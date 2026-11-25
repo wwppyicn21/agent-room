@@ -20,3 +20,4 @@ credentials/
 *.pem
 *.key
 .DS_Store
+adapters/dsh-plugin/lib/

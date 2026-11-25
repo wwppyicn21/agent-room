@@ -5,7 +5,11 @@ const resolveWorkspace = (path: string) => fileURLToPath(new URL(path, import.me
 
 export default defineConfig({
   test: {
-    include: ["packages/**/test/**/*.test.ts", "apps/**/test/**/*.test.ts"],
+    include: [
+      "packages/**/test/**/*.test.ts",
+      "apps/**/test/**/*.test.ts",
+      "adapters/**/test/**/*.test.ts",
+    ],
     environment: "node",
     testTimeout: 20_000,
     hookTimeout: 20_000,

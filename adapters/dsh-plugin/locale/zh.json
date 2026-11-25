@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "Agent Room",
+    "description": "把显式映射的 Agent Room 群组接到独立的 DSH 会话，持久化投递幂等并支持断线恢复。"
+  }
+}
