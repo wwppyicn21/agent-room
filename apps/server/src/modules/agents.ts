@@ -1,5 +1,5 @@
-import { and, desc, eq } from "drizzle-orm";
-import { agentKeys, type AgentKeyRow, type AgentRow, agents } from "@room/database";
+import { and, desc, eq, isNull } from "drizzle-orm";
+import { agentKeys, type AgentKeyRow, type AgentRow, agents, agentSessions } from "@room/database";
 import { newId } from "@room/protocol";
 import { agentCapabilitiesSchema } from "@room/protocol";
 import type { RoomContext, RoomDb } from "./context.js";
@@ -71,6 +71,92 @@ export function listAgents(
   requireSystemAdmin(ctx.db, input.actorUserId);
   const limit = Math.min(Math.max(input.limit ?? 50, 1), 200);
   return ctx.db.select().from(agents).orderBy(desc(agents.createdAt)).limit(limit).all();
+}
+
+/**
+ * Disables an Agent and closes its live sessions. Disabling is idempotent; the
+ * last known status is preserved in the event payload for diagnostics.
+ */
+export function disableAgent(
+  ctx: RoomContext,
+  input: { agentId: string; actorUserId: string; reason?: string | null },
+): AgentRow {
+  requireSystemAdmin(ctx.db, input.actorUserId);
+  const agent = ctx.db.select().from(agents).where(eq(agents.id, input.agentId)).get();
+  if (!agent) throw new NotFoundError(`agent ${input.agentId} not found`);
+  if (agent.status === "disabled") return agent;
+  const now = ctx.now();
+  return ctx.db.transaction((transaction) => {
+    const db = transaction as unknown as RoomDb;
+    db.update(agents)
+      .set({ status: "disabled", updatedAt: now })
+      .where(eq(agents.id, input.agentId))
+      .run();
+    db.update(agentSessions)
+      .set({ closedAt: now, closeReason: "agent-disabled", lastSeenAt: now })
+      .where(and(eq(agentSessions.agentId, input.agentId), isNull(agentSessions.closedAt)))
+      .run();
+    appendEvent(db, {
+      type: "agent.status.changed",
+      actor: { type: "user", id: input.actorUserId },
+      payload: {
+        agentId: input.agentId,
+        previousStatus: agent.status,
+        status: "disabled",
+        reason: input.reason ?? null,
+      },
+      createdAt: now,
+    });
+    recordAudit(db, {
+      actorType: "user",
+      actorId: input.actorUserId,
+      action: "agent.disable",
+      targetType: "agent",
+      targetId: input.agentId,
+      metadata: { previousStatus: agent.status, reason: input.reason ?? null },
+      createdAt: now,
+    });
+    return db.select().from(agents).where(eq(agents.id, input.agentId)).get()!;
+  });
+}
+
+export function enableAgent(
+  ctx: RoomContext,
+  input: { agentId: string; actorUserId: string },
+): AgentRow {
+  requireSystemAdmin(ctx.db, input.actorUserId);
+  const agent = ctx.db.select().from(agents).where(eq(agents.id, input.agentId)).get();
+  if (!agent) throw new NotFoundError(`agent ${input.agentId} not found`);
+  if (agent.status !== "disabled") return agent;
+  const now = ctx.now();
+  return ctx.db.transaction((transaction) => {
+    const db = transaction as unknown as RoomDb;
+    db.update(agents)
+      .set({ status: "offline", updatedAt: now })
+      .where(eq(agents.id, input.agentId))
+      .run();
+    appendEvent(db, {
+      type: "agent.status.changed",
+      actor: { type: "user", id: input.actorUserId },
+      payload: {
+        agentId: input.agentId,
+        previousStatus: "disabled",
+        status: "offline",
+        reason: null,
+      },
+      createdAt: now,
+    });
+    recordAudit(db, {
+      actorType: "user",
+      actorId: input.actorUserId,
+      action: "agent.enable",
+      targetType: "agent",
+      targetId: input.agentId,
+      metadata: { previousStatus: "disabled" },
+      createdAt: now,
+    });
+    return db.select().from(agents).where(eq(agents.id, input.agentId)).get()!;
+  });
 }
 
 export function addAgentKey(

@@ -416,6 +416,21 @@ export function closeAgentSessionsForKey(
   return [...new Set(open.map((session) => session.agentId))];
 }
 
+/** Closes every open session for one Agent (used when an admin disables it). */
+export function closeAgentSessionsForAgent(
+  ctx: RoomContext,
+  agentId: string,
+  reason: string,
+): string[] {
+  const open = ctx.db
+    .select()
+    .from(agentSessions)
+    .where(and(eq(agentSessions.agentId, agentId), isNull(agentSessions.closedAt)))
+    .all();
+  for (const session of open) closeAgentSession(ctx, session.id, reason);
+  return [...new Set(open.map((session) => session.id))];
+}
+
 /** Updates presence and emits `agent.status.changed` only on a real transition. */
 export function setAgentStatus(
   ctx: RoomContext,

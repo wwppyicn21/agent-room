@@ -4,13 +4,19 @@ import { rbacRoleSchema } from "@room/protocol";
 import type { AgentHub } from "../modules/agentHub.js";
 import {
   addAgentKey,
+  disableAgent,
+  enableAgent,
   getAgent,
   listAgentKeys,
   listAgents,
   registerAgentWithKey,
   revokeAgentKey,
 } from "../modules/agents.js";
-import { closeAgentSessionsForKey, getServerId } from "../modules/agentAuth.js";
+import {
+  closeAgentSessionsForKey,
+  getServerId,
+  liveSessionAgentIds,
+} from "../modules/agentAuth.js";
 import type { RoomContext } from "../modules/context.js";
 import { ForbiddenError, ValidationError } from "../modules/errors.js";
 import { normalizeEd25519PublicKey } from "../modules/keys.js";
@@ -21,6 +27,7 @@ import { requireUserPrincipal } from "../auth/plugin.js";
 export interface HttpRouteDependencies {
   ctx: RoomContext;
   hub: AgentHub;
+  agentPresenceTtlMs: number;
 }
 
 const createUserBodySchema = z.object({
@@ -39,6 +46,10 @@ const registerAgentBodySchema = z.object({
 
 const addKeyBodySchema = z.object({
   publicKey: z.string().min(32).max(4096),
+});
+
+const disableAgentBodySchema = z.object({
+  reason: z.string().trim().max(500).nullish(),
 });
 
 function parseBody<T>(schema: z.ZodType<T>, body: unknown): T {
@@ -118,7 +129,12 @@ export function registerHttpRoutes(app: FastifyInstance, deps: HttpRouteDependen
 
   app.get("/api/v1/agents", async (request) => {
     const principal = requireUserPrincipal(request);
-    return { agents: listAgents(ctx, { actorUserId: principal.userId }) };
+    const online = liveSessionAgentIds(ctx, deps.agentPresenceTtlMs);
+    const agents = listAgents(ctx, { actorUserId: principal.userId }).map((agent) => ({
+      ...agent,
+      online: online.has(agent.id),
+    }));
+    return { agents };
   });
 
   app.post("/api/v1/agents", async (request, reply) => {
@@ -148,7 +164,28 @@ export function registerHttpRoutes(app: FastifyInstance, deps: HttpRouteDependen
     if (principal.role !== "owner" && principal.role !== "admin") {
       throw new ForbiddenError("only owners and admins can inspect any agent");
     }
-    return { agent: getAgent(ctx, params<{ agentId: string }>(request).agentId) };
+    const agent = getAgent(ctx, params<{ agentId: string }>(request).agentId);
+    const online = liveSessionAgentIds(ctx, deps.agentPresenceTtlMs);
+    return { agent: { ...agent, online: online.has(agent.id) } };
+  });
+
+  app.post("/api/v1/agents/:agentId/disable", async (request) => {
+    const principal = requireUserPrincipal(request);
+    const { agentId } = params<{ agentId: string }>(request);
+    const body = parseBody(disableAgentBodySchema, request.body);
+    const agent = disableAgent(ctx, {
+      agentId,
+      actorUserId: principal.userId,
+      reason: body.reason ?? null,
+    });
+    hub.closeAgent(agentId, "agent disabled");
+    return { agent };
+  });
+
+  app.post("/api/v1/agents/:agentId/enable", async (request) => {
+    const principal = requireUserPrincipal(request);
+    const { agentId } = params<{ agentId: string }>(request);
+    return { agent: enableAgent(ctx, { agentId, actorUserId: principal.userId }) };
   });
 
   app.get("/api/v1/agents/:agentId/keys", async (request) => {

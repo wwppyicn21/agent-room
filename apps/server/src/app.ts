@@ -100,7 +100,7 @@ export async function buildApp({
   const accessVerifier = injectedAccessVerifier ?? createAccessVerifier(config);
   await registerAuth(app, { config, ctx, verifier: accessVerifier });
   registerAgentRoutes(app, { config, ctx, hub });
-  registerHttpRoutes(app, { ctx, hub });
+  registerHttpRoutes(app, { ctx, hub, agentPresenceTtlMs: config.agentPresenceTtlMs });
   registerRoomRoutes(app, { ctx });
   registerRealtimeRoutes(app, { ctx, agentPresenceTtlMs: config.agentPresenceTtlMs });
 

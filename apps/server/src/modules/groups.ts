@@ -195,6 +195,112 @@ export function addMember(
   }
 }
 
+/** Changes a member's group role with last-owner and owner-only escalation guards. */
+export function updateMemberRole(
+  ctx: RoomContext,
+  input: {
+    groupId: string;
+    actorUserId: string;
+    memberType: "user" | "agent";
+    memberId: string;
+    memberRole: "owner" | "admin" | "member";
+  },
+): GroupMemberRow {
+  requireGroupManager(ctx.db, input.groupId, { type: "user", id: input.actorUserId });
+  requireWriteUser(ctx.db, input.actorUserId);
+  requireActiveGroup(ctx.db, input.groupId);
+  const memberType = memberTypeSchema.parse(input.memberType);
+  const memberRole = groupRoleSchema.parse(input.memberRole);
+  if (memberType === "agent" && memberRole !== "member") {
+    throw new ValidationError("agents can only be group members, not owners or admins");
+  }
+  const membership = ctx.db
+    .select()
+    .from(groupMembers)
+    .where(
+      and(
+        eq(groupMembers.groupId, input.groupId),
+        eq(groupMembers.memberType, memberType),
+        eq(groupMembers.memberId, input.memberId),
+      ),
+    )
+    .get();
+  if (!membership) throw new NotFoundError("membership not found");
+  if (membership.memberRole === memberRole) return membership;
+
+  if (memberRole === "owner" || membership.memberRole === "owner") {
+    const actor = ctx.db
+      .select({ role: users.role })
+      .from(users)
+      .where(eq(users.id, input.actorUserId))
+      .get();
+    const systemAdmin = actor?.role === "owner" || actor?.role === "admin";
+    const actorMembership = ctx.db
+      .select({ memberRole: groupMembers.memberRole })
+      .from(groupMembers)
+      .where(
+        and(
+          eq(groupMembers.groupId, input.groupId),
+          eq(groupMembers.memberType, "user"),
+          eq(groupMembers.memberId, input.actorUserId),
+        ),
+      )
+      .get();
+    if (!systemAdmin && actorMembership?.memberRole !== "owner") {
+      throw new ForbiddenError("only group owners can change the group owner role");
+    }
+  }
+
+  if (membership.memberRole === "owner" && memberRole !== "owner") {
+    const otherOwner = ctx.db
+      .select({ id: groupMembers.id })
+      .from(groupMembers)
+      .where(
+        and(
+          eq(groupMembers.groupId, input.groupId),
+          eq(groupMembers.memberType, "user"),
+          eq(groupMembers.memberRole, "owner"),
+          sql`${groupMembers.id} <> ${membership.id}`,
+        ),
+      )
+      .get();
+    if (!otherOwner) throw new ConflictError("cannot demote the last group owner");
+  }
+
+  const now = ctx.now();
+  return ctx.db.transaction((transaction) => {
+    const db = transaction as unknown as RoomDb;
+    db.update(groupMembers).set({ memberRole }).where(eq(groupMembers.id, membership.id)).run();
+    appendEvent(db, {
+      type: "group.member_updated",
+      actor: { type: "user", id: input.actorUserId },
+      groupId: input.groupId,
+      payload: {
+        memberType,
+        memberId: input.memberId,
+        previousRole: membership.memberRole,
+        memberRole,
+      },
+      createdAt: now,
+    });
+    recordAudit(db, {
+      actorType: "user",
+      actorId: input.actorUserId,
+      action: "group.member_role",
+      targetType: "group",
+      targetId: input.groupId,
+      metadata: {
+        memberType,
+        memberId: input.memberId,
+        previousRole: membership.memberRole,
+        memberRole,
+      },
+      createdAt: now,
+    });
+    return db.select().from(groupMembers).where(eq(groupMembers.id, membership.id)).get()!;
+  });
+}
+
 export function removeMember(
   ctx: RoomContext,
   input: { groupId: string; actorUserId: string; memberType: "user" | "agent"; memberId: string },

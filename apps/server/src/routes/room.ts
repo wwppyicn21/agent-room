@@ -10,9 +10,11 @@ import {
   listGroupsForUser,
   removeMember,
   updateGroup,
+  updateMemberRole,
   updateGroupAISettings,
 } from "../modules/groups.js";
 import {
+  deleteMessage,
   getMessage,
   listMessages,
   listThreadMessages,
@@ -112,6 +114,10 @@ const addMemberBody = z.object({
   memberType: z.enum(["user", "agent"]),
   memberId: z.string().trim().min(1).max(80),
   memberRole: z.enum(["owner", "admin", "member"]).optional(),
+});
+
+const updateMemberRoleBody = z.object({
+  memberRole: z.enum(["owner", "admin", "member"]),
 });
 
 const postMessageBody = z.object({
@@ -228,6 +234,25 @@ export function registerRoomRoutes(app: FastifyInstance, deps: RoomRouteDependen
     return { member };
   });
 
+  app.patch("/api/v1/groups/:groupId/members/:memberType/:memberId", async (request) => {
+    const actor = actorOf(request);
+    const { groupId, memberType, memberId } = params<{
+      groupId: string;
+      memberType: "user" | "agent";
+      memberId: string;
+    }>(request);
+    const body = parseBody(updateMemberRoleBody, request.body);
+    return {
+      member: updateMemberRole(ctx, {
+        groupId,
+        actorUserId: actor.id,
+        memberType,
+        memberId,
+        memberRole: body.memberRole,
+      }),
+    };
+  });
+
   app.delete("/api/v1/groups/:groupId/members/:memberType/:memberId", async (request, reply) => {
     const actor = actorOf(request);
     const { groupId, memberType, memberId } = params<{
@@ -265,6 +290,13 @@ export function registerRoomRoutes(app: FastifyInstance, deps: RoomRouteDependen
     });
     reply.code(201);
     return { message };
+  });
+
+  app.delete("/api/v1/messages/:messageId", async (request, reply) => {
+    const actor = actorOf(request);
+    const { messageId } = params<{ messageId: string }>(request);
+    deleteMessage(ctx, { messageId, actor });
+    reply.code(204);
   });
 
   app.get("/api/v1/messages/:messageId", async (request) => {

@@ -18,6 +18,7 @@ import {
   ValidationError,
   isUniqueViolation,
 } from "./errors.js";
+import { recordAudit } from "./audit.js";
 import { appendEvent, enqueueDelivery } from "./events.js";
 import {
   assertAgentRateLimit,
@@ -34,6 +35,7 @@ import {
   type Actor,
   isGroupMember,
   requireActiveGroup,
+  requireGroupManager,
   requireGroupMember,
   requireWritableActor,
 } from "./permissions.js";
@@ -441,6 +443,58 @@ export function getMessage(
   if (!message) throw new NotFoundError(`message ${input.messageId} not found`);
   requireGroupMember(ctx.db, message.groupId, input.viewer);
   return message;
+}
+
+/** Soft-deletes a message. Senders delete their own; group managers delete any. */
+export function deleteMessage(
+  ctx: RoomContext,
+  input: { messageId: string; actor: Actor; reason?: string | null },
+): MessageRow {
+  const message = ctx.db.select().from(messages).where(eq(messages.id, input.messageId)).get();
+  if (!message) throw new NotFoundError(`message ${input.messageId} not found`);
+  requireGroupMember(ctx.db, message.groupId, input.actor);
+  const isSender = message.senderType === input.actor.type && message.senderId === input.actor.id;
+  if (!isSender) {
+    if (input.actor.type === "agent") {
+      throw new ForbiddenError("agents can only delete their own messages");
+    }
+    requireGroupManager(ctx.db, message.groupId, input.actor);
+  }
+  if (message.deletedAt !== null) return message;
+  const now = ctx.now();
+  return ctx.db.transaction((transaction) => {
+    const db = transaction as unknown as RoomDb;
+    db.update(messages).set({ deletedAt: now }).where(eq(messages.id, message.id)).run();
+    appendEvent(db, {
+      type: "message.deleted",
+      actor: input.actor,
+      groupId: message.groupId,
+      threadId: message.threadId,
+      payload: {
+        messageId: message.id,
+        threadId: message.threadId,
+        senderType: message.senderType,
+        senderId: message.senderId,
+        reason: input.reason ?? null,
+      },
+      createdAt: now,
+    });
+    recordAudit(db, {
+      actorType: input.actor.type,
+      actorId: input.actor.id,
+      action: "message.delete",
+      targetType: "message",
+      targetId: message.id,
+      metadata: {
+        groupId: message.groupId,
+        threadId: message.threadId,
+        senderType: message.senderType,
+        senderId: message.senderId,
+      },
+      createdAt: now,
+    });
+    return db.select().from(messages).where(eq(messages.id, message.id)).get()!;
+  });
 }
 
 export function getGroupMessageRow(
