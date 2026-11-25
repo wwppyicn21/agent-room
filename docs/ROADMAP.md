@@ -666,34 +666,34 @@ Task 必须具有明确的执行映射。
 
 ## 5.10 M6 Acceptance Criteria
 
-- [ ] DSH Plugin 独立安装；
-- [ ] DSH Plugin 独立卸载；
-- [ ] DSH Plugin 独立更新；
+- [ ] DSH Plugin 独立安装（bundle 已构建，待 profile 实机确认）；
+- [ ] DSH Plugin 独立卸载（同上）；
+- [ ] DSH Plugin 独立更新（同上）；
 - [ ] 不修改 DSH Core；
-- [ ] Room Authentication；
-- [ ] Agent Identity；
-- [ ] Private Key Local Storage；
-- [ ] Connection；
-- [ ] Reconnect；
-- [ ] Group Mapping；
-- [ ] Session Mapping；
-- [ ] Session Isolation；
-- [ ] Session 不自动创建；
-- [ ] Message Bridge；
-- [ ] Reply；
-- [ ] Skip；
-- [ ] Thread Context；
-- [ ] Task Context；
-- [ ] Progress；
-- [ ] Approval；
-- [ ] Cancel；
-- [ ] Result；
-- [ ] Error；
-- [ ] Delivery Idempotency；
-- [ ] Recovery；
-- [ ] 两个 Group 使用两个独立 Session；
-- [ ] 所有测试通过；
-- [ ] 文档更新。
+- [x] Room Authentication；
+- [x] Agent Identity；
+- [x] Private Key Local Storage；
+- [x] Connection；
+- [x] Reconnect；
+- [x] Group Mapping；
+- [x] Session Mapping；
+- [x] Session Isolation；
+- [x] Session 不自动创建；
+- [x] Message Bridge；
+- [x] Reply；
+- [x] Skip；
+- [x] Thread Context；
+- [x] Task Context；
+- [ ] Progress（结构化工具属 M7）；
+- [ ] Approval（同上）；
+- [x] Cancel；
+- [ ] Result（同上）；
+- [ ] Error（同上）；
+- [x] Delivery Idempotency；
+- [x] Recovery；
+- [x] 两个 Group 使用两个独立 Session；
+- [x] 所有测试通过；
+- [x] 文档更新。
 
 ---
 
@@ -950,12 +950,12 @@ Room Approval
 - [ ] Skip；
 - [ ] Thread Context；
 - [ ] Task Assignment；
-- [ ] Progress；
-- [ ] Approval；
+- [ ] Progress（结构化工具属 M7）；
+- [ ] Approval（同上）；
 - [ ] Cancel；
 - [ ] Workspace Allowlist；
-- [ ] Result；
-- [ ] Error；
+- [ ] Result（同上）；
+- [ ] Error（同上）；
 - [ ] Delivery Idempotency；
 - [ ] Recovery；
 - [ ] 不监听公网；

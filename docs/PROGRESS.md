@@ -722,3 +722,48 @@ Status: Completed / Verified
 - **Validation**（本轮实际执行）：`lint` exit 0；`typecheck` exit 0；`format:check` exit 0；`test` 27 files / 215 tests passed；`build` exit 0。
 - **Remaining**：控制指令目前只有 `task.cancel`；手动 Cancel 仍使用 `task.cancelled` durable delivery；审批过期扫描仍是单实例 30 秒定时器；Runtime / Filesystem Allowlist 属 M6/M7；Thread 多 Agent 协作、`request_task`、skip 诊断、Web UI 边界不变。
 - **代码提交**：`8df761a`（实现 + 测试）。
+
+### M6：DSH Plugin（2026-11-25）
+
+范围：DSH 原生 Host Plugin（`adapters/dsh-plugin`），不修改 DSH Core，不引入独立 Adapter 进程。
+
+已实现：
+
+- **Bundle 结构**：`package.json` 的 `dsh.bundle.patch` → `cordis.patch.yml`，Host 行
+  `id=agent-room`；`lib/index.js` 由 esbuild 自包含打包；locale / icon / README 齐备；
+  安装/启停/卸载/更新沿用 DSH Plugin Manager 与 Settings 配置，不在 profile 中手写 manifest。
+- **配置**（schemastery `Config`）：`roomBaseUrl`、`agentKeyPath`、`dataDir`、
+  `groups[{groupId,sessionId,label}]`、`maxReplyChars`、`turnTimeoutMs`、`replyPrefix`；
+  `assertMappings` 拒绝重复/一拖多映射；Session 缺失只告警，绝不自动创建。
+- **身份**：本地生成/加载 Ed25519 PKCS#8 key（目录 0700、文件 0600），读取时拒绝
+  group/other 可读；只记录公钥指纹，不记录私钥；不使用配置明文存私钥。
+- **连接**：直接复用 `@room/agent-sdk` 的 challenge/response、socket ticket、WSS、
+  heartbeat、delivery/ack、lease recovery；插件不重写认证协议。Socket 断开后指数退避
+  重连（0.5s–30s），`hello` 后 SDK 自动重投未 ack 的 Delivery 与 active tasks。
+- **Session 映射**：每个 Group 显式映射一个独立 Session；两个 Group 使用两个 Session
+  的测试验证上下文隔离；映射状态通过 `RoomBridge.status()` 暴露。
+- **Message Bridge**：`message.created` → 显式映射 Session 的 `sessionController.prompt`
+  （`requestId=room-<eventId>`，`mode=queue`）；Prompt 带 Group/Thread/Task/消息上下文；
+  只抽取 assistant text blocks，`[skip]`/空不回；回复带 `threadId`/`replyToMessageId`，
+  `clientMessageId=plugin-reply-<eventId>`。
+- **Delivery 幂等**：`deliveries.json` 原子持久化 `pending/processing/completed/failed`、
+  attempts、error；completed 重复投递不重复 Prompt；processing 由 Room 重投 + DSH requestId
+  去重；failed 记录原因并 ack；不依赖内存 Set。
+- **Task 取消与恢复**：SDK `command` → `sessionController.cancel({sessionId})`；`onRecover`
+  记录 task→session；插件禁用/重启后由 DSH 生命周期与 SDK 重连恢复。
+- **状态/日志**：`status()` 暴露 connected/agentId/fingerprint/groups/deliveries/lastError；
+  连接、映射缺失、Session 不可用、Prompt 失败、skip、取消均写 Cordis logger。
+
+提交：`baedbe4`（插件代码、bundle 配置、workspace/vitest/eslint 接线）。
+
+测试：新增 `adapters/dsh-plugin/test/bridge.test.ts` 12 例、`integration.test.ts` 1 例
+（真实 Room Server + 真实 AgentClient + 假 DSH ctx）；全量 29 files / 228 tests 通过，
+lint / typecheck / format:check / build 通过。
+
+未完成 / 偏差（如实记录）：
+
+- Bundle 已在仓库构建，但**未在当前 DSH web profile 实际安装**（安装会修改用户 profile，
+  需操作者确认）；因此 ROADMAP 的 install / uninstall / update 实机项未勾选。
+- 结构化 Task Progress / Approval / Result / Error 工具尚未提供；M6 只桥接 Thread/Task
+  消息上下文与 cancel 指令，完整 Room Tools 属 M7。
+- Workspace 运行时/文件系统隔离属 M7 allowlist；M6 只使用 M5 的 Task→Workspace 元数据。
