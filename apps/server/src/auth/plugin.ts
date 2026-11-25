@@ -40,6 +40,9 @@ export async function registerAuth(
     // compatibility socket stay reachable so probes and tests are unaffected.
     if (!path.startsWith("/api/")) return;
     if (PUBLIC_PATHS.has(path)) return;
+    // Agent endpoints authenticate their own opaque session token; they never
+    // resolve a user principal.
+    if (path.startsWith("/api/v1/agent/")) return;
     // Agent bearer tokens are validated by the route that handles them; they
     // are never exchanged for a user principal.
     const authorization = request.headers.authorization ?? "";

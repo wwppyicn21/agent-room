@@ -47,12 +47,21 @@ interface Harness {
   }) => Promise<void>;
   recover: (tasks: AgentTaskView[]) => void;
   emit: (sessionId: string, event: DshSessionEvent) => void;
+  controller: {
+    prompt: ReturnType<typeof vi.fn>;
+    cancel: ReturnType<typeof vi.fn>;
+    resolveAgent: ReturnType<typeof vi.fn>;
+  };
   temp: string;
 }
 
 function makeHarness(
   groups: { groupId: string; sessionId: string; label?: string }[],
-  options: { readSession?: (id: string) => Promise<unknown>; temp?: string } = {},
+  options: {
+    readSession?: (id: string) => Promise<unknown>;
+    temp?: string;
+    resolveAgentError?: boolean;
+  } = {},
 ): Harness {
   const temp = options.temp ?? mkdtempSync(join(tmpdir(), "room-dsh-plugin-"));
   const prompts: Harness["prompts"] = [];
@@ -66,6 +75,11 @@ function makeHarness(
     cancel: vi.fn((input: { sessionId: string }) => {
       cancels.push(input);
     }),
+    resolveAgent: vi.fn(async () =>
+      options.resolveAgentError
+        ? { error: { code: "session/not-found", message: "no agent" } }
+        : { agent: { id: "agent" } },
+    ),
   };
   const readSession = options.readSession ?? (async () => ({ id: "ok" }));
   const client = new FakeClient();
@@ -108,6 +122,7 @@ function makeHarness(
     client,
     prompts,
     cancels,
+    controller,
     temp,
     deliver: async (event) => {
       await onEvent()(event, { deliveryId: event.eventId, attempt: 1 });
@@ -172,6 +187,36 @@ describe("DSH plugin bridge", () => {
     expect(harness.prompts[0]?.content[0]?.text).toContain("Alpha");
     expect(harness.prompts[0]?.content[0]?.text).toContain("hello room");
     expect(harness.bridge.deliveryStore.state("evd_1")).toBe("completed");
+    await harness.bridge.stop();
+  });
+
+  it("resumes the mapped session agent before prompting", async () => {
+    const harness = makeHarness([{ groupId: "grp_a", sessionId: "ses_a" }]);
+    await harness.bridge.start();
+    await waitFor(() => harness.client.connected);
+
+    await harness.deliver(messageEvent());
+
+    expect(harness.controller.resolveAgent).toHaveBeenCalledWith("ses_a");
+    expect(harness.controller.resolveAgent.mock.invocationCallOrder[0]).toBeLessThan(
+      harness.controller.prompt.mock.invocationCallOrder[0]!,
+    );
+    expect(harness.prompts).toHaveLength(1);
+    await harness.bridge.stop();
+  });
+
+  it("fails without prompting when the mapped session agent cannot resume", async () => {
+    const harness = makeHarness([{ groupId: "grp_a", sessionId: "ses_a" }], {
+      resolveAgentError: true,
+    });
+    await harness.bridge.start();
+    await waitFor(() => harness.client.connected);
+
+    await harness.deliver(messageEvent());
+
+    expect(harness.prompts).toHaveLength(0);
+    expect(harness.bridge.deliveryStore.state("evd_1")).toBe("failed");
+    expect(harness.bridge.status().lastError).toContain("agent is unavailable");
     await harness.bridge.stop();
   });
 

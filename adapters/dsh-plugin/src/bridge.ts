@@ -60,6 +60,7 @@ interface SessionControllerLike {
     signal?: AbortSignal,
   ): Promise<{ accepted: true }>;
   cancel(input: { sessionId: string }): void;
+  resolveAgent?(sessionId: string): Promise<{ agent?: { id: string }; error?: unknown }>;
 }
 
 interface SessionQueryLike {
@@ -314,8 +315,6 @@ export class RoomBridge {
       this.logger.error(`agent-room: delivery ${event.eventId} failed: ${reason}`);
       return;
     }
-    await this.store.begin(event.eventId);
-    await this.store.markProcessing(event.eventId);
     const controller = this.deps.ctx.get("sessionController") as SessionControllerLike | undefined;
     if (!controller) {
       await this.store.markFailed(event.eventId, "sessionController service is unavailable");
@@ -323,6 +322,28 @@ export class RoomBridge {
       this.logger.error("agent-room: sessionController service is unavailable");
       return;
     }
+    // A persisted Session is cold at process start. Prompting without resuming
+    // its Agent is accepted but the turn ends as "blocked"; resolve it first.
+    if (controller.resolveAgent) {
+      try {
+        const resolved = await controller.resolveAgent(mapping.sessionId);
+        if (resolved.error) {
+          const reason = `session ${mapping.sessionId} agent is unavailable: ${JSON.stringify(resolved.error)}`;
+          await this.store.markFailed(event.eventId, reason);
+          this.lastError = reason;
+          this.logger.error(`agent-room: delivery ${event.eventId} failed: ${reason}`);
+          return;
+        }
+      } catch (error) {
+        const reason = `session ${mapping.sessionId} agent failed to resume: ${errorText(error)}`;
+        await this.store.markFailed(event.eventId, reason);
+        this.lastError = reason;
+        this.logger.error(`agent-room: delivery ${event.eventId} failed: ${reason}`);
+        return;
+      }
+    }
+    await this.store.begin(event.eventId);
+    await this.store.markProcessing(event.eventId);
     const threadId = event.threadId ?? null;
     const taskId = event.taskId ?? null;
     if (taskId) this.taskSessions.set(taskId, mapping.sessionId);
@@ -335,7 +356,7 @@ export class RoomBridge {
           mode: "queue",
           content: [{ type: "text", text }],
         },
-        undefined,
+        new AbortController().signal,
       );
       await this.store.markCompleted(event.eventId);
       this.enqueuePending(

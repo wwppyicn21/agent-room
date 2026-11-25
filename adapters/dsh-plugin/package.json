@@ -18,11 +18,6 @@
     "cordis.patch.yml",
     "README.md"
   ],
-  "dependencies": {
-    "@deepseek-ai/schemastery": "~3.19.0",
-    "@room/agent-sdk": "workspace:*",
-    "@room/protocol": "workspace:*"
-  },
   "devDependencies": {
     "esbuild": "^0.27.0",
     "@room/config": "workspace:*"
