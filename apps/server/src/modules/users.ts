@@ -194,6 +194,35 @@ export function disableUser(
   });
 }
 
+export function enableUser(
+  ctx: RoomContext,
+  input: { userId: string; actorUserId: string },
+): UserRow {
+  requireSystemAdmin(ctx.db, input.actorUserId);
+  const target = requireExistingUser(ctx, input.userId);
+  if (target.status === "active") return target;
+  const now = ctx.now();
+  return ctx.db.transaction((transaction) => {
+    const db = transaction as unknown as RoomDb;
+    db.update(users).set({ status: "active", updatedAt: now }).where(eq(users.id, target.id)).run();
+    appendEvent(db, {
+      type: "user.enabled",
+      actor: { type: "user", id: input.actorUserId },
+      payload: { userId: target.id },
+      createdAt: now,
+    });
+    recordAudit(db, {
+      actorType: "user",
+      actorId: input.actorUserId,
+      action: "user.enable",
+      targetType: "user",
+      targetId: target.id,
+      createdAt: now,
+    });
+    return db.select().from(users).where(eq(users.id, target.id)).get()!;
+  });
+}
+
 export function linkExternalIdentity(
   ctx: RoomContext,
   input: { userId: string; issuer: string; subject: string; email?: string | null },

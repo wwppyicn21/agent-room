@@ -15,7 +15,7 @@ import type { RoomContext } from "../modules/context.js";
 import { ForbiddenError, ValidationError } from "../modules/errors.js";
 import { normalizeEd25519PublicKey } from "../modules/keys.js";
 import { recordAudit } from "../modules/audit.js";
-import { createUser, listUsers } from "../modules/users.js";
+import { createUser, disableUser, enableUser, listUsers, setUserRole } from "../modules/users.js";
 import { requireUserPrincipal } from "../auth/plugin.js";
 
 export interface HttpRouteDependencies {
@@ -89,6 +89,31 @@ export function registerHttpRoutes(app: FastifyInstance, deps: HttpRouteDependen
       actorUserId: principal.userId,
     });
     return { user };
+  });
+
+  app.patch("/api/v1/users/:userId", async (request) => {
+    const principal = requireUserPrincipal(request);
+    const { userId } = params<{ userId: string }>(request);
+    const body = parseBody(z.object({ role: rbacRoleSchema }), request.body);
+    return {
+      user: setUserRole(ctx, {
+        userId,
+        role: body.role,
+        actorUserId: principal.userId,
+      }),
+    };
+  });
+
+  app.post("/api/v1/users/:userId/disable", async (request) => {
+    const principal = requireUserPrincipal(request);
+    const { userId } = params<{ userId: string }>(request);
+    return { user: disableUser(ctx, { userId, actorUserId: principal.userId }) };
+  });
+
+  app.post("/api/v1/users/:userId/enable", async (request) => {
+    const principal = requireUserPrincipal(request);
+    const { userId } = params<{ userId: string }>(request);
+    return { user: enableUser(ctx, { userId, actorUserId: principal.userId }) };
   });
 
   app.get("/api/v1/agents", async (request) => {

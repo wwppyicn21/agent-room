@@ -73,6 +73,7 @@ export const EVENT_TYPES = [
   "user.created",
   "user.role_changed",
   "user.disabled",
+  "user.enabled",
   "identity.linked",
   "group.created",
   "group.updated",
