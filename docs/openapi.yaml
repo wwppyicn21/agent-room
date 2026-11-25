@@ -1,9 +1,11 @@
 openapi: 3.1.0
 info:
   title: Agent Room API
-  version: 0.5.0
+  version: 0.6.0
   description: |
     M5 surface: groups, messages, threads, tasks, approvals and events.
+    M8 server prerequisite: one-time tickets for the browser realtime WebSocket
+    (`/api/v1/realtime/ws`), documented in docs/REALTIME.md.
     User requests authenticate with Cloudflare Access (production) or the
     development `x-dev-user-id` / `x-dev-user-email` headers. Task execution
     endpoints accept an Agent bearer session token (`Authorization: Bearer agt_…`).
@@ -464,6 +466,22 @@ paths:
       responses:
         "200": { description: Events }
         "403": { $ref: "#/components/responses/Error" }
+  /api/v1/realtime/ticket:
+    post:
+      summary: Mint a one-time ticket for the browser realtime WebSocket
+      responses:
+        "200":
+          description: Ticket issued
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [ticket, expiresAt]
+                properties:
+                  ticket: { type: string }
+                  expiresAt: { type: integer }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
   /api/v1/groups/{groupId}/workspaces:
     parameters:
       - $ref: "#/components/parameters/groupId"
@@ -496,6 +514,61 @@ paths:
           schema: { type: string }
       responses:
         "200": { description: Workspace }
+        "403": { $ref: "#/components/responses/Error" }
+  /api/v1/agent/groups:
+    get:
+      summary: Groups the authenticated Agent belongs to
+      security: [{ agentBearer: [] }]
+      parameters:
+        - $ref: "#/components/parameters/limit"
+      responses:
+        "200": { description: Groups with AI settings }
+        "401": { $ref: "#/components/responses/Error" }
+  /api/v1/agent/groups/{groupId}/messages:
+    parameters:
+      - $ref: "#/components/parameters/groupId"
+    get:
+      summary: Group stream for the authenticated Agent (thread messages excluded)
+      security: [{ agentBearer: [] }]
+      parameters:
+        - $ref: "#/components/parameters/limit"
+        - $ref: "#/components/parameters/messageCursor"
+      responses:
+        "200": { description: Messages }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+    post:
+      summary: Agent posts a reply in the group stream or a thread
+      security: [{ agentBearer: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [content]
+              properties:
+                content: { type: string, maxLength: 20000 }
+                threadId: { type: string, nullable: true }
+                replyToMessageId: { type: string, nullable: true }
+                rootMessageId: { type: string, nullable: true }
+                clientMessageId: { type: string, maxLength: 120, nullable: true }
+      responses:
+        "201": { description: Created }
+        "400": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "409": { $ref: "#/components/responses/Error" }
+  /api/v1/agent/groups/{groupId}/events:
+    get:
+      summary: Group events for the authenticated Agent (keyset)
+      security: [{ agentBearer: [] }]
+      parameters:
+        - $ref: "#/components/parameters/groupId"
+        - $ref: "#/components/parameters/limit"
+        - $ref: "#/components/parameters/cursorId"
+      responses:
+        "200": { description: Events }
+        "401": { $ref: "#/components/responses/Error" }
         "403": { $ref: "#/components/responses/Error" }
   /api/v1/agent/tasks:
     get:

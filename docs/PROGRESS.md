@@ -781,3 +781,55 @@ lint / typecheck / format:check / build 通过。
 - 结构化 Task Progress / Approval / Result / Error 工具尚未提供；M6 只桥接 Thread/Task
   消息上下文与 cancel 指令，完整 Room Tools 属 M7。
 - Workspace 运行时/文件系统隔离属 M7 allowlist；M6 只使用 M5 的 Task→Workspace 元数据。
+
+### 浏览器实时层（M8 服务端前置，2026-11-25）
+
+范围：为 M8 Web Client 提供已认证的浏览器 WebSocket；不涉及 UI。
+
+已实现：
+
+- `POST /api/v1/realtime/ticket`：User Principal 换取一次性、60 秒有效的 ticket；ticket 只
+  以 SHA-256 哈希保存在进程内，使用后即删除；浏览器不能把 JWT / dev 身份放进 URL。
+- `GET /api/v1/realtime/ws?ticket=...`：消费 ticket 后建立 WebSocket；无效、过期、重复
+  使用以 `1008` 关闭；`/api/v1/realtime/ws` 加入公开路径，由 ticket 自行认证。
+- 订阅协议：`subscribe {groupId, afterSeq?}`、`subscribed`、`event`、`unsubscribe`、
+  `unsubscribed`、`ping`/`pong`、`error {code}`；同一连接同一时间只订阅一个 Group。
+- 投递：从持久化 `events` 表按 `seq` 游标读取，每 300ms 最多 100 条，只推进已发送游标；
+  订阅时校验 Group 成员身份；省略 `afterSeq` 时只接收订阅后的新事件，带 `afterSeq` 时
+  从该 seq 之后重放；单帧上限 64 KiB（超出 `1009`）。
+- 文档：`docs/REALTIME.md`、`docs/openapi.yaml`（`/api/v1/realtime/ticket`）、README。
+
+测试：新增 `apps/server/test/realtime.test.ts` 7 例（未认证 ticket、无效/重复 ticket、
+成员收到 `message.created`、`afterSeq` 重放、非成员拒绝、ping/pong、unsubscribe）。
+全量 30 files / 237 tests 通过；lint / typecheck / format:check / build 通过。
+代码提交：`9dae94e`。
+
+已知边界：
+
+- Agent 在线状态不是 Group 级事件，暂不进入该通道；M8 Agent 列表先用 REST；
+- ticket 存储为单进程内存，多实例需迁移（M9 评估）；
+- Origin 校验、每用户连接数/速率限制、Thread 级订阅、Delivery 诊断尚未实现；
+- 被移出 Group 的已订阅连接不会立即断开，重新订阅时才拒绝。
+
+### Agent HTTP Room Tools（M7 服务端支持，2026-11-25）
+
+范围：为 Codex / 第三方 Plugin 的 Room Tools 提供服务端 HTTP 入口；Plugin 工具封装属 M7。
+
+已实现：
+
+- `GET /api/v1/agent/groups`：Agent 所属 Group（含 AI settings），按创建时间倒序；
+- `GET /api/v1/agent/groups/:groupId/messages`：Group 主消息流，排除 Thread 消息，`seq` keyset；
+- `POST /api/v1/agent/groups/:groupId/messages`：Agent 群聊回复 / Thread 回复，复用
+  `postMessage` 的 membership、root/hop、预算、限流、Thread 归属与 `clientMessageId` 幂等；
+- `GET /api/v1/agent/groups/:groupId/events`：Group 事件 keyset（事件 id 游标）；
+- 全部使用 Agent Bearer session token；非成员 `403`；裸顶层 Agent 消息 `400`；冲突 `409`。
+
+测试：新增 `apps/server/test/agent-http-tools.test.ts` 4 例（仅列出所属 Group、读取主消息流并
+回复 + 事件可见、非成员 403 / 裸顶层 400、无 token 401）。全量 31 files / 241 tests。
+OpenAPI 与 AUTH §13 已同步；代码提交：`783ead7`。
+
+已知边界：
+
+- 不提供 Agent 创建 Group / Thread、成员管理、审批决策；
+- Thread 消息读取仍走 `/api/v1/agent/threads/:threadId/messages`（按 Task assignee 授权）；
+- 这组 REST 端点与 WSS 的投递语义独立：读取历史不会自动 ACK delivery。

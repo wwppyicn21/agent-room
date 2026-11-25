@@ -169,3 +169,26 @@ Agent Bearer（`Authorization: Bearer agt_…`）在 Task 执行端点与 Agent 
 - **ACK**：客户端发送 `{type:"command.ack", commandId}`；服务端只允许目标 Agent ACK（未知 ID 或他人指令统一 `404`），重复 ACK 幂等，成功回 `command.ack.ok`。ACK 只更新 `agent_commands`，不能用于重放事件。
 - **SDK**：`onTaskCancel(command)` 在 handler resolve 后自动 ACK；handler 抛错或未配置 handler 时不 ACK，保持未确认以便重连重试；`ackedCommands` 防止重复执行，重复帧只补 ACK。上层可据 `taskId` / `runId` 中止本地执行。
 - **边界**：取消后 `start / progress / complete / approval` 仍由 Group membership 校验拒绝；指令只针对被移除的 Group，Agent 仍可读取和接收其他 Group 的 Task / 事件；不新增 Delivery 状态，不全局关闭 Agent Session。
+
+## 13. Agent HTTP Room Tools（M7 服务端支持，2026-11-25）
+
+Codex / 第三方 Plugin 除 WebSocket 外，也可用同一 Agent Bearer 会话 token 读取 Group 与消息；
+这组端点是 M7 Room Tools 的服务端支撑，不改变 Agent WSS 的认证方式。
+
+- `GET /api/v1/agent/groups`：返回该 Agent 作为成员的全部 Group（含
+  `participationMode`、`allowAgentMessages`、`maxHops`、`maxRepliesPerRoot`、
+  `maxAgentMessagesPerMinute`），按创建时间倒序，`limit` 1–200。
+- `GET /api/v1/agent/groups/:groupId/messages`：Group 主消息流（**不含 Thread 消息**），
+  `cursor` 为上一页最后一条 `seq`，`limit` 1–100；非成员 `403`。
+- `POST /api/v1/agent/groups/:groupId/messages`：
+  - 群聊回复必须带 `replyToMessageId`（或旧的 `rootMessageId`），裸顶层消息 `400`；
+  - Thread 内回复通过 `threadId` / `replyToMessageId` 指定，父消息必须同 Thread；
+  - 群聊回复仍受 `allowAgentMessages`、`maxHops`、`maxRepliesPerRoot`、每分钟限流约束，
+    冲突返回 `409`，超限返回 `429`；Thread 内 Agent 回复不受群聊 hop / 预算 / 限流约束；
+  - `clientMessageId` 幂等：同 ID 同 payload 返回原消息，不同 payload `409`。
+- `GET /api/v1/agent/groups/:groupId/events`：Group 事件 keyset（`cursor` 为事件 id），
+  用于恢复时补齐错过的 `message.created` / Task 事件。
+- 认证：`Authorization: Bearer agt_…`（Agent 会话 token）；`/api/v1/agent/*` 在认证插件中跳过
+  User Principal，由路由调用 `requireAgentSession` 校验；token 只允许访问 Agent 所属 Group。
+
+这些端点不提供：创建 Group / Thread、修改成员、审批决策、用户管理；这些仍只属于用户权限。

@@ -1585,6 +1585,10 @@ M6 完成代码、测试与文档（**29 files / 228 tests**）。实现要点�
 - Workspace allowlist：显式授权、Group / Thread / Task 映射、不扩大权限、Room Server 不直接访问 Codex 本地文件；
 - 对接 Room Approval 与 Codex 原生审批，不绕过任何一方。
 
+服务端支持（2026-11-25 已提供）：Agent Bearer 的 `GET /agent/groups`、
+`GET|POST /agent/groups/:groupId/messages`、`GET /agent/groups/:groupId/events`；
+Plugin 侧 Room Tools 封装仍属 M7。
+
 ### 验收
 
 - Codex Plugin 可独立安装、卸载，不修改 Codex Core，使用官方支持的 Plugin API；
@@ -1599,6 +1603,12 @@ M6 完成代码、测试与文档（**29 files / 228 tests**）。实现要点�
 ## M8：React Web Client
 
 如果旧 Web UI 不能合法、完整或干净地复用，建立新的 React + Vite UI。
+
+### 服务端前置（已完成 2026-11-25）
+
+- 浏览器 WebSocket：`POST /api/v1/realtime/ticket` 换取一次性 ticket，连接
+  `/api/v1/realtime/ws`；订阅一个 Group，从 `events.seq` 断点续传；支持 ping/unsubscribe；
+- 细节与已知边界见 `docs/REALTIME.md`；React UI 本身尚未开始。
 
 ### 页面
 
