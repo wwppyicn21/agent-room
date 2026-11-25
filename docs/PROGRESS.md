@@ -695,3 +695,15 @@ Status: Completed / Verified
 - **Validation**（本轮实际执行）：`lint` exit 0；`typecheck` exit 0；`format:check` exit 0；`test` 25 files / 198 tests passed；`build` exit 0。
 - **Remaining / M6 前置安全事项**：Runtime binding 与 Local filesystem allowlist（含路径穿越、符号链接、本地路径访问控制、Plugin 不得扩大权限）属 M6/M7；审批过期扫描仍是单实例 30 秒定时器；Thread 投递仍只覆盖用户 → 当前 assignee；Server 不自动重启 Agent 执行。
 - **代码提交**：`aec3434`（实现 + 测试 + OpenAPI）。M5 状态保持 Completed；未开始 M6。
+
+### M5 Review Fix 3C — Workspace 创建与 Audit 原子提交（2026-11-25）
+
+Status: Completed / Verified
+
+- **Issue**：`createWorkspace()` 先 INSERT Workspace，再单独调用 `recordAudit()`；如果审计写入失败，Workspace 已经留下，违反 `recordAudit()` 注释要求的“与业务变更同事务”。
+- **Fix**：`createWorkspace()` 改为 `ctx.db.transaction()` 内完成 Workspace INSERT 与 `workspace.create` Audit；唯一键冲突仍转换为 `ConflictError`；审计失败时整个事务回滚；返回事务内创建的 Workspace。
+- **Changed files**：`apps/server/src/modules/workspaces.ts`、新增 `apps/server/test/workspace-transaction.test.ts`、`docs/PROGRESS.md`、`docs/PLAN.md`、`docs/THREAD_TASK_ENGINE.md`、`README.md`。
+- **Tests**：3 例——Workspace 与 Audit 正常一起提交；用 SQLite `BEFORE INSERT ON audit_logs` trigger 模拟审计写入失败，断言 Workspace 与 Audit 均回滚；同 Group 重名 `ConflictError`、其他 Group 同名允许。
+- **Validation**（本轮实际执行）：`lint` exit 0；`typecheck` exit 0；`format:check` exit 0；`test` 26 files / 201 tests passed；`build` exit 0。
+- **Remaining**：Runtime / Filesystem Allowlist 仍属 M6/M7；审批过期扫描单实例 30 秒定时器；Thread 投递仅用户 → assignee；M5 最终验收仍以审查确认和远端代码为准。
+- **代码提交**：`6498911`（实现 + 测试）。

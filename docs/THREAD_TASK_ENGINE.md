@@ -175,7 +175,7 @@ GET             /api/v1/agent/threads/:threadId/messages
 M5 实现 Group 级 Workspace 元数据与权限边界，不实现执行环境：
 
 - `workspaces` 表：`id`、`groupId`（→ `groups`，cascade）、`name`、`createdByUserId`、`createdAt`；`(groupId, name)` 唯一；
-- 创建：群 owner/admin（`requireGroupManager` + 可写 + 群组 active），名称 ≤100，重复名 `409`，写 `workspace.create` 审计；成员可列出本群 Workspace 与读取详情，非成员 `403`；
+- 创建：群 owner/admin（`requireGroupManager` + 可写 + 群组 active），名称 ≤100，重复名 `409`，Workspace INSERT 与 `workspace.create` 审计同事务（审计失败回滚）；成员可列出本群 Workspace 与读取详情，非成员 `403`；
 - Task 的 `workspaceId` 必须属于同一 Group（跨群 `400`，由 `workspaceForTask` 校验）；Task 创建 / 幂等比较 / 详情都带 Workspace；
 - Agent 只能读取分配给自己的 Task 及其 Workspace 元数据；Workspace 不授予文件系统访问；
 - Plugin 不得自行扩大权限；Room Server 不直接访问 Agent 本地文件；具体 allowlist 由 M6/M7 的 Plugin 与本机策略执行。

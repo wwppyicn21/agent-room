@@ -1514,6 +1514,14 @@ M5 已实现并通过测试：Thread 创建 / 详情 / 独立消息流 / 事件�
 - **测试**：新增 10 例；全量 25 files / 198 tests；`lint` / `typecheck` / `format:check` / `test` / `build` 实际执行全过。
 - **状态**：完成（代码提交 `aec3434`）。未开始 M6。
 
+### M5 Review Fix 3C（Workspace 创建与 Audit 原子提交，2026-11-25）
+
+- **问题**：`createWorkspace()` 先 INSERT Workspace，再单独写 `workspace.create` Audit；审计失败会留下无审计的 Workspace。
+- **修复**：Workspace INSERT 与 Audit 放入同一 `ctx.db.transaction()`；唯一键冲突仍为 `ConflictError`；审计失败整体回滚；返回事务内创建的 Workspace。
+- **测试**：新增 `apps/server/test/workspace-transaction.test.ts` 3 例（正常提交、审计触发器失败回滚、同 Group 重名/其他 Group 同名）。
+- **验证**：`lint` / `typecheck` / `format:check` / `test`（26 files / 201 tests）/ `build` 全部实际执行通过。
+- **状态**：完成（代码提交 `6498911`）。未开始 M6。
+
 ## M6：DSH Plugin
 
 ### 工作
@@ -1882,7 +1890,7 @@ M9  Cloudflare + Mini PC 原生部署、SQLite 备份/恢复、JSON 数据导入
 | M2 | 完成（2026-11-22/23，含两轮评审修复 b79a580 + 7ce6437） | 7ce6437 | lint / typecheck / 47 tests / build 全过；权限分级、Task 幂等、Delivery 状态机、归档群组只读实测 | 设计见 docs/DATABASE.md，记录见 docs/PROGRESS.md「M2」「M2 Review Fix」「M2 Review Fix 2」 |
 | M3 | 完成（2026-11-23：认证 + Agent SDK，83 tests；含 M3 Review Fix） | de8ef4d | lint / typecheck / 83 tests / build 全过；dev/access、Challenge 重放、吊销断连、重连补齐、ticket 重放、活跃 TTL、邮箱唯一实测 | 设计见 docs/AUTH.md，记录见 docs/PROGRESS.md「M3」与「M3 Review Fix」 |
 | M4 | 完成（2026-11-23：服务端参与引擎 + SDK reply/skip；Review Fix 3 后 126 tests；skip 诊断未实现） | e52a355 | lint / typecheck / 111 tests / build 全过；双 Agent WSS、Root/Hop 服务端推导、Max Hop 零 fan-out、投递租约重试、Dev Auth Loopback、按群组限流实测 | 记录见 docs/PROGRESS.md「M4」「M4 Review Fix」「M4 Review Fix 2」「M4 Review Fix 3」；REST/Web UI 属 M8，每群组 Session 映射属 M6；skip 诊断列为未完成 |
-| M5 | 完成（2026-11-24：Thread / Task / Approval / 摘要回流 / REST + Review Fix 2 + Review Fix 3 / 3A / 3B；198 tests） | aec3434 | lint / typecheck / format / 198 tests / build 全过；Thread 定向投递、审批过期竞态、Agent 恢复、Workspace Policy、Group 权限撤销、审批过期 assignee 定向投递、Message 幂等一致性、Task 转换并发守卫、OpenAPI Cursor 契约实测 | 记录见 docs/PROGRESS.md「M5」「M5 Review Fix」「M5 Review Fix 2」「M5 Review Fix 3」「M5 Review Fix 3A」「M5 Review Fix 3B」；Web UI 属 M8，DSH/Codex Plugin 属 M6/M7 |
+| M5 | 完成（2026-11-25：Thread / Task / Approval / 摘要回流 / REST + Review Fix 2 + Review Fix 3 / 3A / 3B / 3C；201 tests） | 6498911 | lint / typecheck / format / 198 tests / build 全过；Thread 定向投递、审批过期竞态、Agent 恢复、Workspace Policy、Group 权限撤销、审批过期 assignee 定向投递、Message 幂等一致性、Task 转换并发守卫、OpenAPI Cursor 契约实测 | 记录见 docs/PROGRESS.md「M5」「M5 Review Fix」「M5 Review Fix 2」「M5 Review Fix 3」「M5 Review Fix 3A」「M5 Review Fix 3B」「M5 Review Fix 3C」；Web UI 属 M8，DSH/Codex Plugin 属 M6/M7 |
 | M6 | 未开始 | | | |
 | M7 | 未开始 | | | |
 | M8 | 未开始 | | | |
