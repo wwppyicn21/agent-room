@@ -10,6 +10,7 @@ import { DomainError } from "./modules/errors.js";
 import { registerAgentRoutes } from "./routes/agent.js";
 import { registerHttpRoutes } from "./routes/http.js";
 import { registerRoomRoutes } from "./routes/room.js";
+import { registerRealtimeRoutes } from "./routes/realtime.js";
 
 /**
  * Access logs must never contain upgrade tickets (or any query string), so the
@@ -101,6 +102,7 @@ export async function buildApp({
   registerAgentRoutes(app, { config, ctx, hub });
   registerHttpRoutes(app, { ctx, hub });
   registerRoomRoutes(app, { ctx });
+  registerRealtimeRoutes(app, { ctx });
 
   // Legacy shell endpoint kept for compatibility; business traffic uses the
   // authenticated `/api/v1/agent/connect` socket.
