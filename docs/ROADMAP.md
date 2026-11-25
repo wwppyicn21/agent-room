@@ -666,7 +666,7 @@ Task 必须具有明确的执行映射。
 
 ## 5.10 M6 Acceptance Criteria
 
-- [ ] DSH Plugin 独立安装（bundle 已构建，待 profile 实机确认）；
+- [x] DSH Plugin 独立安装（bundle 构建 + 当前 web profile 实机安装/启用）；
 - [ ] DSH Plugin 独立卸载（同上）；
 - [ ] DSH Plugin 独立更新（同上）；
 - [ ] 不修改 DSH Core；

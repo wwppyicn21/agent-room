@@ -762,8 +762,22 @@ lint / typecheck / format:check / build 通过。
 
 未完成 / 偏差（如实记录）：
 
-- Bundle 已在仓库构建，但**未在当前 DSH web profile 实际安装**（安装会修改用户 profile，
-  需操作者确认）；因此 ROADMAP 的 install / uninstall / update 实机项未勾选。
+### 实机验证（2026-11-25）
+
+- 通过 DSH `plugin_manager` 卸载旧 `@local/dsh-room-bridge`，清理 profile 中旧 patch 行；
+- 以 `file:/data/work/agent-room/adapters/dsh-plugin` 安装 `@room/dsh-plugin`，写入显式
+  Group→Session 映射并启用；
+- 真实 Room Server（dev auth、临时 SQLite）→ 用户消息 → 插件 Prompt 映射 Session →
+  assistant 回复 → Room `sendMessage` 回复成功（`seq 5` 用户消息，`seq 6` Agent 回复，
+  `replyToMessageId` 指向原消息）；
+- 实机发现并修复：`sessionController.prompt` 必须传 `AbortSignal`；冷 Session 需先
+  `resolveAgent`；映射到**归档 Session** 时 `agent/pre-step` 拒绝（`turn/end=blocked`）；
+  `/api/v1/agent/*` 需绕过 dev auth 的用户 Principal（由路由校验 Agent Bearer）；
+- 测试结束后清空映射、停止临时 Room Server；插件保持安装/启用。
+
+未完成 / 偏差（如实记录）：
+
+- Bundle 已实机安装/启用；替换旧 bundle 的**卸载**与 **update** 实机流程仍待操作者确认。
 - 结构化 Task Progress / Approval / Result / Error 工具尚未提供；M6 只桥接 Thread/Task
   消息上下文与 cancel 指令，完整 Room Tools 属 M7。
 - Workspace 运行时/文件系统隔离属 M7 allowlist；M6 只使用 M5 的 Task→Workspace 元数据。

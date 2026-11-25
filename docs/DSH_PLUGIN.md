@@ -41,6 +41,9 @@ pnpm --filter @room/dsh-plugin build
 - 每个 Room Group 必须显式配置一个 DSH Session ID；
 - 同一个 Session 不能绑定多个 Group；
 - Session 不存在时插件只告警并把 Delivery 标记为 failed，**绝不创建或猜测 Session**；
+- 映射目标必须是**未归档** Session：归档 Session 的 Agent 不执行 Prompt，`agent/pre-step`
+  直接拒绝、`turn/end` 为 `blocked`；插件在 Prompt 前调用
+  `sessionController.resolveAgent(sessionId)` 恢复冷 Session 的 Agent，失败则 failed；
 - 管理员修改映射后重启/重新加载插件即可生效。
 
 ## 2. 身份与私钥
