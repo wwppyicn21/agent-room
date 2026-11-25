@@ -32,6 +32,7 @@ import {
   requireGroup,
   requireGroupManager,
   requireGroupMember,
+  requireAgent,
   requireUser,
   requireWriteUser,
   validateTitle,
@@ -111,6 +112,23 @@ export function listGroupsForUser(
     .from(groupMembers)
     .innerJoin(groups, eq(groups.id, groupMembers.groupId))
     .where(and(eq(groupMembers.memberType, "user"), eq(groupMembers.memberId, input.userId)))
+    .orderBy(desc(groups.createdAt))
+    .limit(limit)
+    .all()
+    .map((row) => row.group);
+}
+
+export function listGroupsForAgent(
+  ctx: RoomContext,
+  input: { agentId: string; limit?: number },
+): GroupRow[] {
+  requireAgent(ctx.db, input.agentId);
+  const limit = Math.min(Math.max(input.limit ?? 50, 1), 200);
+  return ctx.db
+    .select({ group: groups })
+    .from(groupMembers)
+    .innerJoin(groups, eq(groups.id, groupMembers.groupId))
+    .where(and(eq(groupMembers.memberType, "agent"), eq(groupMembers.memberId, input.agentId)))
     .orderBy(desc(groups.createdAt))
     .limit(limit)
     .all()

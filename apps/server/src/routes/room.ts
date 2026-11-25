@@ -6,6 +6,7 @@ import {
   createGroup,
   getGroup,
   listGroupMembers,
+  listGroupsForAgent,
   listGroupsForUser,
   removeMember,
   updateGroup,
@@ -112,6 +113,7 @@ const postMessageBody = z.object({
   content: z.string().min(1).max(20000),
   threadId: z.string().trim().min(1).nullish(),
   replyToMessageId: z.string().trim().min(1).nullish(),
+  rootMessageId: z.string().trim().min(1).nullish(),
   clientMessageId: z.string().trim().min(1).max(120).nullish(),
 });
 
@@ -408,6 +410,53 @@ export function registerRoomRoutes(app: FastifyInstance, deps: RoomRouteDependen
     const actor = actorOf(request);
     const { workspaceId } = params<{ workspaceId: string }>(request);
     return { workspace: getWorkspace(ctx, { workspaceId, viewerUserId: actor.id }) };
+  });
+
+  app.get("/api/v1/agent/groups", async (request) => {
+    const agentId = agentOf(ctx, request);
+    const { limit } = query<{ limit?: string }>(request);
+    return { groups: listGroupsForAgent(ctx, { agentId, limit: limitOf(limit, 50) }) };
+  });
+
+  app.get("/api/v1/agent/groups/:groupId/messages", async (request) => {
+    const agentId = agentOf(ctx, request);
+    const { groupId } = params<{ groupId: string }>(request);
+    const { limit, cursor } = query<{ limit?: string; cursor?: string }>(request);
+    return listMessages(ctx, {
+      groupId,
+      viewer: { type: "agent", id: agentId },
+      limit: limitOf(limit, 50),
+      cursor: cursor ? Number(cursor) : undefined,
+    });
+  });
+
+  app.post("/api/v1/agent/groups/:groupId/messages", async (request, reply) => {
+    const agentId = agentOf(ctx, request);
+    const { groupId } = params<{ groupId: string }>(request);
+    const body = parseBody(postMessageBody, request.body);
+    const message = postMessage(ctx, {
+      groupId,
+      actor: { type: "agent", id: agentId },
+      content: body.content,
+      threadId: body.threadId ?? null,
+      rootMessageId: body.rootMessageId ?? null,
+      replyToMessageId: body.replyToMessageId ?? null,
+      clientMessageId: body.clientMessageId ?? null,
+    });
+    reply.code(201);
+    return { message };
+  });
+
+  app.get("/api/v1/agent/groups/:groupId/events", async (request) => {
+    const agentId = agentOf(ctx, request);
+    const { groupId } = params<{ groupId: string }>(request);
+    const { limit, cursor } = query<{ limit?: string; cursor?: string }>(request);
+    return listGroupEvents(ctx, {
+      groupId,
+      viewer: { type: "agent", id: agentId },
+      limit: limitOf(limit, 50),
+      cursor,
+    });
   });
 
   app.get("/api/v1/agent/tasks", async (request) => {
