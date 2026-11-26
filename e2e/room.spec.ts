@@ -95,6 +95,38 @@ test("reconnects the realtime socket and recovers messages sent while offline", 
   await expect(page.getByText(text, { exact: true })).toBeVisible({ timeout: 30_000 });
 });
 
+test("a member can load tasks even when the global agent list is forbidden", async ({
+  page,
+  request,
+}) => {
+  const group = await createGroup(request);
+  const member = `member-${Date.now()}@example.com`;
+  const created = await call(request, "POST", "/api/v1/users", OWNER, {
+    displayName: "E2E Member",
+    email: member,
+    role: "member",
+  });
+  await call(request, "POST", `/api/v1/groups/${group.id}/members`, OWNER, {
+    memberType: "user",
+    memberId: created.user.id,
+  });
+  const source = await call(request, "POST", `/api/v1/groups/${group.id}/messages`, OWNER, {
+    content: "task source for member",
+  });
+  const title = `member task ${Date.now()}`;
+  await call(request, "POST", `/api/v1/groups/${group.id}/tasks`, OWNER, {
+    sourceMessageId: source.message.id,
+    title,
+  });
+
+  await login(page, member);
+  await openGroup(page, group.name);
+  await page.getByRole("button", { name: "任务", exact: true }).click();
+  await expect(page.getByText(title, { exact: true })).toBeVisible();
+  await page.getByText("从群消息创建任务").click();
+  await expect(page.getByText("Agent 列表不可用，任务仍可创建并稍后指派。")).toBeVisible();
+});
+
 test("creates and opens a thread and a task from a group message", async ({ page, request }) => {
   const group = await createGroup(request);
   const source = await call(request, "POST", `/api/v1/groups/${group.id}/messages`, OWNER, {

@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import { ApiClient, type Agent, type Approval, type Group, type Task } from "../api";
-import { Badge, Button, Card, Empty, Field, Select, TextArea, TextInput } from "../ui";
+import { Badge, Button, Card, Empty, ErrorBanner, Field, Select, TextArea, TextInput } from "../ui";
 import { formatTime, shortId, statusLabel } from "../format";
 
 export function TasksView({
@@ -16,6 +16,8 @@ export function TasksView({
 }) {
   const [tasks, setTasks] = useState<Task[]>([]);
   const [agents, setAgents] = useState<Agent[]>([]);
+  const [tasksError, setTasksError] = useState<string | null>(null);
+  const [agentsError, setAgentsError] = useState<string | null>(null);
   const [selected, setSelected] = useState<Task | null>(null);
   const [approvals, setApprovals] = useState<Approval[]>([]);
   const [status, setStatus] = useState("");
@@ -25,25 +27,40 @@ export function TasksView({
   const [assignedAgentId, setAssignedAgentId] = useState("");
   const [busy, setBusy] = useState(false);
 
-  const load = useCallback(async () => {
+  const loadTasks = useCallback(async () => {
     try {
-      const [result, agentList] = await Promise.all([
-        api.listTasks(group.id, { status: status || undefined, limit: 50 }),
-        api.listAgents(),
-      ]);
+      const result = await api.listTasks(group.id, { status: status || undefined, limit: 50 });
       setTasks(result.items);
-      setAgents(agentList.agents);
+      setTasksError(null);
       setSelected((current) =>
         current && result.items.some((item) => item.id === current.id) ? current : null,
       );
     } catch (err) {
-      onError(err);
+      setTasks([]);
+      setTasksError(err instanceof Error ? err.message : String(err));
     }
-  }, [api, group.id, status, onError]);
+  }, [api, group.id, status]);
+
+  const loadAgents = useCallback(async () => {
+    try {
+      const result = await api.listAgents();
+      setAgents(result.agents);
+      setAgentsError(null);
+    } catch (err) {
+      setAgents([]);
+      setAgentsError(err instanceof Error ? err.message : String(err));
+    }
+  }, [api]);
 
   useEffect(() => {
-    void load();
-  }, [load]);
+    void loadTasks();
+  }, [loadTasks]);
+
+  useEffect(() => {
+    setAgents([]);
+    setAssignedAgentId("");
+    void loadAgents();
+  }, [loadAgents, group.id]);
 
   const loadApprovals = async (task: Task) => {
     try {
@@ -72,7 +89,7 @@ export function TasksView({
       setSourceMessageId("");
       setTitle("");
       setDescription("");
-      await load();
+      await loadTasks();
       setSelected(result.task);
       void loadApprovals(result.task);
       notify("任务已创建");
@@ -95,7 +112,7 @@ export function TasksView({
       } else {
         await api[action === "pause" ? "pauseTask" : "resumeTask"](selected.id);
       }
-      await load();
+      await loadTasks();
       const refreshed = await api.getTask(selected.id);
       setSelected(refreshed.task);
       await loadApprovals(refreshed.task);
@@ -113,7 +130,7 @@ export function TasksView({
         if (!reason?.trim()) return;
         await api.reject(approval.id, reason.trim());
       }
-      await load();
+      await loadTasks();
       if (selected) {
         const refreshed = await api.getTask(selected.id);
         setSelected(refreshed.task);
@@ -146,6 +163,7 @@ export function TasksView({
               </option>
             ))}
           </Select>
+          {tasksError && <ErrorBanner message={`任务加载失败：${tasksError}`} />}
           <div className="list">
             {tasks.map((task) => (
               <button
@@ -182,6 +200,7 @@ export function TasksView({
             </Field>
             <Field label="指派 Agent">
               <Select
+                disabled={agentsError !== null}
                 value={assignedAgentId}
                 onChange={(event) => setAssignedAgentId(event.target.value)}
               >
@@ -192,6 +211,9 @@ export function TasksView({
                   </option>
                 ))}
               </Select>
+              {agentsError && (
+                <div className="muted small">Agent 列表不可用，任务仍可创建并稍后指派。</div>
+              )}
             </Field>
             <Button variant="primary" disabled={busy} onClick={() => void create()}>
               创建
@@ -237,7 +259,11 @@ export function TasksView({
               {selected.error && <div className="error-banner">{selected.error}</div>}
               <div className="row tight">
                 {selected.status === "queued" && (
-                  <Select value="" onChange={(event) => void act("assign", event.target.value)}>
+                  <Select
+                    disabled={agentsError !== null}
+                    value=""
+                    onChange={(event) => void act("assign", event.target.value)}
+                  >
                     <option value="">分配 Agent…</option>
                     {agents.map((agent) => (
                       <option key={agent.id} value={agent.id}>
