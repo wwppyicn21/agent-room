@@ -37,17 +37,13 @@ importers:
         version: 5.1.1(@types/node@26.6.6)(vite@8.3.8(@types/node@26.6.6)(esbuild@0.28.2)(tsx@4.23.15))
 
   adapters/dsh-plugin:
-    dependencies:
+    devDependencies:
       '@deepseek-ai/schemastery':
         specifier: ~3.19.0
         version: 3.19.0
       '@room/agent-sdk':
         specifier: workspace:*
         version: link:../../packages/agent-sdk
-      '@room/protocol':
-        specifier: workspace:*
-        version: link:../../packages/protocol
-    devDependencies:
       '@room/config':
         specifier: workspace:*
         version: link:../../packages/config
