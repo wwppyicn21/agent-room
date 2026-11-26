@@ -44,6 +44,14 @@ jobs:
       - name: Browser E2E
         run: pnpm e2e
 
+      - name: E2E diagnostics
+        if: failure()
+        run: |
+          find test-results -type f -name 'error-context.md' -print | while read -r f; do
+            msg=$(sed -n '1,80p' "$f" | tr '\n' ' ' | cut -c1-1200)
+            echo "::error title=E2E $(basename $(dirname "$f"))::$msg"
+          done
+
       - name: Native SQLite module
         run: |
           pnpm --filter @room/database exec node -e \
