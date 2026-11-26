@@ -4,6 +4,8 @@ import type { RoomContext } from "../modules/context.js";
 import {
   addMember,
   createGroup,
+  findAgent,
+  findUser,
   getGroup,
   listGroupMembers,
   listGroupsForAgent,
@@ -50,7 +52,7 @@ import {
   listGroupEvents,
   listThreadEvents,
 } from "../modules/events.js";
-import { requireAgentSession } from "../modules/agentAuth.js";
+import { liveSessionAgentIds, requireAgentSession } from "../modules/agentAuth.js";
 import { UnauthorizedError, ValidationError } from "../modules/errors.js";
 import { requireGroupMember } from "../modules/permissions.js";
 import { groupAISettingsSchema } from "@room/protocol";
@@ -58,6 +60,7 @@ import { requireUserPrincipal } from "../auth/plugin.js";
 
 export interface RoomRouteDependencies {
   ctx: RoomContext;
+  agentPresenceTtlMs: number;
 }
 
 function actorOf(request: FastifyRequest): { type: "user"; id: string } {
@@ -214,9 +217,24 @@ export function registerRoomRoutes(app: FastifyInstance, deps: RoomRouteDependen
   app.get("/api/v1/groups/:groupId/members", async (request) => {
     const actor = actorOf(request);
     const { groupId } = params<{ groupId: string }>(request);
-    return {
-      members: listGroupMembers(ctx, { groupId, viewerUserId: actor.id }),
-    };
+    const online = liveSessionAgentIds(ctx, deps.agentPresenceTtlMs);
+    const members = listGroupMembers(ctx, { groupId, viewerUserId: actor.id }).map((member) => {
+      const profile =
+        member.memberType === "user"
+          ? findUser(ctx, member.memberId)
+          : findAgent(ctx, member.memberId);
+      return {
+        groupId: member.groupId,
+        memberType: member.memberType,
+        memberId: member.memberId,
+        memberRole: member.memberRole,
+        joinedAt: member.joinedAt,
+        displayName: profile?.displayName ?? member.memberId,
+        status: profile?.status ?? "unknown",
+        online: member.memberType === "agent" ? online.has(member.memberId) : undefined,
+      };
+    });
+    return { members };
   });
 
   app.post("/api/v1/groups/:groupId/members", async (request, reply) => {

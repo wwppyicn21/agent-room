@@ -100,8 +100,13 @@ export async function buildApp({
   const accessVerifier = injectedAccessVerifier ?? createAccessVerifier(config);
   await registerAuth(app, { config, ctx, verifier: accessVerifier });
   registerAgentRoutes(app, { config, ctx, hub });
-  registerHttpRoutes(app, { ctx, hub, agentPresenceTtlMs: config.agentPresenceTtlMs });
-  registerRoomRoutes(app, { ctx });
+  registerHttpRoutes(app, {
+    ctx,
+    hub,
+    agentPresenceTtlMs: config.agentPresenceTtlMs,
+    authMode: config.authMode,
+  });
+  registerRoomRoutes(app, { ctx, agentPresenceTtlMs: config.agentPresenceTtlMs });
   registerRealtimeRoutes(app, { ctx, agentPresenceTtlMs: config.agentPresenceTtlMs });
 
   // Legacy shell endpoint kept for compatibility; business traffic uses the

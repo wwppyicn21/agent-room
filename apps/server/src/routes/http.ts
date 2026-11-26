@@ -28,6 +28,7 @@ export interface HttpRouteDependencies {
   ctx: RoomContext;
   hub: AgentHub;
   agentPresenceTtlMs: number;
+  authMode: "dev" | "access";
 }
 
 const createUserBodySchema = z.object({
@@ -70,6 +71,8 @@ function params<T>(request: FastifyRequest): T {
 
 export function registerHttpRoutes(app: FastifyInstance, deps: HttpRouteDependencies): void {
   const { ctx, hub } = deps;
+
+  app.get("/api/v1/auth-info", async () => ({ authMode: deps.authMode }));
 
   app.get("/api/v1/me", async (request) => {
     const principal = requireUserPrincipal(request);

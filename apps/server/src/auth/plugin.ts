@@ -15,6 +15,7 @@ const PUBLIC_PATHS = new Set([
   "/api/v1/agent/connect",
   "/api/v1/agent/socket-ticket",
   "/api/v1/realtime/ws",
+  "/api/v1/auth-info",
 ]);
 
 export interface AuthDependencies {
