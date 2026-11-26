@@ -358,7 +358,9 @@ export class RoomBridge {
         },
         new AbortController().signal,
       );
-      await this.store.markCompleted(event.eventId);
+      // Register the pending turn before the delivery is persisted as completed:
+      // session events (assistant/message, turn/end) can arrive immediately after
+      // prompt acceptance and must not be dropped while the store write is in flight.
       this.enqueuePending(
         {
           eventId: event.eventId,
@@ -371,6 +373,7 @@ export class RoomBridge {
         },
         mapping.sessionId,
       );
+      await this.store.markCompleted(event.eventId);
     } catch (error) {
       const reason = errorText(error);
       await this.store.markFailed(event.eventId, reason);
