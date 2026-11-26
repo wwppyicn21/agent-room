@@ -63,7 +63,7 @@ export function TasksView({
     if (!sourceMessageId.trim() || !title.trim()) return;
     setBusy(true);
     try {
-      await api.createTask(group.id, {
+      const result = await api.createTask(group.id, {
         sourceMessageId: sourceMessageId.trim(),
         title: title.trim(),
         description: description.trim() || undefined,
@@ -73,6 +73,8 @@ export function TasksView({
       setTitle("");
       setDescription("");
       await load();
+      setSelected(result.task);
+      void loadApprovals(result.task);
       notify("任务已创建");
     } catch (err) {
       onError(err);

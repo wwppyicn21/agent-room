@@ -108,14 +108,14 @@ test("creates and opens a thread and a task from a group message", async ({ page
   await page.getByLabel("来源消息 ID").fill(source.message.id);
   await page.getByLabel("标题").fill("E2E thread");
   await page.locator("details").getByRole("button", { name: "创建" }).click();
-  await expect(page.getByText("E2E thread", { exact: true })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "E2E thread", exact: true })).toBeVisible();
 
   await page.getByRole("button", { name: "任务", exact: true }).click();
   await page.getByText("从群消息创建任务").click();
   await page.getByLabel("来源消息 ID").fill(source.message.id);
   await page.getByLabel("标题").fill("E2E task");
   await page.locator("details").getByRole("button", { name: "创建" }).click();
-  await expect(page.getByText("E2E task", { exact: true })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "E2E task", exact: true })).toBeVisible();
 });
 
 test("a removed member loses access and receives no further group messages", async ({
