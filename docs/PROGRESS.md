@@ -1003,7 +1003,7 @@ OpenAPI 与 AUTH §13 已同步；代码提交：`783ead7`。
 | 插件重启恢复 | PARTIAL | `bridge.test.ts` 17 例含等待中重启、已结束未写回、completed 不重放；at-least-once + 幂等，不承诺 exactly-once |
 | DeliveryStore 并发安全 | PASS | 写串行化、唯一临时文件、原子替换；并发测试通过 |
 | 历史记录清理 | PASS | `deliveryRetentionDays`（默认 30）仅清终态；未完成记录保留 |
-| GitHub Actions | PARTIAL | Install 历史失败根因为 lockfile/依赖不一致，`0948c7c` 修复；本次新增 Playwright 步骤待推送后 CI 验证 |
+| GitHub Actions | PASS | Install 历史失败根因为 lockfile/依赖不一致，`0948c7c` 修复；整改 run `45844424920` 全步骤 success（含 Browser E2E） |
 | WebSocket Origin | PASS | `REALTIME_ALLOWED_ORIGINS`；无 Origin 的 CLI 允许但仍需 ticket；测试覆盖 |
 | Playwright E2E | PASS | 6 例：登录、授权 Group、群聊、重连补偿、重复消息、Thread/Task、移除成员后不可读；`--repeat-each 2` 12 通过 |
 | 文档同步 | PASS | 本节、README、REALTIME、DSH_PLUGIN、env 示例、`QUALITY_REVIEW_REMEDIATION.md` |

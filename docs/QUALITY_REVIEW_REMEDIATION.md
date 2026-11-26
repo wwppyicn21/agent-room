@@ -77,8 +77,13 @@ E2E 覆盖：登录 → 授权 Group → 进入群聊 → 发送/接收 → 断�
   `adapters/dsh-plugin/package.json` 的运行时依赖与锁文件不一致。
 - 修复：`0948c7c`（依赖改为 devDependencies、重新生成 lockfile）。其后
   run `45807887373`（`f1e4ce6`）Install/Lint/Typecheck/Test/Build/Native SQLite 全部 success。
-- 本次整改的代码与 CI 步骤推送后，以新的 GitHub Actions 运行为准；若仅外部服务不可用，
-  会在本节补充证据，不以本地结果替代远程结果。
+- 本次整改首次 CI run `45842860896`（`c071c3c`）在 Browser E2E 失败：Thread/Task 创建后的
+  断言命中列表项与详情标题两个元素（strict mode violation）；通过 `::error` 注解取得
+  `error-context.md`，修正为 heading 断言并让 TasksView 创建后自动选中 Task。
+- 修复后 run `45844424920`（`ccc23a3`）完成：Install、Lint、Typecheck、Test、Build、
+  Install Playwright browser、Browser E2E、Native SQLite 全部 success。
+  https://github.com/wwppyicn21/agent-room/actions/runs/45844424920
+- CI 中 Playwright `retries=1`（本地 0），用于吸收浏览器时序抖动；测试内容未改变。
 
 ## 5. 未解决问题
 
@@ -106,11 +111,11 @@ E2E 覆盖：登录 → 授权 Group → 进入群聊 → 发送/接收 → 断�
 
 ## 7. 最终结论
 
-- **是否可以进入 M9**：本次整改完成后可以进入，但 M9 尚未开始，且部署前仍需完成
-  M6 卸载/更新验收与 Cloudflare Origin 实测。
+- **是否可以进入 M9**：本次整改已完成且 CI 绿，可以进入 M9；M9 尚未开始，部署前仍需
+  完成 M6 卸载/更新验收与 Cloudflare Origin 实测。
 - **是否可以部署到生产环境**：不建议直接部署；需配置 `REALTIME_ALLOWED_ORIGINS`、
   验证 Cloudflare WebSocket 行为，并补齐 M9 部署项。
 - **是否还有 P1/P2 问题**：没有已知未修复的 P1；P2 剩余为上述第 5–7 项与
-  插件 exactly-once 的固有语义限制。
+  插件 exactly-once 的固有语义限制（已用稳定 requestId/clientMessageId 幂等缓解）。
 - **尚未验证的关键功能**：M7 Codex Plugin、M6 卸载/更新、生产级多实例限流与
   Cloudflare Origin 的实际行为。
