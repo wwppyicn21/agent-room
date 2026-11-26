@@ -985,7 +985,7 @@ OpenAPI 与 AUTH §13 已同步；代码提交：`783ead7`。
 
 ### 已知边界
 
-- 无 react-router / 深链；无 Playwright 等浏览器 E2E。
+- 无 react-router / 深链；浏览器 E2E 仅覆盖 `e2e/room.spec.ts` 的 9 个核心场景。
 - Task 细粒度 run progress 无独立 REST 端点，UI 展示 Task 状态与摘要。
 - 附件上传/下载未实现；生产静态托管、同源部署属 M9。
 - realtime ticket / presence 为单进程内存实现。
@@ -1018,3 +1018,26 @@ OpenAPI 与 AUTH §13 已同步；代码提交：`783ead7`。
 
 剩余：插件恢复的 exactly-once 语义、周期清理、多实例共享限流、Cloudflare Origin 实测、
 M6 卸载/更新验收、M7、M9。
+
+## M8 整改（2026-11-27）
+
+针对 M8 Web / Server / Realtime 复审的三项缺陷，按 FIX-01 → FIX-02 → FIX-03 独立修改与提交：
+
+| 项目 | 修复 | 提交 |
+|---|---|---|
+| FIX-01 普通成员任务页 | `TasksView` 将任务与 Agent 加载解耦；Agent 403/失败不再清空任务列表，仅禁用指派选择器并提示 | `0569aa0` |
+| FIX-02 群组范围 Agent | 新增 `listGroupAgents(ctx,{groupId,viewerUserId})` 与 `GET /api/v1/groups/:groupId/agents`（成员校验、仅本群、排除 disabled）；任务页改用该接口；服务端指派仍独立校验 | `85adb82` |
+| FIX-03 Realtime 断点 | `listMessages` 在单一 SQLite 事务内返回消息页与 `eventCursor=max(events.seq) where groupId`；ChatView 用 `eventCursor` 建立订阅，不再使用 `messages.seq` | `8bdc257` |
+
+测试与验证：
+
+- `apps/server/test/group-agents.test.ts` 3 例：群内隔离、非成员 403、跨群指派拒绝。
+- `apps/server/test/message-event-cursor.test.ts` 2 例：群内 cursor 与全局隔离、分页一致。
+- `apps/server/test/realtime.test.ts` +1 例：`subscribe afterSeq=eventCursor` 只回放其后的新事件。
+- `pnpm test` → 41 files / 283 tests 全过（本轮实际执行，后台任务 exit 0）。
+- `CI=true pnpm e2e` → 9 passed（成员任务页在 Agent 500 时仍显示、群组 Agent 隔离与跨群 400、eventCursor 断线重连无重复）。
+- `pnpm lint` / `pnpm typecheck` / `pnpm format:check` / `pnpm build` → exit 0。
+
+安全回归：未放宽系统级 Agent API（仍仅 owner/admin）；群组 Agent 查询要求当前用户为群组成员；创建/重新指派继续由服务端校验 Agent 群成员关系；Realtime 仍按群组与成员权限过滤；history 与 cursor 来自同一事务快照。
+
+剩余：任务页缺少 Agent 时的交互仅通过 Playwright 路由模拟验证；历史消息分页时 cursor 语义已覆盖，但前端未实现无限滚动自动翻页。
