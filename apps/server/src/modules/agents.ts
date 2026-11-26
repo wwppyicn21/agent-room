@@ -1,5 +1,12 @@
-import { and, desc, eq, isNull } from "drizzle-orm";
-import { agentKeys, type AgentKeyRow, type AgentRow, agents, agentSessions } from "@room/database";
+import { and, asc, desc, eq, isNull, ne } from "drizzle-orm";
+import {
+  agentKeys,
+  type AgentKeyRow,
+  type AgentRow,
+  agents,
+  agentSessions,
+  groupMembers,
+} from "@room/database";
 import { newId } from "@room/protocol";
 import { agentCapabilitiesSchema } from "@room/protocol";
 import type { RoomContext, RoomDb } from "./context.js";
@@ -7,7 +14,12 @@ import { recordAudit } from "./audit.js";
 import { ConflictError, NotFoundError, ValidationError, isUniqueViolation } from "./errors.js";
 import { appendEvent } from "./events.js";
 import { normalizeEd25519PublicKey } from "./keys.js";
-import { requireAgent, requireSystemAdmin, validateTitle } from "./permissions.js";
+import {
+  requireAgent,
+  requireGroupMember,
+  requireSystemAdmin,
+  validateTitle,
+} from "./permissions.js";
 
 export function registerAgent(
   ctx: RoomContext,
@@ -71,6 +83,36 @@ export function listAgents(
   requireSystemAdmin(ctx.db, input.actorUserId);
   const limit = Math.min(Math.max(input.limit ?? 50, 1), 200);
   return ctx.db.select().from(agents).orderBy(desc(agents.createdAt)).limit(limit).all();
+}
+
+export interface GroupAgentRow {
+  id: string;
+  displayName: string;
+  status: AgentRow["status"];
+}
+
+/**
+ * Lists the agents that a group member may assign tasks to in this group. The
+ * global agent list stays system-admin only; this view is scoped by membership.
+ */
+export function listGroupAgents(
+  ctx: RoomContext,
+  input: { groupId: string; viewerUserId: string },
+): GroupAgentRow[] {
+  requireGroupMember(ctx.db, input.groupId, { type: "user", id: input.viewerUserId });
+  return ctx.db
+    .select({ id: agents.id, displayName: agents.displayName, status: agents.status })
+    .from(groupMembers)
+    .innerJoin(agents, eq(groupMembers.memberId, agents.id))
+    .where(
+      and(
+        eq(groupMembers.groupId, input.groupId),
+        eq(groupMembers.memberType, "agent"),
+        ne(agents.status, "disabled"),
+      ),
+    )
+    .orderBy(asc(agents.displayName))
+    .all();
 }
 
 /**

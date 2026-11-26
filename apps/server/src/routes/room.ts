@@ -23,6 +23,7 @@ import {
   listThreadMessagesForAgent,
   postMessage,
 } from "../modules/messages.js";
+import { listGroupAgents } from "../modules/agents.js";
 import { closeThread, createThread, getThreadDetail, listThreads } from "../modules/threads.js";
 import {
   assignTask,
@@ -280,6 +281,12 @@ export function registerRoomRoutes(app: FastifyInstance, deps: RoomRouteDependen
     }>(request);
     removeMember(ctx, { groupId, actorUserId: actor.id, memberType, memberId });
     reply.code(204);
+  });
+
+  app.get("/api/v1/groups/:groupId/agents", async (request) => {
+    const actor = actorOf(request);
+    const { groupId } = params<{ groupId: string }>(request);
+    return { agents: listGroupAgents(ctx, { groupId, viewerUserId: actor.id }) };
   });
 
   app.get("/api/v1/groups/:groupId/messages", async (request) => {

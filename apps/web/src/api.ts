@@ -159,6 +159,12 @@ export interface Workspace {
   createdAt: number;
 }
 
+export interface GroupAgent {
+  id: string;
+  displayName: string;
+  status: Agent["status"];
+}
+
 export interface Agent {
   id: string;
   displayName: string;
@@ -338,6 +344,10 @@ export class ApiClient {
     memberId: string,
   ): Promise<{ removed: boolean }> {
     return this.delete(`/api/v1/groups/${groupId}/members/${memberType}/${memberId}`);
+  }
+
+  listGroupAgents(groupId: string): Promise<{ agents: GroupAgent[] }> {
+    return this.get(`/api/v1/groups/${groupId}/agents`);
   }
 
   listMessages(

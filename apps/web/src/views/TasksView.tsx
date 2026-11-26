@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
-import { ApiClient, type Agent, type Approval, type Group, type Task } from "../api";
+import { ApiClient, type Approval, type Group, type GroupAgent, type Task } from "../api";
 import { Badge, Button, Card, Empty, ErrorBanner, Field, Select, TextArea, TextInput } from "../ui";
 import { formatTime, shortId, statusLabel } from "../format";
 
@@ -15,7 +15,7 @@ export function TasksView({
   notify: (message: string) => void;
 }) {
   const [tasks, setTasks] = useState<Task[]>([]);
-  const [agents, setAgents] = useState<Agent[]>([]);
+  const [agents, setAgents] = useState<GroupAgent[]>([]);
   const [tasksError, setTasksError] = useState<string | null>(null);
   const [agentsError, setAgentsError] = useState<string | null>(null);
   const [selected, setSelected] = useState<Task | null>(null);
@@ -43,14 +43,14 @@ export function TasksView({
 
   const loadAgents = useCallback(async () => {
     try {
-      const result = await api.listAgents();
+      const result = await api.listGroupAgents(group.id);
       setAgents(result.agents);
       setAgentsError(null);
     } catch (err) {
       setAgents([]);
       setAgentsError(err instanceof Error ? err.message : String(err));
     }
-  }, [api]);
+  }, [api, group.id]);
 
   useEffect(() => {
     void loadTasks();

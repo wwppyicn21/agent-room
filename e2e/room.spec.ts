@@ -1,4 +1,5 @@
 import { expect, test, type APIRequestContext, type Page } from "@playwright/test";
+import { generateKeyPairSync } from "node:crypto";
 
 const API = "http://127.0.0.1:8787";
 const OWNER = "owner@example.com";
@@ -119,12 +120,84 @@ test("a member can load tasks even when the global agent list is forbidden", asy
     title,
   });
 
+  await page.route("**/api/v1/groups/*/agents", (route) =>
+    route.fulfill({
+      status: 500,
+      contentType: "application/json",
+      body: '{"error":{"code":"internal_error","message":"agents unavailable"}}',
+    }),
+  );
   await login(page, member);
   await openGroup(page, group.name);
   await page.getByRole("button", { name: "任务", exact: true }).click();
   await expect(page.getByText(title, { exact: true })).toBeVisible();
   await page.getByText("从群消息创建任务").click();
   await expect(page.getByText("Agent 列表不可用，任务仍可创建并稍后指派。")).toBeVisible();
+});
+
+test("keeps agent options scoped to the group and rejects cross-group assignment", async ({
+  page,
+  request,
+}) => {
+  const groupA = await createGroup(request);
+  const groupB = await createGroup(request);
+  async function registerAgent(name: string): Promise<{ id: string }> {
+    const { publicKey } = generateKeyPairSync("ed25519");
+    const result = await call(request, "POST", "/api/v1/agents", OWNER, {
+      displayName: name,
+      runtime: "test",
+      publicKey: publicKey.export({ type: "spki", format: "pem" }).toString(),
+    });
+    return result.agent;
+  }
+  const agentA = await registerAgent(`Agent A ${Date.now()}`);
+  const agentB = await registerAgent(`Agent B ${Date.now()}`);
+  await call(request, "POST", `/api/v1/groups/${groupA.id}/members`, OWNER, {
+    memberType: "agent",
+    memberId: agentA.id,
+  });
+  await call(request, "POST", `/api/v1/groups/${groupB.id}/members`, OWNER, {
+    memberType: "agent",
+    memberId: agentB.id,
+  });
+  const member = `member-${Date.now()}@example.com`;
+  const created = await call(request, "POST", "/api/v1/users", OWNER, {
+    displayName: "E2E Agent Scope Member",
+    email: member,
+    role: "member",
+  });
+  for (const group of [groupA, groupB]) {
+    await call(request, "POST", `/api/v1/groups/${group.id}/members`, OWNER, {
+      memberType: "user",
+      memberId: created.user.id,
+    });
+  }
+  const source = await call(request, "POST", `/api/v1/groups/${groupA.id}/messages`, OWNER, {
+    content: "source for agent scope",
+  });
+  const title = `scoped task ${Date.now()}`;
+  const task = await call(request, "POST", `/api/v1/groups/${groupA.id}/tasks`, OWNER, {
+    sourceMessageId: source.message.id,
+    title,
+  });
+
+  const scoped = await call(request, "GET", `/api/v1/groups/${groupA.id}/agents`, member);
+  expect(scoped.agents.map((agent: { id: string }) => agent.id)).toEqual([agentA.id]);
+
+  await login(page, member);
+  await openGroup(page, groupA.name);
+  await page.getByRole("button", { name: "任务", exact: true }).click();
+  await page.getByText("从群消息创建任务").click();
+  const options = page.getByLabel("指派 Agent").locator("option");
+  await expect(options.filter({ hasText: "Agent B" })).toHaveCount(0);
+  await expect(options.filter({ hasText: "Agent A" })).toHaveCount(1);
+
+  const denied = await request.fetch(`${API}/api/v1/tasks/${task.task.id}/assign`, {
+    method: "POST",
+    headers: { "x-dev-user-email": OWNER, "content-type": "application/json" },
+    data: { agentId: agentB.id },
+  });
+  expect(denied.status()).toBe(400);
 });
 
 test("creates and opens a thread and a task from a group message", async ({ page, request }) => {
