@@ -7,7 +7,7 @@ import { buildApp } from "../src/app.js";
 import { newId } from "@room/protocol";
 import { registerAgent } from "../src/modules/agents.js";
 import { addMember } from "../src/modules/groups.js";
-import { postMessage } from "../src/modules/messages.js";
+import { listMessages, postMessage } from "../src/modules/messages.js";
 import { createTestRoom, seedGroup, seedUser, type TestRoom } from "./helpers.js";
 
 interface TestSocket {
@@ -230,6 +230,37 @@ describe("browser realtime", () => {
     const second = await connect(harness, ticket);
     const closed = await second.closeEvent();
     expect(closed.code).toBe(1008);
+  });
+
+  it("replays events after the message history event cursor", async () => {
+    const harness = await setup();
+    const first = postMessage(harness.room.ctx, {
+      groupId: harness.groupId,
+      actor: { type: "user", id: harness.owner },
+      content: "before the cursor",
+    });
+    const history = listMessages(harness.room.ctx, {
+      groupId: harness.groupId,
+      viewer: { type: "user", id: harness.owner },
+    });
+    expect(history.eventCursor).toBeGreaterThan(0);
+    expect(history.items.map((item) => item.id)).toContain(first.id);
+
+    const ticket = await issueTicket(harness, harness.owner);
+    const frames = await connect(harness, ticket);
+    await frames.nextOf("hello");
+    frames.send({ type: "subscribe", groupId: harness.groupId, afterSeq: history.eventCursor });
+    await frames.nextOf("subscribed");
+
+    const second = postMessage(harness.room.ctx, {
+      groupId: harness.groupId,
+      actor: { type: "user", id: harness.owner },
+      content: "after the cursor",
+    });
+    const event = await frames.nextOf("event");
+    const delivered = event.event as { seq: number; payload: { messageId?: string } };
+    expect(delivered.seq).toBeGreaterThan(history.eventCursor);
+    expect(delivered.payload.messageId).toBe(second.id);
   });
 
   it("sends an agent presence snapshot and updates it on connect", async () => {

@@ -353,7 +353,7 @@ export class ApiClient {
   listMessages(
     groupId: string,
     options: { limit?: number; cursor?: number } = {},
-  ): Promise<{ items: Message[]; nextCursor: number | null }> {
+  ): Promise<{ items: Message[]; nextCursor: number | null; eventCursor: number }> {
     return this.get(`/api/v1/groups/${groupId}/messages${queryString(options)}`);
   }
 

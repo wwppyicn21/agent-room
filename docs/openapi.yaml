@@ -187,6 +187,28 @@ paths:
         "201": { description: Member added }
         "403": { $ref: "#/components/responses/Error" }
         "409": { $ref: "#/components/responses/Error" }
+  /api/v1/groups/{groupId}/agents:
+    parameters:
+      - $ref: "#/components/parameters/groupId"
+    get:
+      summary: List assignable agents in this group (group members)
+      responses:
+        "200":
+          description: Group-scoped agents; excludes disabled agents
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  agents:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        id: { type: string }
+                        displayName: { type: string }
+                        status: { type: string }
+        "403": { $ref: "#/components/responses/Error" }
   /api/v1/agents:
     get:
       summary: List agents with live online flag (system owner/admin)
@@ -282,6 +304,10 @@ paths:
                 properties:
                   items: { type: array, items: { $ref: "#/components/schemas/Message" } }
                   nextCursor: { type: integer, nullable: true }
+                  eventCursor:
+                    type: integer
+                    description: Latest events.seq for this group in the same snapshot as items; use it as the realtime afterSeq.
+                required: [items, nextCursor, eventCursor]
     post:
       summary: Post a message
       requestBody:

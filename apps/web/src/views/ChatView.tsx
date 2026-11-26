@@ -35,7 +35,7 @@ export function ChatView({ api, me, group, notify, onError }: ChatViewProps) {
   const [replyTo, setReplyTo] = useState<Message | null>(null);
   const [sending, setSending] = useState(false);
   const [state, setState] = useState<"connecting" | "open" | "closed">("connecting");
-  const lastSeq = useRef(0);
+  const [eventCursor, setEventCursor] = useState<number | null>(null);
   const onErrorRef = useRef(onError);
   onErrorRef.current = onError;
   const bottomRef = useRef<HTMLDivElement | null>(null);
@@ -47,6 +47,7 @@ export function ChatView({ api, me, group, notify, onError }: ChatViewProps) {
         api.listMembers(group.id),
       ]);
       setMessages(history.items);
+      setEventCursor(history.eventCursor);
       setMembers(memberList.members);
     } catch (err) {
       onError(err);
@@ -56,14 +57,12 @@ export function ChatView({ api, me, group, notify, onError }: ChatViewProps) {
   useEffect(() => {
     setMessages([]);
     setReplyTo(null);
+    setEventCursor(null);
     void load();
   }, [load]);
 
   useEffect(() => {
-    lastSeq.current = messages.at(-1)?.seq ?? 0;
-  }, [messages]);
-
-  useEffect(() => {
+    if (eventCursor === null) return;
     let client: RealtimeClient | null = null;
     const timer = setTimeout(() => {
       client = new RealtimeClient(
@@ -125,7 +124,7 @@ export function ChatView({ api, me, group, notify, onError }: ChatViewProps) {
             setState(next);
           },
         },
-        lastSeq.current,
+        eventCursor,
       );
       if (import.meta.env.DEV) {
         (window as unknown as { __roomRealtime?: RealtimeClient }).__roomRealtime = client;
@@ -139,7 +138,7 @@ export function ChatView({ api, me, group, notify, onError }: ChatViewProps) {
       }
       client?.close();
     };
-  }, [api, group.id]);
+  }, [api, group.id, eventCursor]);
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });

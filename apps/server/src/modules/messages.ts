@@ -1,6 +1,7 @@
-import { and, asc, desc, eq, gt, isNull, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gt, isNull, max, sql } from "drizzle-orm";
 import {
   agents,
+  events,
   messages,
   type MessageRow,
   tasks,
@@ -343,26 +344,39 @@ export interface ListMessagesInput {
 export function listMessages(
   ctx: RoomContext,
   input: ListMessagesInput,
-): { items: MessageRow[]; nextCursor: number | null } {
+): { items: MessageRow[]; nextCursor: number | null; eventCursor: number } {
   const limit = Math.min(Math.max(input.limit ?? 50, 1), 100);
   requireGroupMember(ctx.db, input.groupId, input.viewer);
   const cursor = input.cursor ?? 0;
-  const items = ctx.db
-    .select()
-    .from(messages)
-    .where(
-      and(
-        eq(messages.groupId, input.groupId),
-        isNull(messages.threadId),
-        gt(messages.seq, cursor),
-        isNull(messages.deletedAt),
-      ),
-    )
-    .orderBy(asc(messages.seq))
-    .limit(limit)
-    .all();
+  const { items, eventCursor } = ctx.db.transaction((transaction) => {
+    const db = transaction as unknown as RoomDb;
+    const page = db
+      .select()
+      .from(messages)
+      .where(
+        and(
+          eq(messages.groupId, input.groupId),
+          isNull(messages.threadId),
+          gt(messages.seq, cursor),
+          isNull(messages.deletedAt),
+        ),
+      )
+      .orderBy(asc(messages.seq))
+      .limit(limit)
+      .all();
+    const cursorRow = db
+      .select({ value: max(events.seq) })
+      .from(events)
+      .where(eq(events.groupId, input.groupId))
+      .get();
+    return { items: page, eventCursor: cursorRow?.value ?? 0 };
+  });
   const last = items.at(-1);
-  return { items, nextCursor: items.length === limit && last ? last.seq : null };
+  return {
+    items,
+    nextCursor: items.length === limit && last ? last.seq : null,
+    eventCursor,
+  };
 }
 
 export interface ListThreadMessagesInput {

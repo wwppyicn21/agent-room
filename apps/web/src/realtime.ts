@@ -52,6 +52,10 @@ export class RealtimeClient {
     this.socket?.close(1000, "test drop");
   }
 
+  cursor(): number {
+    return this.afterSeq;
+  }
+
   close(): void {
     this.closed = true;
     this.clearTimers();
