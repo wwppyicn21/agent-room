@@ -200,6 +200,53 @@ test("keeps agent options scoped to the group and rejects cross-group assignment
   expect(denied.status()).toBe(400);
 });
 
+test("uses the event cursor for realtime replay without gaps or duplicates", async ({
+  page,
+  request,
+}) => {
+  const groupA = await createGroup(request);
+  const groupB = await createGroup(request);
+  for (let index = 0; index < 8; index += 1) {
+    await call(request, "POST", `/api/v1/groups/${groupB.id}/messages`, OWNER, {
+      content: `noise ${index}`,
+    });
+  }
+  await call(request, "POST", `/api/v1/groups/${groupA.id}/messages`, OWNER, {
+    content: "history one",
+  });
+  const second = await call(request, "POST", `/api/v1/groups/${groupA.id}/messages`, OWNER, {
+    content: "history two",
+  });
+  const history = await call(
+    request,
+    "GET",
+    `/api/v1/groups/${groupA.id}/messages?limit=50`,
+    OWNER,
+  );
+  expect(history.eventCursor).toBeGreaterThan(second.message.seq);
+
+  await login(page);
+  await openGroup(page, groupA.name);
+  await expect(page.getByText("实时已连接")).toBeVisible();
+  const cursor = await page.evaluate(() =>
+    (window as unknown as { __roomRealtime: { cursor(): number } }).__roomRealtime.cursor(),
+  );
+  expect(cursor).toBeGreaterThanOrEqual(history.eventCursor);
+  await expect(page.getByText("noise 0", { exact: true })).toHaveCount(0);
+
+  const live = `live ${Date.now()}`;
+  await call(request, "POST", `/api/v1/groups/${groupA.id}/messages`, OWNER, { content: live });
+  await expect(page.getByText(live, { exact: true })).toHaveCount(1);
+  await page.evaluate(() => {
+    (
+      window as unknown as { __roomRealtime: { dropConnection(): void } }
+    ).__roomRealtime.dropConnection();
+  });
+  await expect(page.getByText("实时已连接")).toBeVisible({ timeout: 30_000 });
+  await page.waitForTimeout(500);
+  await expect(page.getByText(live, { exact: true })).toHaveCount(1);
+});
+
 test("creates and opens a thread and a task from a group message", async ({ page, request }) => {
   const group = await createGroup(request);
   const source = await call(request, "POST", `/api/v1/groups/${group.id}/messages`, OWNER, {
