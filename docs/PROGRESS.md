@@ -7,11 +7,11 @@
 | M0–M5 | 完成；M5 于 2026-11-25 验收（215 tests） |
 | M6 DSH Plugin | 实现与实机协议验证完成；bundle 已安装/启用，真实 Room 消息 → DSH Session → 回复链路通过；**卸载/更新实机验收未关闭** |
 | M7 Codex Plugin | 未开始（用户交由 ChatGPT 开发）；服务端 Agent Room Tools HTTP 已就绪 |
-| M8 React Web Client | UI 未开始；服务端前置已完成（实时 WebSocket、presence、Delivery 诊断、用户管理） |
+| M8 React Web Client | 实现完成（2026-11-26）：登录、群组/群聊、实时消息与 presence、Thread、Task/Approval、成员/角色、Agent/Key、用户、设置、Delivery 诊断、事件历史；无浏览器 E2E |
 | M9 Deployment | 未开始 |
 
-验证基线：**33 files / 249 tests**；`lint` / `typecheck` / `format:check` / `build` 全部通过；
-远端 `origin/main = 98d1ba2`。
+验证基线：**37 files / 260 tests**；`lint` / `typecheck` / `format:check` / `build` 全部通过；
+M8 UI 代码提交见文末「M8」一节。
 
 服务端前置提交：`9dae94e`（浏览器实时 WebSocket）、`783ead7`（Agent HTTP Room Tools）、
 `1432b42`（Delivery 诊断 + Agent Presence）、`8b30fed`（用户管理端点）。
@@ -935,3 +935,58 @@ OpenAPI 与 AUTH §13 已同步；代码提交：`783ead7`。
 - Agent 禁用不撤销其 Key，也不清理已 ack 的 Delivery；恢复后需重新连接。
 - 消息删除不追溯已投递 Delivery，也不删除引用它的 Thread/Task；客户端需按事件刷新。
 - 成员角色变更不转移 Group 所有权语义，也不影响系统角色。
+
+
+## M8：React Web Client（2026-11-26）
+
+状态：**实现完成**（无浏览器 E2E；生产静态托管属 M9）。
+
+### 做了什么
+
+- `apps/web`：React 19 + Vite 8；Vite `/api` 代理到 `127.0.0.1:8787`（含 WebSocket upgrade）。
+- 登录：`GET /api/v1/auth-info` 区分 dev / access；dev 使用 `x-dev-user-email`，access 依赖 Cloudflare Access。
+- 群组：列表/创建/切换（localStorage 记忆）、群聊历史（seq 分页）、发送、回复、软删除。
+- 实时：`RealtimeClient` 一次性 ticket → `/api/v1/realtime/ws`，Group 订阅、`events.seq` 续传、
+  `presence` 在线 Agent、指数退避重连、20s ping；消息按 id 去重合并。
+- Thread：列表/状态过滤、详情（来源消息、消息数、Task）、Thread 消息、事件日志、从群消息创建、关闭。
+- Task：列表/状态过滤、从群消息创建、分配、暂停/恢复/取消、审批列表与批准/拒绝。
+- 管理：成员添加/角色/移除；Agent 注册、禁用/启用、Key 列表/添加/吊销；用户创建/角色/禁用/启用；
+  群组设置（participationMode、allowAgentMessages、hop/回复预算/限流）；Workspace 创建。
+- 诊断：Delivery 状态统计与分页列表、事件历史（字符串 cursor）。
+- 服务端增强：`GET /api/v1/auth-info`；成员列表返回 `displayName/status/online`；OpenAPI 0.7.0。
+
+### 验收对照
+
+| 验收项 | 结果 | 证据 |
+|---|---|---|
+| Login | PASS | dev 邮箱登录 / auth-info；`api.test.ts` |
+| Group List / Chat | PASS | App 群组侧栏 + ChatView；手工 smoke |
+| Real-time Message | PASS | `realtime.test.ts`；Vite 代理 smoke 200 |
+| Message History | PASS | `listMessages` seq 分页；刷新重新拉取 |
+| Thread / Task / Approval | PASS | ThreadsView / TasksView；REST 端点已由服务端测试覆盖 |
+| Agent Status | PASS | presence 帧 + members online；`realtime.test.ts` |
+| Agent / User / Role Management | PASS | AgentsView / UsersView / MembersView |
+| Group Isolation | PASS | 所有请求带 groupId，服务端成员校验；server 测试覆盖 |
+| WebSocket Reconnect / Recovery | PASS | 退避重连；刷新后历史重拉；无浏览器 E2E |
+| API Contract Tests | PASS | `apps/server/test/openapi-contract.test.ts`；web `api.test.ts` |
+| 所有测试通过 | PASS | 37 files / 260 tests |
+| 文档更新 | PASS | 本文、README、PLAN、ROADMAP、WEB_CLIENT |
+
+### 验证
+
+- `pnpm lint`、`pnpm typecheck`、`pnpm format:check`、`pnpm test`（37 files / 260 tests）、`pnpm build` 全过。
+- 手工 smoke：dev server + `vite dev`，`GET /` 200、`/api/v1/auth-info` 返回 `{"authMode":"dev"}`、
+  `/api/v1/me` 200（经 Vite 代理）。
+- Web 单测：`apps/web/test/api.test.ts` 4、`state.test.ts` 2、`realtime.test.ts` 1。
+- 代码提交：`d42ca42`（Web + Server 增强）。
+- 同时修复 DSH Plugin 回复竞态（`fa573e9`）：pending turn 现在在持久化 `completed` 之前注册，
+  避免 `assistant/message` / `turn/end` 在 store 写入期间到达而被丢弃；integration 测试在 emit
+  前等待 delivery completed。
+
+### 已知边界
+
+- 无 react-router / 深链；无 Playwright 等浏览器 E2E。
+- Task 细粒度 run progress 无独立 REST 端点，UI 展示 Task 状态与摘要。
+- 附件上传/下载未实现；生产静态托管、同源部署属 M9。
+- realtime ticket / presence 为单进程内存实现。
+- M6 卸载/更新实机验收、M7、M9 仍未完成。

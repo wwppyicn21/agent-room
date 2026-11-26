@@ -1615,7 +1615,15 @@ Plugin 侧 Room Tools 封装仍属 M7。
 
 - 浏览器 WebSocket：`POST /api/v1/realtime/ticket` 换取一次性 ticket，连接
   `/api/v1/realtime/ws`；订阅一个 Group，从 `events.seq` 断点续传；支持 ping/unsubscribe；
-- 细节与已知边界见 `docs/REALTIME.md`；React UI 本身尚未开始。
+- 细节与已知边界见 `docs/REALTIME.md`。
+
+### 实现状态（2026-11-26）
+
+- `apps/web` 已实现登录、群组/群聊、实时消息与 presence、Thread、Task/Approval、成员/角色、
+  Agent/Key、用户、群组设置、Workspace、Delivery 诊断与事件历史；
+- 运行：`pnpm --filter @room/web dev`（Vite `/api` 代理到 8787）；
+- 测试 37 files / 260 tests；Web 单测 7 例；无浏览器 E2E，生产静态托管属 M9；
+- 细节见 `docs/WEB_CLIENT.md`。
 - Delivery 诊断：`GET /api/v1/groups/:groupId/deliveries` 与 `/stats`（owner/admin）；
 - Agent Presence：浏览器实时通道的 `presence` 帧（Group 内 Agent 快照与在线 lease）。
 
@@ -1936,7 +1944,7 @@ M9  Cloudflare + Mini PC 原生部署、SQLite 备份/恢复、JSON 数据导入
 | M5 | 完成（2026-11-25：Thread / Task / Approval / 摘要回流 / REST + Review Fix 2 / 3 / 3A / 3B / 3C / 4；215 tests） | 8df761a | lint / typecheck / format / 215 tests / build 全过；Thread 定向投递、审批过期竞态、Agent 恢复、Workspace Policy、Group 权限撤销、审批过期 assignee 定向投递、Message 幂等一致性、Task 转换并发守卫、持久化 Agent 取消指令 / ACK、OpenAPI Cursor 契约实测 | 记录见 docs/PROGRESS.md「M5」「M5 Review Fix」「M5 Review Fix 2」「M5 Review Fix 3」「M5 Review Fix 3A」「M5 Review Fix 3B」「M5 Review Fix 3C」「M5 Review Fix 4」；Web UI 属 M8，DSH/Codex Plugin 属 M6/M7 |
 | M6 | 实现完成并实机验证（2026-11-25：DSH Plugin bundle、显式 Session 映射、Message/Thread/Task 上下文、Delivery 幂等、重连恢复；230 tests）；卸载/更新实机验收未关闭 | 12c12ea | lint / typecheck / format / 230 tests / build 全过；插件单测 14 + 真实 Room 端到端 1；web profile 安装、真实消息→Session→回复实测 | 记录见 docs/PROGRESS.md「M6」「实机验证」与 docs/DSH_PLUGIN.md；安装保留、映射清空、插件禁用；卸载/更新未实测 |
 | M7 | 未开始（由 ChatGPT 开发）；服务端 Agent Room Tools HTTP 已提供 | | | |
-| M8 | UI 未开始；服务端前置完成（realtime / Agent HTTP tools / delivery 诊断 / presence / user admin） | 9dae94e | 249 tests 全过；realtime 7 例、agent tools 4 例、delivery 诊断 4 例、presence 1 例、user admin 3 例 | 代码提交 9dae94e、783ead7、1432b42、8b30fed；详见 docs/PROGRESS.md 各节 |
+| M8 | 实现完成（2026-11-26：React Web Client，登录/群组/群聊/实时/Thread/Task/Approval/管理/诊断；无浏览器 E2E，生产托管属 M9） | d42ca42 | lint / typecheck / format / 260 tests / build 全过；vite dev + dev server 手工 smoke（index 200、auth-info、/me 代理） | 记录见 docs/PROGRESS.md「M8」与 docs/WEB_CLIENT.md；Web 单测 7 例 |
 | M9 | 未开始 | | | |
 
 ---

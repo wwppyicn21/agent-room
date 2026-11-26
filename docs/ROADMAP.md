@@ -152,7 +152,7 @@ Agent Room 是独立的 Agent 协作中心。
 | M5 | Thread / Task Engine | Completed (M5 Review Fix 3 / 3A, 2026-11-24) |
 | M6 | DSH Plugin | In progress — implementation & live protocol verified; uninstall/update acceptance open |
 | M7 | Codex Plugin | Planned |
-| M8 | Web Client | Planned — server prerequisites completed; UI not started |
+| M8 | Web Client | In progress — web UI implemented (37 files / 260 tests); browser E2E and production serving pending |
 | M9 | Deployment / Migration | Planned |
 
 开发必须按照依赖顺序进行。
@@ -1019,24 +1019,26 @@ WebSocket 支持：
 
 ## 7.4 Acceptance Criteria
 
-- [ ] Login；
-- [ ] Group List；
-- [ ] Group Chat；
-- [ ] Real-time Message；
-- [ ] Message History；
-- [ ] Thread；
-- [ ] Task；
-- [ ] Approval；
-- [ ] Agent Status；
-- [ ] Agent Management；
-- [ ] User Management；
-- [ ] Role Management；
-- [ ] Group Isolation；
-- [ ] WebSocket Reconnect；
-- [ ] Recovery；
-- [ ] API Contract Tests；
-- [ ] 所有测试通过；
-- [ ] 文档更新。
+- [x] Login；
+- [x] Group List；
+- [x] Group Chat；
+- [x] Real-time Message；
+- [x] Message History；
+- [x] Thread；
+- [x] Task；
+- [x] Approval；
+- [x] Agent Status；
+- [x] Agent Management；
+- [x] User Management；
+- [x] Role Management；
+- [x] Group Isolation；
+- [x] WebSocket Reconnect；
+- [x] Recovery；
+- [x] API Contract Tests；
+- [x] 所有测试通过；
+- [x] 文档更新。
+
+说明：Task 细粒度 run progress 尚无独立 REST 端点，UI 展示 Task 状态与摘要；浏览器 E2E 未引入；生产静态托管属 M9。
 
 ---
 

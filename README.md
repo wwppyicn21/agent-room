@@ -6,9 +6,9 @@
 
 ## 状态
 
-**M6 实现完成、协议与实机链路已验证**（2026-11-25；卸载/更新实机验收未关闭）：M1 骨架、M2 Room Core、M3 身份认证（Dev Auth / Cloudflare Access、RBAC、Owner bootstrap、Ed25519 Agent 密钥、Challenge/Response、Agent WSS、在线租约、durable inbox/ack）、M4 AI 自主群聊（participationMode、在线投递、Agent reply/skip、hop / 每 root 回复预算 / 每分钟限流、防自我触发与群组隔离）、M5 Thread / Task Engine（Thread 详情与隔离消息流 / 日志、Thread 消息定向投递、Task 状态机、Progress、Pause/Resume/Cancel、Approval 过期一致性 / assignee 定向投递、Workspace Policy、Agent 重启恢复、Agent Group 权限撤销、Message 幂等一致性、Task 转换并发守卫、持久化 Agent 取消指令 / ACK、结果/失败摘要回流、REST API + OpenAPI 契约测试）与 Agent SDK 已就绪；M6 DSH Plugin 提供显式 Group→Session 映射、Message/Thread/Task 上下文桥接、持久化 Delivery 幂等与重连恢复，并已在 web profile 实机验证；**34 个测试文件 / 253 个测试通过**。M8 服务端前置（浏览器实时 WebSocket、Agent HTTP Room Tools、Delivery 诊断、Agent Presence、用户管理）已完成，React Web UI 未开始。
+**M6 实现完成、协议与实机链路已验证**（2026-11-25；卸载/更新实机验收未关闭）：M1 骨架、M2 Room Core、M3 身份认证（Dev Auth / Cloudflare Access、RBAC、Owner bootstrap、Ed25519 Agent 密钥、Challenge/Response、Agent WSS、在线租约、durable inbox/ack）、M4 AI 自主群聊（participationMode、在线投递、Agent reply/skip、hop / 每 root 回复预算 / 每分钟限流、防自我触发与群组隔离）、M5 Thread / Task Engine（Thread 详情与隔离消息流 / 日志、Thread 消息定向投递、Task 状态机、Progress、Pause/Resume/Cancel、Approval 过期一致性 / assignee 定向投递、Workspace Policy、Agent 重启恢复、Agent Group 权限撤销、Message 幂等一致性、Task 转换并发守卫、持久化 Agent 取消指令 / ACK、结果/失败摘要回流、REST API + OpenAPI 契约测试）与 Agent SDK 已就绪；M6 DSH Plugin 提供显式 Group→Session 映射、Message/Thread/Task 上下文桥接、持久化 Delivery 幂等与重连恢复，并已在 web profile 实机验证；**37 个测试文件 / 260 个测试通过**。M8 React Web Client（`apps/web`）已实现：登录（dev / Access）、群组列表与群聊、实时消息与在线 Agent、Thread、Task Board 与审批、成员/角色、Agent 与 Key 管理、用户管理、群组设置、Delivery 诊断与事件历史。
 
-REST API（groups / messages / threads / tasks / approvals / workspaces / events / delivery 诊断 + Agent 恢复端点 + Agent HTTP Room Tools）见 `docs/openapi.yaml`；React Web UI 属 M8；DSH Plugin（`adapters/dsh-plugin`，显式 Group→Session 映射、Delivery 幂等、恢复）见 `docs/DSH_PLUGIN.md`；浏览器实时 WebSocket（一次性 ticket、Group 订阅、`events.seq` 断点续传）见 `docs/REALTIME.md`。Agent 通过已认证的 WebSocket 接收事件并发送消息；Task 执行端点（start / progress / complete / approvals）与 Agent 恢复端点（active tasks / thread history）接受 Agent Bearer 会话 token。
+REST API（groups / messages / threads / tasks / approvals / workspaces / events / delivery 诊断 + Agent 恢复端点 + Agent HTTP Room Tools）见 `docs/openapi.yaml`；React Web UI 属 M8；DSH Plugin（`adapters/dsh-plugin`，显式 Group→Session 映射、Delivery 幂等、恢复）见 `docs/DSH_PLUGIN.md`；浏览器实时 WebSocket（一次性 ticket、Group 订阅、`events.seq` 断点续传）见 `docs/REALTIME.md`；React Web Client 见 `docs/WEB_CLIENT.md`。Agent 通过已认证的 WebSocket 接收事件并发送消息；Task 执行端点（start / progress / complete / approvals）与 Agent 恢复端点（active tasks / thread history）接受 Agent Bearer 会话 token。
 
 ## 快速开始
 
@@ -16,6 +16,9 @@ REST API（groups / messages / threads / tasks / approvals / workspaces / events
 pnpm install
 pnpm db:init          # 建库并执行 Drizzle migration
 pnpm dev              # 开发模式，默认 http://127.0.0.1:8787
+
+# 另一个终端：Web 客户端
+pnpm --filter @room/web dev   # http://127.0.0.1:5173，/api 代理到 8787
 ```
 
 生产式启动：

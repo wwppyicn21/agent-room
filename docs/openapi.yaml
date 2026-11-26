@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: Agent Room API
-  version: 0.6.0
+  version: 0.7.0
   description: |
     M5 surface: groups, messages, threads, tasks, approvals and events.
     M8 server prerequisite: one-time tickets for the browser realtime WebSocket
@@ -15,6 +15,20 @@ security:
   - accessJWT: []
   - devUser: []
 paths:
+  /api/v1/auth-info:
+    get:
+      summary: Authentication mode for the web client
+      security: []
+      responses:
+        "200":
+          description: Current authentication mode
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [authMode]
+                properties:
+                  authMode: { type: string, enum: [dev, access] }
   /api/v1/me:
     get:
       summary: Current user and server identity
