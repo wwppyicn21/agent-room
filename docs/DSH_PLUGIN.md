@@ -73,17 +73,27 @@ Room event.deliver (message.created)
 - 回复使用 `clientMessageId = plugin-reply-<eventId>`，Room 侧幂等；
 - `task.cancel` 控制指令会调用 `sessionController.cancel({sessionId})`，并清除待回复 turn。
 
-## 4. Delivery 幂等与恢复
+## 4. Delivery 幂等、PendingTurn 与恢复
 
-状态持久化在 `dataDir/deliveries.json`（原子 `tmp` + `rename`，`0600`）：
+状态持久化在 `dataDir/deliveries.json`（StoreFile v2：`deliveries` + `turns`；所有写经
+Promise queue 串行化，唯一临时文件 + 原子 rename，`0600`；启动时清理残留 tmp）：
 
-- `completed`：重复投递直接 ack，不重复 Prompt；
-- `processing`：进程崩溃后由 Room 重投，`requestId` 由 eventId 派生，DSH 侧天然去重；
-- `failed`：记录原因并 ack，等待管理员修复映射/身份后由 Room 侧重新投递；
-- `pending`：正常执行。
+- Delivery 状态：`pending` / `processing` / `completed` / `failed`；`completed` 重复投递
+  直接 ack，不重复 Prompt；
+- PendingTurn：Prompt 前写入 `prompting`（含 requestId、eventId、session、group、thread、
+  来源 message、prompt 文本），Prompt 接受后转 `awaiting_response`，收到 `turn/end` 并
+  成功写回 Room 后转 `completed`；`[skip]` / 异常也落终态；
+- 回复统一使用 `clientMessageId = plugin-reply-<eventId>`，Room 侧幂等；Prompt 使用
+  `requestId = room-<eventId>`，DSH 侧去重；
+- 重启恢复：连接成功后读取 `sessionQuery.readSession()` 快照，用
+  `user/message.data.source.rpcId === requestId` 判断 Prompt 是否已进入 Session；已结束
+  则直接提取 assistant 文本写回（同 clientMessageId），未结束则恢复 waiter，尚未进入
+  且 state=prompting 时用同一 requestId 重试；
+- 保留期：`deliveryRetentionDays`（默认 30）只清理已终态记录；`pending` / `processing` /
+  `awaiting_response` 永不清理；加载时执行清理。
 
-Socket 断开时插件按 0.5s–30s 指数退避重连；每次 `hello` 后 SDK 会重投未 ack 的
-Delivery，并调用 `onRecover` 恢复当前 Agent 仍拥有的 Task 映射。
+语义是 at-least-once + 幂等副作用，不承诺 exactly-once。Socket 断开时按 0.5s–30s
+指数退避重连；每次 `hello` 后 SDK 会重投未 ack 的 Delivery 并调用 `onRecover`。
 
 ## 5. 状态与日志
 

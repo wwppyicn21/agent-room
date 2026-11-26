@@ -366,6 +366,9 @@ export function removeMember(
       createdAt: now,
     });
   });
+  if (memberType === "user") {
+    ctx.realtime?.revokeGroup(input.groupId, input.memberId, "membership_revoked");
+  }
 }
 
 export function updateGroupAISettings(

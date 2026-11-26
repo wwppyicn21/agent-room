@@ -990,3 +990,31 @@ OpenAPI 与 AUTH §13 已同步；代码提交：`783ead7`。
 - 附件上传/下载未实现；生产静态托管、同源部署属 M9。
 - realtime ticket / presence 为单进程内存实现。
 - M6 卸载/更新实机验收、M7、M9 仍未完成。
+
+## 质量整改（2026-11-26）
+
+针对 M8 后代码审查的专项整改（未开始 M9）：
+
+| 项目 | 结果 | 证据 |
+|---|---|---|
+| WebSocket 权限撤销 | PASS | `RealtimeHub` 连接登记；`users.disableUser` 关闭全部连接、`groups.removeMember` 撤销订阅；每轮推送前复核用户/成员；`realtime-revocation.test.ts` 9 例 |
+| Ticket 二次验证 | PASS | 兑换时重查 `users.status`；禁用后旧 ticket 1008；测试覆盖 |
+| PendingTurn 持久化 | PASS | `deliveries.json` v2 保存 turn；`store.test.ts` 5 例（并发/残留 tmp/保留期/v1 迁移） |
+| 插件重启恢复 | PARTIAL | `bridge.test.ts` 17 例含等待中重启、已结束未写回、completed 不重放；at-least-once + 幂等，不承诺 exactly-once |
+| DeliveryStore 并发安全 | PASS | 写串行化、唯一临时文件、原子替换；并发测试通过 |
+| 历史记录清理 | PASS | `deliveryRetentionDays`（默认 30）仅清终态；未完成记录保留 |
+| GitHub Actions | PARTIAL | Install 历史失败根因为 lockfile/依赖不一致，`0948c7c` 修复；本次新增 Playwright 步骤待推送后 CI 验证 |
+| WebSocket Origin | PASS | `REALTIME_ALLOWED_ORIGINS`；无 Origin 的 CLI 允许但仍需 ticket；测试覆盖 |
+| Playwright E2E | PASS | 6 例：登录、授权 Group、群聊、重连补偿、重复消息、Thread/Task、移除成员后不可读；`--repeat-each 2` 12 通过 |
+| 文档同步 | PASS | 本节、README、REALTIME、DSH_PLUGIN、env 示例、`QUALITY_REVIEW_REMEDIATION.md` |
+
+实际执行：
+
+- `pnpm test` → 39 files / 277 tests 全过；
+- `pnpm exec playwright test` → 6 passed（`--repeat-each 2` → 12 passed）；
+- `pnpm lint` / `pnpm typecheck` / `pnpm format:check` / `pnpm build` → exit 0。
+
+数据库：本次整改未修改 SQLite schema；插件 `deliveries.json` v1→v2 兼容读取。
+
+剩余：插件恢复的 exactly-once 语义、周期清理、多实例共享限流、Cloudflare Origin 实测、
+M6 卸载/更新验收、M7、M9。

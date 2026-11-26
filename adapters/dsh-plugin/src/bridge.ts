@@ -15,7 +15,7 @@ import {
   resolvePluginConfig,
 } from "./config.js";
 import { ensureAgentKey, type AgentKeyPair } from "./keys.js";
-import { DeliveryStore } from "./store.js";
+import { DeliveryStore, type PendingTurnRecord } from "./store.js";
 
 export interface DshLogger {
   info(message: string): void;
@@ -86,12 +86,7 @@ export interface BridgeDeps {
   now?: () => number;
 }
 
-interface PendingTurn {
-  eventId: string;
-  groupId: string;
-  threadId: string | null;
-  replyToMessageId: string | null;
-  text: string;
+interface PendingTurn extends PendingTurnRecord {
   timer: ReturnType<typeof setTimeout> | null;
 }
 
@@ -114,6 +109,7 @@ export class RoomBridge {
   private readonly validSessions = new Set<string>();
   private readonly pendingBySession = new Map<string, PendingTurn[]>();
   private readonly taskSessions = new Map<string, string>();
+  private recovering = false;
   private client: RoomClientLike | null = null;
   private keys: AgentKeyPair | null = null;
   private agentId: string | null = null;
@@ -166,6 +162,7 @@ export class RoomBridge {
       this.logger.warn("agent-room: no group -> session mappings configured; bridging is idle");
     }
     await this.store.load();
+    await this.store.prune({ retentionDays: this.config.deliveryRetentionDays });
     const keyPath = this.config.agentKeyPath || join(this.dataDirectory, "agent-key.pem");
     this.keys = await ensureAgentKey(keyPath);
     this.logger.info(
@@ -226,6 +223,7 @@ export class RoomBridge {
     this.connected = true;
     this.lastError = null;
     this.reconnectAttempts = 0;
+    void this.recoverPendingTurns();
     this.logger.info(
       `agent-room: connected as ${hello.agentId} with ${this.mappings.size} group mapping(s)`,
     );
@@ -342,59 +340,79 @@ export class RoomBridge {
         return;
       }
     }
-    await this.store.begin(event.eventId);
-    await this.store.markProcessing(event.eventId);
+    const requestId = `room-${event.eventId}`;
+    const previous = this.store.getTurn(event.eventId);
+    if (previous?.state === "awaiting_response") {
+      // The delivery ack was lost after the prompt was accepted. Re-attach the
+      // persisted turn instead of prompting the Session a second time.
+      this.enqueuePending(previous);
+      await this.store.markCompleted(event.eventId);
+      return;
+    }
     const threadId = event.threadId ?? null;
     const taskId = event.taskId ?? null;
     if (taskId) this.taskSessions.set(taskId, mapping.sessionId);
-    const text = renderPrompt(event, mapping, this.config.replyPrefix);
+    const replyToMessageId =
+      typeof event.payload.messageId === "string" ? event.payload.messageId : null;
+    const promptText = renderPrompt(event, mapping, this.config.replyPrefix);
+    const now = new Date().toISOString();
+    const pending: PendingTurnRecord = {
+      eventId: event.eventId,
+      requestId,
+      sessionId: mapping.sessionId,
+      groupId,
+      threadId,
+      replyToMessageId,
+      messageId: replyToMessageId,
+      prompt: promptText,
+      text: "",
+      state: "prompting",
+      createdAt: now,
+      updatedAt: now,
+    };
+    await this.store.begin(event.eventId);
+    await this.store.markProcessing(event.eventId);
+    await this.store.recordTurn(pending);
     try {
       await controller.prompt(
         {
-          requestId: `room-${event.eventId}`,
+          requestId,
           sessionId: mapping.sessionId,
           mode: "queue",
-          content: [{ type: "text", text }],
+          content: [{ type: "text", text: promptText }],
         },
         new AbortController().signal,
       );
       // Register the pending turn before the delivery is persisted as completed:
       // session events (assistant/message, turn/end) can arrive immediately after
       // prompt acceptance and must not be dropped while the store write is in flight.
-      this.enqueuePending(
-        {
-          eventId: event.eventId,
-          groupId,
-          threadId,
-          replyToMessageId:
-            typeof event.payload.messageId === "string" ? event.payload.messageId : null,
-          text: "",
-          timer: null,
-        },
-        mapping.sessionId,
-      );
+      this.enqueuePending(pending);
+      await this.store.updateTurn(event.eventId, { state: "awaiting_response" });
       await this.store.markCompleted(event.eventId);
     } catch (error) {
       const reason = errorText(error);
+      await this.store.updateTurn(event.eventId, { state: "failed", error: reason });
       await this.store.markFailed(event.eventId, reason);
       this.lastError = reason;
       this.logger.error(`agent-room: prompt for ${event.eventId} failed: ${reason}`);
     }
   }
 
-  private enqueuePending(turn: PendingTurn, sessionId: string): void {
-    const queue = this.pendingBySession.get(sessionId) ?? [];
+  private enqueuePending(record: PendingTurnRecord): void {
+    const queue = this.pendingBySession.get(record.sessionId) ?? [];
+    if (queue.some((turn) => turn.eventId === record.eventId)) return;
+    const turn: PendingTurn = { ...record, timer: null };
     turn.timer = setTimeout(() => {
-      const current = this.pendingBySession.get(sessionId);
+      const current = this.pendingBySession.get(record.sessionId);
       if (!current) return;
       const index = current.indexOf(turn);
       if (index >= 0) current.splice(index, 1);
-      if (current.length === 0) this.pendingBySession.delete(sessionId);
+      if (current.length === 0) this.pendingBySession.delete(record.sessionId);
       this.logger.warn(`agent-room: turn for ${turn.eventId} timed out; no reply sent`);
     }, this.config.turnTimeoutMs);
     turn.timer.unref?.();
     queue.push(turn);
-    this.pendingBySession.set(sessionId, queue);
+    this.pendingBySession.set(record.sessionId, queue);
   }
 
   private handleSessionEvent(sessionId: string, event: DshSessionEvent): void {
@@ -411,21 +429,144 @@ export class RoomBridge {
     queue.shift();
     if (queue.length === 0) this.pendingBySession.delete(sessionId);
     const reason = event.data?.reason?.kind ?? "completed";
+    void this.finishTurn(turn, reason);
+  }
+
+  private async finishTurn(turn: PendingTurn, reason: string): Promise<void> {
     if (reason !== "completed") {
       this.logger.warn(`agent-room: turn for ${turn.eventId} ended with ${reason}; no reply`);
+      await this.store.updateTurn(turn.eventId, { state: "failed", error: `turn ${reason}` });
       return;
     }
     const text = turn.text.trim();
     if (!text || SKIP_PATTERN.test(text)) {
       this.logger.info(`agent-room: agent skipped ${turn.eventId}`);
+      await this.store.updateTurn(turn.eventId, { state: "completed", text: "" });
       return;
     }
+    try {
+      this.postReply(turn, text);
+      await this.store.updateTurn(turn.eventId, { state: "completed", text });
+    } catch (error) {
+      const reasonText = errorText(error);
+      await this.store.updateTurn(turn.eventId, { state: "failed", error: reasonText });
+      this.logger.error(`agent-room: reply for ${turn.eventId} failed: ${reasonText}`);
+    }
+  }
+
+  private postReply(turn: PendingTurnRecord, text: string): void {
+    if (!this.client) throw new Error("room client is not connected");
     const content = truncate(`${this.config.replyPrefix}${text}`, this.config.maxReplyChars);
-    this.client?.sendMessage(turn.groupId, content, {
+    this.client.sendMessage(turn.groupId, content, {
       threadId: turn.threadId ?? undefined,
       replyToMessageId: turn.replyToMessageId ?? undefined,
       clientMessageId: `plugin-reply-${turn.eventId}`,
     });
+  }
+
+  /**
+   * Re-attach turns that were open when the plugin stopped. The DSH session log
+   * is the source of truth: if the turn already ended while the plugin was down,
+   * the persisted prompt is resolved from the snapshot; if it is still running,
+   * the in-memory waiter is restored for the next `turn/end`; if the prompt was
+   * never accepted, it is retried with the same requestId (DSH deduplicates it).
+   */
+  private async recoverPendingTurns(): Promise<void> {
+    if (this.recovering || this.stopped) return;
+    this.recovering = true;
+    try {
+      const turns = this.store.listTurns(["prompting", "awaiting_response"]);
+      for (const record of turns) {
+        if (this.stopped) return;
+        if (!this.mappings.has(record.groupId)) {
+          await this.store.updateTurn(record.eventId, {
+            state: "failed",
+            error: `group ${record.groupId} is no longer mapped`,
+          });
+          continue;
+        }
+        let snapshot: { events?: readonly SnapshotEvent[] };
+        try {
+          snapshot = (await this.readSession(record.sessionId)) as {
+            events?: readonly SnapshotEvent[];
+          };
+        } catch (error) {
+          const reason = `session ${record.sessionId} is unavailable: ${errorText(error)}`;
+          await this.store.updateTurn(record.eventId, { state: "failed", error: reason });
+          this.logger.warn(`agent-room: cannot recover ${record.eventId}: ${reason}`);
+          continue;
+        }
+        const events = Array.isArray(snapshot.events) ? snapshot.events : [];
+        const userEvent = events.find(
+          (event) =>
+            event.type === "user/message" && event.data?.source?.rpcId === record.requestId,
+        );
+        if (!userEvent) {
+          if (record.state === "prompting") {
+            await this.retryPrompt(record);
+          } else {
+            await this.store.updateTurn(record.eventId, {
+              state: "failed",
+              error: "prompt was not recorded in the session log",
+            });
+          }
+          continue;
+        }
+        const turnNumber = userEvent.data?.turn;
+        if (typeof turnNumber !== "number") continue;
+        const ended = events.find(
+          (event) => event.type === "turn/end" && event.data?.turn === turnNumber,
+        );
+        if (!ended) {
+          this.enqueuePending(record);
+          continue;
+        }
+        const reason = ended.data?.reason?.kind ?? "completed";
+        if (reason !== "completed") {
+          await this.store.updateTurn(record.eventId, {
+            state: "failed",
+            error: `turn ${reason}`,
+          });
+          continue;
+        }
+        const text = lastAssistantText(events, turnNumber);
+        if (!text || SKIP_PATTERN.test(text)) {
+          await this.store.updateTurn(record.eventId, { state: "completed", text: "" });
+          continue;
+        }
+        try {
+          this.postReply(record, text);
+          await this.store.updateTurn(record.eventId, { state: "completed", text });
+        } catch (error) {
+          await this.store.updateTurn(record.eventId, {
+            state: "failed",
+            error: errorText(error),
+          });
+        }
+      }
+    } finally {
+      this.recovering = false;
+    }
+  }
+
+  private async retryPrompt(record: PendingTurnRecord): Promise<void> {
+    const controller = this.deps.ctx.get("sessionController") as SessionControllerLike | undefined;
+    if (!controller) return;
+    try {
+      await controller.prompt(
+        {
+          requestId: record.requestId,
+          sessionId: record.sessionId,
+          mode: "queue",
+          content: [{ type: "text", text: record.prompt }],
+        },
+        new AbortController().signal,
+      );
+      this.enqueuePending({ ...record, state: "awaiting_response" });
+      await this.store.updateTurn(record.eventId, { state: "awaiting_response" });
+    } catch (error) {
+      await this.store.updateTurn(record.eventId, { state: "failed", error: errorText(error) });
+    }
   }
 
   private async handleTaskCancel(command: TaskCancelCommand): Promise<void> {
@@ -455,6 +596,26 @@ export class RoomBridge {
     }
     this.logger.info(`agent-room: recovered ${tasks.length} owned task(s)`);
   }
+}
+
+interface SnapshotEvent {
+  type?: string;
+  data?: {
+    turn?: number;
+    source?: { rpcId?: string };
+    reason?: { kind?: string };
+    message?: { content?: readonly { type?: string; text?: string }[] };
+  };
+}
+
+function lastAssistantText(events: readonly SnapshotEvent[], turn: number): string {
+  let text = "";
+  for (const event of events) {
+    if (event.type !== "assistant/message" || event.data?.turn !== turn) continue;
+    const candidate = extractAssistantText(event.data?.message?.content);
+    if (candidate) text = candidate;
+  }
+  return text;
 }
 
 function renderPrompt(

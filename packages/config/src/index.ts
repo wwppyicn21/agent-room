@@ -41,6 +41,15 @@ export const configSchema = z
     agentHeartbeatMs: z.coerce.number().int().min(1_000).default(20_000),
     /** One-time WebSocket upgrade ticket; session tokens never go into a URL. */
     agentSocketTicketTtlMs: z.coerce.number().int().min(5_000).max(300_000).default(60_000),
+    /**
+     * Browser origins allowed to open the realtime socket. Empty means
+     * same-host only; production deployments should set an explicit list.
+     */
+    realtimeAllowedOrigins: z
+      .array(z.string().url())
+      .default(["http://127.0.0.1:5173", "http://localhost:5173"]),
+    realtimeMaxConnectionsPerUser: z.coerce.number().int().min(1).max(100).default(5),
+    realtimeTicketsPerMinute: z.coerce.number().int().min(1).max(600).default(30),
   })
   .superRefine((config, ctx) => {
     const loopbackHosts = new Set(["127.0.0.1", "localhost", "::1", "[::1]"]);
@@ -94,6 +103,17 @@ function collect(env: NodeJS.ProcessEnv): Record<string, unknown> {
   if (env.AGENT_HEARTBEAT_MS) input.agentHeartbeatMs = env.AGENT_HEARTBEAT_MS;
   if (env.AGENT_SOCKET_TICKET_TTL_MS) {
     input.agentSocketTicketTtlMs = env.AGENT_SOCKET_TICKET_TTL_MS;
+  }
+  if (env.REALTIME_ALLOWED_ORIGINS !== undefined) {
+    input.realtimeAllowedOrigins = env.REALTIME_ALLOWED_ORIGINS.split(",")
+      .map((origin) => origin.trim())
+      .filter((origin) => origin.length > 0);
+  }
+  if (env.REALTIME_MAX_CONNECTIONS_PER_USER) {
+    input.realtimeMaxConnectionsPerUser = env.REALTIME_MAX_CONNECTIONS_PER_USER;
+  }
+  if (env.REALTIME_TICKETS_PER_MINUTE) {
+    input.realtimeTicketsPerMinute = env.REALTIME_TICKETS_PER_MINUTE;
   }
   return input;
 }

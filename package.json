@@ -23,10 +23,13 @@
     "dev": "pnpm --filter @room/config build && pnpm --filter @room/database build && pnpm --filter @room/server dev",
     "start": "pnpm --filter @room/server start",
     "db:init": "pnpm --filter @room/database db:init",
-    "db:generate": "pnpm --filter @room/database db:generate"
+    "db:generate": "pnpm --filter @room/database db:generate",
+    "e2e": "playwright test",
+    "e2e:install": "playwright install chromium"
   },
   "devDependencies": {
     "@eslint/js": "^9.39.1",
+    "@playwright/test": "1.65.1",
     "@types/node": "^26.6.6",
     "eslint": "^9.39.1",
     "globals": "^17.14.0",

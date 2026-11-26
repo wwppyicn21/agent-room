@@ -5,6 +5,20 @@ import { mergeMessages, removeById } from "../state";
 import { Button, Empty, TextArea } from "../ui";
 import { formatTime } from "../format";
 
+function payloadObject(value: unknown): Record<string, unknown> {
+  if (typeof value === "string") {
+    try {
+      const parsed: unknown = JSON.parse(value);
+      return typeof parsed === "object" && parsed !== null
+        ? (parsed as Record<string, unknown>)
+        : {};
+    } catch {
+      return {};
+    }
+  }
+  return typeof value === "object" && value !== null ? (value as Record<string, unknown>) : {};
+}
+
 interface ChatViewProps {
   api: ApiClient;
   me: MeResponse["user"];
@@ -21,6 +35,9 @@ export function ChatView({ api, me, group, notify, onError }: ChatViewProps) {
   const [replyTo, setReplyTo] = useState<Message | null>(null);
   const [sending, setSending] = useState(false);
   const [state, setState] = useState<"connecting" | "open" | "closed">("connecting");
+  const lastSeq = useRef(0);
+  const onErrorRef = useRef(onError);
+  onErrorRef.current = onError;
   const bottomRef = useRef<HTMLDivElement | null>(null);
 
   const load = useCallback(async () => {
@@ -34,13 +51,17 @@ export function ChatView({ api, me, group, notify, onError }: ChatViewProps) {
     } catch (err) {
       onError(err);
     }
-  }, [api, group.id, onError]);
+  }, [api, group.id]);
 
   useEffect(() => {
     setMessages([]);
     setReplyTo(null);
     void load();
   }, [load]);
+
+  useEffect(() => {
+    lastSeq.current = messages.at(-1)?.seq ?? 0;
+  }, [messages]);
 
   useEffect(() => {
     let client: RealtimeClient | null = null;
@@ -51,9 +72,8 @@ export function ChatView({ api, me, group, notify, onError }: ChatViewProps) {
         {
           onEvent: (event) => {
             if (event.type === "message.created") {
-              const payload = event.payload;
               try {
-                const parsed = JSON.parse(payload) as {
+                const parsed = payloadObject(event.payload) as {
                   messageId?: string;
                   content?: string;
                   senderType?: Message["senderType"];
@@ -84,7 +104,7 @@ export function ChatView({ api, me, group, notify, onError }: ChatViewProps) {
               }
             } else if (event.type === "message.deleted") {
               try {
-                const parsed = JSON.parse(event.payload) as { messageId?: string };
+                const parsed = payloadObject(event.payload) as { messageId?: string };
                 if (parsed.messageId)
                   setMessages((current) => removeById(current, parsed.messageId!));
               } catch {
@@ -101,20 +121,25 @@ export function ChatView({ api, me, group, notify, onError }: ChatViewProps) {
               .then((result) => setMembers(result.members))
               .catch(() => undefined);
           },
-          onState: (next, error) => {
+          onState: (next) => {
             setState(next);
-            if (error) onError(new Error(error));
           },
         },
-        messages.at(-1)?.seq ?? 0,
+        lastSeq.current,
       );
+      if (import.meta.env.DEV) {
+        (window as unknown as { __roomRealtime?: RealtimeClient }).__roomRealtime = client;
+      }
       client.connect();
     }, 0);
     return () => {
       clearTimeout(timer);
+      if (import.meta.env.DEV) {
+        delete (window as unknown as { __roomRealtime?: RealtimeClient }).__roomRealtime;
+      }
       client?.close();
     };
-  }, [api, group.id, onError]);
+  }, [api, group.id]);
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });

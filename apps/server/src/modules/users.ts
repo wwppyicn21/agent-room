@@ -170,7 +170,7 @@ export function disableUser(
   }
   if (target.role === "owner") assertAnotherActiveOwner(ctx.db, target.id);
   const now = ctx.now();
-  return ctx.db.transaction((transaction) => {
+  const disabled = ctx.db.transaction((transaction) => {
     const db = transaction as unknown as RoomDb;
     db.update(users)
       .set({ status: "disabled", updatedAt: now })
@@ -192,6 +192,8 @@ export function disableUser(
     });
     return db.select().from(users).where(eq(users.id, target.id)).get()!;
   });
+  ctx.realtime?.closeUser(target.id, "user_disabled");
+  return disabled;
 }
 
 export function enableUser(

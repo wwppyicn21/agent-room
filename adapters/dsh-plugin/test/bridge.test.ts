@@ -411,8 +411,83 @@ describe("config, keys and delivery store", () => {
     await reloaded.load();
     expect(reloaded.state("evd_1")).toBe("completed");
     expect(reloaded.get("evd_2")?.error).toBe("no mapping");
-    expect(JSON.parse(readFileSync(path, "utf8")).version).toBe(1);
+    expect(JSON.parse(readFileSync(path, "utf8")).version).toBe(2);
     writeFileSync(path, "{bad json");
     await expect(new DeliveryStore(path).load()).rejects.toThrow();
+  });
+});
+
+describe("DSH plugin turn recovery", () => {
+  const record = (overrides: Record<string, unknown> = {}) => ({
+    eventId: "evd_recover",
+    requestId: "room-evd_recover",
+    sessionId: "ses_a",
+    groupId: "grp_a",
+    threadId: null as string | null,
+    replyToMessageId: "msg_1",
+    messageId: "msg_1",
+    prompt: "[Agent Room message]\nhello room",
+    text: "",
+    state: "awaiting_response" as const,
+    createdAt: new Date(Date.now() - 60_000).toISOString(),
+    updatedAt: new Date(Date.now() - 60_000).toISOString(),
+    ...overrides,
+  });
+
+  async function seedTurn(harness: Harness, turn: Record<string, unknown>): Promise<void> {
+    const store = new DeliveryStore(join(harness.temp, "deliveries.json"));
+    await store.load();
+    await store.recordTurn(turn as never);
+  }
+
+  it("posts the reply found in the session log after a restart", async () => {
+    const harness = makeHarness([{ groupId: "grp_a", sessionId: "ses_a" }], {
+      readSession: async () => ({
+        events: [
+          { type: "user/message", data: { turn: 3, source: { rpcId: "room-evd_recover" } } },
+          {
+            type: "assistant/message",
+            data: { turn: 3, message: { content: [{ type: "text", text: "recovered answer" }] } },
+          },
+          { type: "turn/end", data: { turn: 3, reason: { kind: "completed" } } },
+        ],
+      }),
+    });
+    await seedTurn(harness, record());
+    await harness.bridge.start();
+    await waitFor(() => harness.client.sent.length === 1);
+    expect(harness.client.sent[0]?.content).toBe("recovered answer");
+    expect(harness.client.sent[0]?.options?.clientMessageId).toBe("plugin-reply-evd_recover");
+    expect(harness.bridge.deliveryStore.getTurn("evd_recover")?.state).toBe("completed");
+    expect(harness.prompts).toHaveLength(0);
+  });
+
+  it("restores the waiter when the turn was still running", async () => {
+    const harness = makeHarness([{ groupId: "grp_a", sessionId: "ses_a" }], {
+      readSession: async () => ({
+        events: [
+          { type: "user/message", data: { turn: 4, source: { rpcId: "room-evd_recover" } } },
+        ],
+      }),
+    });
+    await seedTurn(harness, record());
+    await harness.bridge.start();
+    await new Promise((resolve) => setTimeout(resolve, 120));
+    harness.emit("ses_a", {
+      type: "assistant/message",
+      data: { message: { content: [{ type: "text", text: "late answer" }] } },
+    } as never);
+    harness.emit("ses_a", { type: "turn/end", data: { reason: { kind: "completed" } } });
+    await waitFor(() => harness.client.sent.length === 1);
+    expect(harness.client.sent[0]?.content).toBe("late answer");
+  });
+
+  it("does not replay a turn that already completed", async () => {
+    const harness = makeHarness([{ groupId: "grp_a", sessionId: "ses_a" }]);
+    await seedTurn(harness, record({ state: "completed", text: "done" }));
+    await harness.bridge.start();
+    await new Promise((resolve) => setTimeout(resolve, 80));
+    expect(harness.client.sent).toHaveLength(0);
+    expect(harness.prompts).toHaveLength(0);
   });
 });

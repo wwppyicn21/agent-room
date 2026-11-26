@@ -104,28 +104,38 @@ Server → Client 确认：
   `/api/v1/groups/{groupId}/events`），再用最后看到的 `seq` 作为 `afterSeq` 订阅；
 - 单帧上限 64 KiB，超出以 `1009` 关闭。
 
-## 权限
+## 权限生命周期
 
-- ticket 只能由已认证的 User Principal 获取；Agent 继续使用 Agent WSS；
-- 订阅时校验 Group 成员身份，事件只来自该 Group；
-- 用户被移出 Group 后，已订阅连接不会自动断开；下一次重新订阅会被拒绝。
-  强制断开属于 M8 的会话管理增强。
+- ticket 只能由已认证的 User Principal 获取；兑换时重新查询用户状态，禁用用户的旧
+  ticket 不能升级连接；
+- 订阅/每轮推送前校验 Group 成员身份与用户状态；用户被移出 Group 后由
+  `RealtimeHub.revokeGroup()` 撤销订阅并推送 `error membership_revoked`，不再接收该
+  Group 的事件；用户被禁用后 `RealtimeHub.closeUser()` 关闭其全部连接（`error
+user_disabled` + `1008`）；
+- 服务端在 `users.disableUser` / `groups.removeMember` 事务提交后主动通知 Hub，
+  不依赖用户刷新或重连；
+- 连接登记在 `RealtimeHub`，socket 关闭时注销；未消费的 ticket 60s 过期且单次使用。
+
+## 安全与限制
+
+- `REALTIME_ALLOWED_ORIGINS`（逗号分隔）限制浏览器 Origin；无 Origin 的 CLI 允许，
+  但仍必须提供有效 ticket；
+- `REALTIME_MAX_CONNECTIONS_PER_USER`（默认 5）限制同时连接数，超出以 1008 关闭；
+- `REALTIME_TICKETS_PER_MINUTE`（默认 30）限制 ticket 获取频率，超出返回 429；
+- 以上均为单进程内存计数，多实例部署需改为共享存储（M9 评估）。
 
 ## 测试
 
-`apps/server/test/realtime.test.ts`（7 例）：
+`apps/server/test/realtime.test.ts`（7 例）与 `realtime-revocation.test.ts`（9 例）：
 
-- 未认证不能获取 ticket；
-- 无效 / 重复 ticket 以 `1008` 关闭；
-- 成员能收到 `message.created`；
-- `afterSeq` 只重放之后的事件；
-- 非成员订阅被拒绝且收不到事件；
-- `ping` / `pong` 与 `unsubscribe` 生效。
+- ticket 未认证 401、无效/重复 ticket 1008、成员收事件、afterSeq 重放、非成员
+  forbidden、ping/pong、unsubscribe；
+- 移出 Group 后撤销订阅并停止推送、禁用后关闭全部连接、禁用后旧 ticket 失效、
+  非成员不能订阅、连接上限、ticket 限流 429、Origin 允许/拒绝、并发撤销后不再推送。
 
 ## 已知边界
 
-- Agent 在线状态走 `presence` 轮询帧，不依赖 `agent.status.changed` 事件；同一快照
-  不重复推送，但每 300ms 会重新计算一次 lease（当前为单进程 SQLite 查询）。
-- ticket 存储是单进程内存，符合当前单机部署；多实例部署需改为数据库或共享存储（M9 评估）。
-- WebSocket Origin 校验、每用户连接数/速率限制尚未实现，属于上线前加固项。
-- Delivery 诊断、`thread` 级订阅与多 Group 单连接尚未提供。
+- Agent 在线状态走 `presence` 轮询帧，每 300ms 重算 lease；
+- ticket 与连接计数是单进程内存，符合当前单机部署；
+- `thread` 级订阅与多 Group 单连接尚未提供；
+- Cloudflare 代理下的 Origin 行为需在部署环境实测（本地 E2E 已验证 5173）。

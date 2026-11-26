@@ -130,7 +130,7 @@ export interface EventRow {
   taskId: string | null;
   actorType: "user" | "agent" | "system";
   actorId: string;
-  payload: string;
+  payload: unknown;
   createdAt: number;
 }
 
@@ -559,7 +559,8 @@ function queryString(params: Record<string, string | number | undefined>): strin
 
 export function parseEventPayload(event: EventRow): Record<string, unknown> {
   try {
-    const parsed = JSON.parse(event.payload) as unknown;
+    const parsed =
+      typeof event.payload === "string" ? (JSON.parse(event.payload) as unknown) : event.payload;
     return parsed && typeof parsed === "object" ? (parsed as Record<string, unknown>) : {};
   } catch {
     return {};

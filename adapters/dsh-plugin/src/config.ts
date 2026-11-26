@@ -31,6 +31,8 @@ export const Config = z.object({
   turnTimeoutMs: z.number().step(1).min(1_000).max(3_600_000).default(900_000),
   /** Prefix prepended to every Room reply (useful during migration). */
   replyPrefix: z.string().default(""),
+  /** Days to keep terminal delivery/turn records (never pending work). */
+  deliveryRetentionDays: z.number().step(1).min(1).max(365).default(30),
 });
 
 export type PluginConfig = {
@@ -42,6 +44,7 @@ export type PluginConfig = {
   maxReplyChars: number;
   turnTimeoutMs: number;
   replyPrefix: string;
+  deliveryRetentionDays: number;
 };
 
 export function resolvePluginConfig(config: Partial<PluginConfig>): PluginConfig {
@@ -58,6 +61,7 @@ export function resolvePluginConfig(config: Partial<PluginConfig>): PluginConfig
     maxReplyChars: config.maxReplyChars ?? 8_000,
     turnTimeoutMs: config.turnTimeoutMs ?? 900_000,
     replyPrefix: config.replyPrefix ?? "",
+    deliveryRetentionDays: config.deliveryRetentionDays ?? 30,
   };
 }
 

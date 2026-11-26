@@ -47,6 +47,11 @@ export class RealtimeClient {
     void this.open();
   }
 
+  /** Drop the current socket; the normal close handler reconnects with the cursor. */
+  dropConnection(): void {
+    this.socket?.close(1000, "test drop");
+  }
+
   close(): void {
     this.closed = true;
     this.clearTimers();

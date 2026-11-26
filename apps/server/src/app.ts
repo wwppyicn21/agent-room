@@ -6,6 +6,7 @@ import { createAccessVerifier, registerAuth } from "./auth/plugin.js";
 import type { AccessTokenVerifier } from "./auth/access.js";
 import { AgentHub } from "./modules/agentHub.js";
 import { createRoomContext, type RoomContext } from "./modules/context.js";
+import { RealtimeHub } from "./modules/realtime.js";
 import { DomainError } from "./modules/errors.js";
 import { registerAgentRoutes } from "./routes/agent.js";
 import { registerHttpRoutes } from "./routes/http.js";
@@ -41,6 +42,7 @@ declare module "fastify" {
     roomDatabase: DatabaseHandle;
     roomContext: RoomContext;
     agentHub: AgentHub;
+    realtimeHub: RealtimeHub;
   }
 }
 
@@ -57,13 +59,15 @@ export async function buildApp({
       serializers: { req: requestLogSerializer },
     },
   });
-  const ctx = createRoomContext(database, now);
+  const realtimeHub = new RealtimeHub();
+  const ctx = createRoomContext(database, now, realtimeHub);
   const hub = new AgentHub();
 
   app.decorate("roomConfig", config);
   app.decorate("roomDatabase", database);
   app.decorate("roomContext", ctx);
   app.decorate("agentHub", hub);
+  app.decorate("realtimeHub", realtimeHub);
 
   app.setErrorHandler((error: FastifyError, request, reply) => {
     if (error instanceof DomainError) {
@@ -107,7 +111,14 @@ export async function buildApp({
     authMode: config.authMode,
   });
   registerRoomRoutes(app, { ctx, agentPresenceTtlMs: config.agentPresenceTtlMs });
-  registerRealtimeRoutes(app, { ctx, agentPresenceTtlMs: config.agentPresenceTtlMs });
+  registerRealtimeRoutes(app, {
+    ctx,
+    hub: realtimeHub,
+    agentPresenceTtlMs: config.agentPresenceTtlMs,
+    allowedOrigins: config.realtimeAllowedOrigins,
+    maxConnectionsPerUser: config.realtimeMaxConnectionsPerUser,
+    ticketsPerMinute: config.realtimeTicketsPerMinute,
+  });
 
   // Legacy shell endpoint kept for compatibility; business traffic uses the
   // authenticated `/api/v1/agent/connect` socket.

@@ -9,3 +9,6 @@ AGENTS.md
 docs/ROADMAP.md
 docs/openapi.yaml
 adapters/dsh-plugin/lib/
+
+test-results/
+playwright-report/

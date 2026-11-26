@@ -38,6 +38,12 @@ jobs:
       - name: Build
         run: pnpm build
 
+      - name: Install Playwright browser
+        run: pnpm exec playwright install --with-deps chromium
+
+      - name: Browser E2E
+        run: pnpm e2e
+
       - name: Native SQLite module
         run: |
           pnpm --filter @room/database exec node -e \
