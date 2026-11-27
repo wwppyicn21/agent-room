@@ -403,12 +403,22 @@ export class RoomBridge {
     if (queue.some((turn) => turn.eventId === record.eventId)) return;
     const turn: PendingTurn = { ...record, timer: null };
     turn.timer = setTimeout(() => {
-      const current = this.pendingBySession.get(record.sessionId);
-      if (!current) return;
-      const index = current.indexOf(turn);
-      if (index >= 0) current.splice(index, 1);
-      if (current.length === 0) this.pendingBySession.delete(record.sessionId);
-      this.logger.warn(`agent-room: turn for ${turn.eventId} timed out; no reply sent`);
+      void (async () => {
+        if (this.stopped) return;
+        const current = this.pendingBySession.get(record.sessionId);
+        const index = current ? current.indexOf(turn) : -1;
+        if (!current || index < 0) return;
+        current.splice(index, 1);
+        if (current.length === 0) this.pendingBySession.delete(record.sessionId);
+        const persisted = this.store.getTurn(record.eventId);
+        // A late turn/end may have completed the same turn just before the
+        // timer fired; never overwrite a terminal state.
+        if (!persisted || persisted.state === "completed" || persisted.state === "failed") return;
+        await this.store.updateTurn(record.eventId, { state: "failed", error: "turn_timeout" });
+        this.logger.warn(
+          `agent-room: turn for ${turn.eventId} timed out; marked failed and ignored any late events`,
+        );
+      })();
     }, this.config.turnTimeoutMs);
     turn.timer.unref?.();
     queue.push(turn);

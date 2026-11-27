@@ -61,6 +61,7 @@ function makeHarness(
     readSession?: (id: string) => Promise<unknown>;
     temp?: string;
     resolveAgentError?: boolean;
+    turnTimeoutMs?: number;
   } = {},
 ): Harness {
   const temp = options.temp ?? mkdtempSync(join(tmpdir(), "room-dsh-plugin-"));
@@ -103,6 +104,7 @@ function makeHarness(
       agentKeyPath: join(temp, "agent-key.pem"),
       dataDir: temp,
       groups: groups.map((group) => ({ ...group, label: group.label ?? "" })),
+      ...(options.turnTimeoutMs === undefined ? {} : { turnTimeoutMs: options.turnTimeoutMs }),
     },
     {
       ctx,
@@ -218,6 +220,42 @@ describe("DSH plugin bridge", () => {
     expect(harness.bridge.deliveryStore.state("evd_1")).toBe("failed");
     expect(harness.bridge.status().lastError).toContain("agent is unavailable");
     await harness.bridge.stop();
+  });
+
+  it("persists a timed out turn as failed and ignores late events", async () => {
+    const harness = makeHarness([{ groupId: "grp_a", sessionId: "ses_a" }], { turnTimeoutMs: 40 });
+    await harness.bridge.start();
+    await waitFor(() => harness.client.connected);
+
+    await harness.deliver(messageEvent());
+    expect(harness.prompts).toHaveLength(1);
+    await waitFor(() => harness.bridge.deliveryStore.getTurn("evd_1")?.state === "failed");
+    expect(harness.bridge.deliveryStore.getTurn("evd_1")?.error).toBe("turn_timeout");
+    await harness.bridge.deliveryStore.flush();
+
+    const reloaded = new DeliveryStore(join(harness.temp, "deliveries.json"));
+    await reloaded.load();
+    expect(reloaded.getTurn("evd_1")?.state).toBe("failed");
+
+    harness.emit("ses_a", {
+      type: "assistant/message",
+      data: { message: { content: [{ type: "text", text: "late reply" }] } },
+    });
+    harness.emit("ses_a", { type: "turn/end", data: { reason: { kind: "completed" } } });
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    expect(harness.client.sent).toHaveLength(0);
+    expect(harness.bridge.deliveryStore.getTurn("evd_1")?.state).toBe("failed");
+    await harness.bridge.stop();
+  });
+
+  it("clears pending timers on stop without marking the turn failed", async () => {
+    const harness = makeHarness([{ groupId: "grp_a", sessionId: "ses_a" }], { turnTimeoutMs: 40 });
+    await harness.bridge.start();
+    await waitFor(() => harness.client.connected);
+    await harness.deliver(messageEvent());
+    await harness.bridge.stop();
+    await new Promise((resolve) => setTimeout(resolve, 80));
+    expect(harness.bridge.deliveryStore.getTurn("evd_1")?.state).toBe("awaiting_response");
   });
 
   it("fails without prompting when the group has no mapping", async () => {

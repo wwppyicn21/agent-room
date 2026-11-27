@@ -199,6 +199,7 @@ export class DeliveryStore {
     if (!Number.isFinite(retentionDays) || retentionDays <= 0) return 0;
     const now = options.now ?? Date.now();
     const cutoff = new Date(now - retentionDays * 24 * 60 * 60 * 1000).toISOString();
+    let changed = false;
     let removed = 0;
     for (const [eventId, record] of this.deliveries) {
       if (
@@ -206,20 +207,21 @@ export class DeliveryStore {
         record.updatedAt < cutoff
       ) {
         this.deliveries.delete(eventId);
-        // Keep a terminal turn's idempotency record only as long as its
-        // delivery; both are recreated by a redelivery if the server resends.
-        const turn = this.turns.get(eventId);
-        if (!turn || TERMINAL_TURN_STATES.has(turn.state)) removed += 1;
+        changed = true;
+        removed += 1;
+        // Non-terminal turns are never pruned: they are the durable record used
+        // by restart recovery and by a redelivery to avoid a second prompt.
       }
     }
     for (const [eventId, turn] of this.turns) {
       if (!TERMINAL_TURN_STATES.has(turn.state)) continue;
       if (turn.updatedAt < cutoff) {
         this.turns.delete(eventId);
+        changed = true;
         removed += 1;
       }
     }
-    if (removed > 0) await this.commit();
+    if (changed) await this.commit();
     return removed;
   }
 

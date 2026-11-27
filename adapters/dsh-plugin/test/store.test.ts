@@ -88,6 +88,39 @@ describe("DeliveryStore concurrency and retention", () => {
     expect(store.getTurn("old_completed_turn")).toBeUndefined();
   });
 
+  it("commits a delivery deletion even when its turn stays non-terminal", async () => {
+    const path = join(temp(), "deliveries.json");
+    const store = new DeliveryStore(path);
+    await store.load();
+    const old = new Date(Date.now() - 40 * 24 * 60 * 60 * 1000).toISOString();
+    await store.begin("shared");
+    await store.markCompleted("shared", old);
+    await store.recordTurn({
+      eventId: "shared",
+      requestId: "room-shared",
+      sessionId: "ses_1",
+      groupId: "grp_1",
+      threadId: null,
+      replyToMessageId: null,
+      messageId: null,
+      prompt: "hello",
+      text: "",
+      state: "awaiting_response",
+      createdAt: old,
+      updatedAt: old,
+    });
+
+    const removed = await store.prune({ retentionDays: 30 });
+    expect(removed).toBe(1);
+    expect(store.state("shared")).toBeUndefined();
+    expect(store.getTurn("shared")?.state).toBe("awaiting_response");
+
+    const reloaded = new DeliveryStore(path);
+    await reloaded.load();
+    expect(reloaded.state("shared")).toBeUndefined();
+    expect(reloaded.getTurn("shared")?.state).toBe("awaiting_response");
+  });
+
   it("migrates version 1 files to version 2 on the next write", async () => {
     const path = join(temp(), "deliveries.json");
     writeFileSync(
