@@ -12,12 +12,7 @@ export interface DeliveryRecord {
 }
 
 export type TurnState =
-  | "prompting"
-  | "awaiting_response"
-  | "reply_pending"
-  | "completed"
-  | "failed"
-  | "cancelled";
+  "prompting" | "awaiting_response" | "reply_pending" | "completed" | "failed" | "cancelled";
 
 /** Durable association between one Room delivery and its DSH turn. */
 export interface PendingTurnRecord {
@@ -47,11 +42,7 @@ interface StoreFileV2 {
   turns: Record<string, PendingTurnRecord>;
 }
 
-const TERMINAL_TURN_STATES: ReadonlySet<TurnState> = new Set([
-  "completed",
-  "failed",
-  "cancelled",
-]);
+const TERMINAL_TURN_STATES: ReadonlySet<TurnState> = new Set(["completed", "failed", "cancelled"]);
 
 /**
  * Durable delivery and turn bookkeeping for the DSH plugin.

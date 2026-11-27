@@ -247,8 +247,10 @@ export function ChatView({ api, me, group, notify, onError }: ChatViewProps) {
             </header>
             {message.replyToMessageId && (
               <div className="reply-quote">
-                回复{" "}
-                {nameOf(messages.find((item) => item.id === message.replyToMessageId) ?? message)}
+                {(() => {
+                  const original = messages.find((item) => item.id === message.replyToMessageId);
+                  return original ? <>回复 {nameOf(original)}</> : <>回复「较早的消息」</>;
+                })()}
               </div>
             )}
             <div className="bubble">{message.content}</div>

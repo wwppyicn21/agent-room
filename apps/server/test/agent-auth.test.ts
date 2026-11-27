@@ -933,4 +933,23 @@ describe("M5 review fix 4 control command delivery", () => {
     expect(after.some((frame) => frame.type === "command")).toBe(false);
     reopened.close();
   });
+
+  it("rejects oversized agent frames before parsing", async () => {
+    const { room, app } = await setup();
+    const owner = seedUser(room.ctx, "owner", "owner");
+    const keys = pair();
+    const { key } = registerAgentWithKey(room.ctx, {
+      displayName: "dsh",
+      runtime: "dsh",
+      publicKey: keys.pem,
+      actorUserId: owner,
+    });
+    const connected = await completeConnect(app, keys, key.fingerprint);
+    const socket = await openSocket(app, String(connected.body.sessionToken));
+    await socket.nextOf("hello");
+    socket.send({ type: "ping", padding: "x".repeat(300 * 1024) });
+    const error = await socket.nextOf("error");
+    expect(error.code).toBe("frame_too_large");
+    socket.close();
+  });
 });

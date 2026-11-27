@@ -482,11 +482,8 @@ export function sweepStaleSessions(
     closeAgentSession(ctx, session.id, "presence-timeout");
     const stillLive = liveSessionAgentIds(ctx, input.presenceTtlMs);
     if (!stillLive.has(session.agentId)) {
-      if (setAgentStatus(ctx, session.agentId, "offline", "presence-timeout")) {
-        offline.push(session.agentId);
-      } else {
-        offline.push(session.agentId);
-      }
+      setAgentStatus(ctx, session.agentId, "offline", "presence-timeout");
+      offline.push(session.agentId);
     }
   }
   return offline;

@@ -543,8 +543,18 @@ describe("DSH plugin turn recovery", () => {
     const harness = makeHarness([{ groupId: "grp_a", sessionId: "ses_a" }]);
     await harness.bridge.start();
     await waitFor(() => harness.client.connected);
-    await harness.deliver(messageEvent({ eventId: "evd_1", payload: { ...messageEvent().payload, messageId: "msg_1" } }));
-    await harness.deliver(messageEvent({ eventId: "evd_2", payload: { ...messageEvent().payload, messageId: "msg_2" } }));
+    await harness.deliver(
+      messageEvent({
+        eventId: "evd_1",
+        payload: { ...messageEvent().payload, messageId: "msg_1" },
+      }),
+    );
+    await harness.deliver(
+      messageEvent({
+        eventId: "evd_2",
+        payload: { ...messageEvent().payload, messageId: "msg_2" },
+      }),
+    );
 
     harness.emit("ses_a", {
       type: "user/message",
@@ -571,9 +581,7 @@ describe("DSH plugin turn recovery", () => {
     await harness.bridge.start();
     await waitFor(() => harness.client.connected);
     await harness.deliver(messageEvent());
-    harness.recover([
-      { task: { id: "tsk_1", groupId: "grp_a" } } as unknown as AgentTaskView,
-    ]);
+    harness.recover([{ task: { id: "tsk_1", groupId: "grp_a" } } as unknown as AgentTaskView]);
     await harness.cancel({
       commandId: "cmd_1",
       type: "task.cancel",

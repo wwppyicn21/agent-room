@@ -134,6 +134,22 @@ export interface EventRow {
   createdAt: number;
 }
 
+export interface TaskRun {
+  id: string;
+  taskId: string;
+  agentId: string;
+  status: "running" | "succeeded" | "failed" | "cancelled" | "paused";
+  attempt: number;
+  startedAt: number;
+  finishedAt: number | null;
+  summary: string | null;
+  error: string | null;
+  progressPercent: number | null;
+  progressStage: string | null;
+  progressMessage: string | null;
+  updatedAt: number;
+}
+
 export interface Delivery {
   id: string;
   agentId: string;
@@ -344,11 +360,7 @@ export class ApiClient {
     });
   }
 
-  removeMember(
-    groupId: string,
-    memberType: "user" | "agent",
-    memberId: string,
-  ): Promise<{ removed: boolean }> {
+  removeMember(groupId: string, memberType: "user" | "agent", memberId: string): Promise<void> {
     return this.delete(`/api/v1/groups/${groupId}/members/${memberType}/${memberId}`);
   }
 
@@ -451,11 +463,11 @@ export class ApiClient {
     return this.post(`/api/v1/tasks/${taskId}/assign`, { agentId });
   }
 
-  pauseTask(taskId: string): Promise<Task> {
+  pauseTask(taskId: string): Promise<{ task: Task; run: TaskRun }> {
     return this.post(`/api/v1/tasks/${taskId}/pause`);
   }
 
-  resumeTask(taskId: string): Promise<Task> {
+  resumeTask(taskId: string): Promise<{ task: Task; run: TaskRun }> {
     return this.post(`/api/v1/tasks/${taskId}/resume`);
   }
 

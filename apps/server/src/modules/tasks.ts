@@ -16,12 +16,7 @@ import { newId } from "@room/protocol";
 import { messageContentSchema } from "@room/protocol";
 import type { RoomContext, RoomDb } from "./context.js";
 import { recordAudit } from "./audit.js";
-import {
-  ConflictError,
-  NotFoundError,
-  ValidationError,
-  isUniqueViolation,
-} from "./errors.js";
+import { ConflictError, NotFoundError, ValidationError, isUniqueViolation } from "./errors.js";
 import { appendEvent, enqueueDelivery, enqueueGroupAgentDeliveries } from "./events.js";
 import { getGroupMessageRow } from "./messages.js";
 import { createTaskCancelCommand } from "./agentCommands.js";
@@ -102,7 +97,6 @@ export function createTaskFromMessage(
   const workspaceId = input.workspaceId?.trim() || null;
   const idempotencyKey = input.idempotencyKey?.trim() || null;
   getGroupMessageRow(ctx, input.groupId, input.sourceMessageId);
-  if (workspaceId) workspaceForTask(ctx, { workspaceId, groupId: input.groupId });
   if (assignedAgentId) {
     requireAgent(ctx.db, assignedAgentId);
     if (!isGroupMember(ctx.db, input.groupId, "agent", assignedAgentId)) {
@@ -125,94 +119,95 @@ export function createTaskFromMessage(
           return replayTask(existing, input, title, description, assignedAgentId, workspaceId);
         }
       }
-    db.insert(threads)
-      .values({
-        id: threadId,
-        groupId: input.groupId,
-        sourceMessageId: input.sourceMessageId,
-        title,
-        status: "open",
-        createdByUserId: input.createdByUserId,
-        createdAt: now,
-        updatedAt: now,
-      })
-      .run();
-    db.insert(tasks)
-      .values({
-        id: taskId,
+      if (workspaceId) workspaceForTask(ctx, { workspaceId, groupId: input.groupId });
+      db.insert(threads)
+        .values({
+          id: threadId,
+          groupId: input.groupId,
+          sourceMessageId: input.sourceMessageId,
+          title,
+          status: "open",
+          createdByUserId: input.createdByUserId,
+          createdAt: now,
+          updatedAt: now,
+        })
+        .run();
+      db.insert(tasks)
+        .values({
+          id: taskId,
+          groupId: input.groupId,
+          threadId,
+          idempotencyKey,
+          sourceMessageId: input.sourceMessageId,
+          title,
+          description,
+          status: assignedAgentId ? "assigned" : "queued",
+          priority: 0,
+          assignedAgentId,
+          workspaceId,
+          createdByUserId: input.createdByUserId,
+          createdAt: now,
+          updatedAt: now,
+          completedAt: null,
+        })
+        .run();
+      appendEvent(db, {
+        type: "thread.created",
+        actor: { type: "user", id: input.createdByUserId },
         groupId: input.groupId,
         threadId,
-        idempotencyKey,
-        sourceMessageId: input.sourceMessageId,
-        title,
-        description,
-        status: assignedAgentId ? "assigned" : "queued",
-        priority: 0,
-        assignedAgentId,
-        workspaceId,
-        createdByUserId: input.createdByUserId,
+        payload: { threadId, sourceMessageId: input.sourceMessageId, title },
         createdAt: now,
-        updatedAt: now,
-        completedAt: null,
-      })
-      .run();
-    appendEvent(db, {
-      type: "thread.created",
-      actor: { type: "user", id: input.createdByUserId },
-      groupId: input.groupId,
-      threadId,
-      payload: { threadId, sourceMessageId: input.sourceMessageId, title },
-      createdAt: now,
-    });
-    const created = appendEvent(db, {
-      type: "task.created",
-      actor: { type: "user", id: input.createdByUserId },
-      groupId: input.groupId,
-      threadId,
-      taskId,
-      payload: { taskId, title, assignedAgentId, workspaceId },
-      createdAt: now,
-    });
-    enqueueGroupAgentDeliveries(db, {
-      groupId: input.groupId,
-      eventId: created.id,
-      createdAt: now,
-    });
-    if (assignedAgentId) {
-      const assigned = appendEvent(db, {
-        type: "task.assigned",
+      });
+      const created = appendEvent(db, {
+        type: "task.created",
         actor: { type: "user", id: input.createdByUserId },
         groupId: input.groupId,
         threadId,
         taskId,
-        payload: { taskId, agentId: assignedAgentId },
+        payload: { taskId, title, assignedAgentId, workspaceId },
         createdAt: now,
       });
-      enqueueDelivery(db, {
-        agentId: assignedAgentId,
-        eventId: assigned.id,
-        createdAt: now,
-      });
-    }
-    recordAudit(db, {
-      actorType: "user",
-      actorId: input.createdByUserId,
-      action: "task.create",
-      targetType: "task",
-      targetId: taskId,
-      metadata: {
+      enqueueGroupAgentDeliveries(db, {
         groupId: input.groupId,
+        eventId: created.id,
+        createdAt: now,
+      });
+      if (assignedAgentId) {
+        const assigned = appendEvent(db, {
+          type: "task.assigned",
+          actor: { type: "user", id: input.createdByUserId },
+          groupId: input.groupId,
+          threadId,
+          taskId,
+          payload: { taskId, agentId: assignedAgentId },
+          createdAt: now,
+        });
+        enqueueDelivery(db, {
+          agentId: assignedAgentId,
+          eventId: assigned.id,
+          createdAt: now,
+        });
+      }
+      recordAudit(db, {
+        actorType: "user",
+        actorId: input.createdByUserId,
+        action: "task.create",
+        targetType: "task",
+        targetId: taskId,
+        metadata: {
+          groupId: input.groupId,
+          threadId,
+          assignedAgentId,
+          workspaceId,
+        },
+        createdAt: now,
+      });
+      return {
+        task: db.select().from(tasks).where(eq(tasks.id, taskId)).get()!,
         threadId,
-        assignedAgentId,
-        workspaceId,
-      },
-      createdAt: now,
+      };
     });
-    return {
-      task: db.select().from(tasks).where(eq(tasks.id, taskId)).get()!,
-      threadId,
-    };
-  });
   try {
     return attempt();
   } catch (error) {

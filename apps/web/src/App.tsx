@@ -56,10 +56,7 @@ export function App() {
     return err instanceof Error ? err.message : String(err);
   }, []);
 
-  const onError = useCallback(
-    (err: unknown) => setError(describeError(err)),
-    [describeError],
-  );
+  const onError = useCallback((err: unknown) => setError(describeError(err)), [describeError]);
 
   const loadGroups = useCallback(async () => {
     const result = await api.listGroups();
@@ -266,48 +263,20 @@ export function App() {
           )}
           {!group && <p className="empty">选择一个群组开始。</p>}
           {group && view === "chat" && (
-            <ChatView
-              api={api}
-              me={me.user}
-              group={group}
-              notify={notify}
-              onError={onError}
-            />
+            <ChatView api={api} me={me.user} group={group} notify={notify} onError={onError} />
           )}
-          {group && view === "threads" && (
-            <ThreadsView api={api} group={group} onError={onError} />
-          )}
+          {group && view === "threads" && <ThreadsView api={api} group={group} onError={onError} />}
           {group && view === "tasks" && (
-            <TasksView
-              api={api}
-              group={group}
-              onError={onError}
-              notify={notify}
-            />
+            <TasksView api={api} group={group} onError={onError} notify={notify} />
           )}
           {group && view === "members" && (
-            <MembersView
-              api={api}
-              group={group}
-              me={me.user}
-              onError={onError}
-            />
+            <MembersView api={api} group={group} me={me.user} onError={onError} />
           )}
           {group && view === "agents" && (
-            <AgentsView
-              api={api}
-              me={me.user}
-              onError={onError}
-              notify={notify}
-            />
+            <AgentsView api={api} me={me.user} onError={onError} notify={notify} />
           )}
           {group && view === "users" && (
-            <UsersView
-              api={api}
-              me={me.user}
-              onError={onError}
-              notify={notify}
-            />
+            <UsersView api={api} me={me.user} onError={onError} notify={notify} />
           )}
           {group && view === "settings" && (
             <SettingsView
@@ -319,11 +288,7 @@ export function App() {
             />
           )}
           {group && view === "diagnostics" && (
-            <DiagnosticsView
-              api={api}
-              group={group}
-              onError={onError}
-            />
+            <DiagnosticsView api={api} group={group} onError={onError} />
           )}
         </div>
       </main>
