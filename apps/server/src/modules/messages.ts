@@ -1,4 +1,4 @@
-import { and, asc, desc, eq, gt, isNull, max, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gt, isNull, lt, max, sql } from "drizzle-orm";
 import {
   agents,
   events,
@@ -338,7 +338,10 @@ export interface ListMessagesInput {
   groupId: string;
   viewer: Actor;
   limit?: number;
+  /** Legacy forward cursor (ascending). */
   cursor?: number;
+  /** Load the page immediately before this seq (newest-first paging). */
+  before?: number;
 }
 
 export function listMessages(
@@ -347,36 +350,46 @@ export function listMessages(
 ): { items: MessageRow[]; nextCursor: number | null; eventCursor: number } {
   const limit = Math.min(Math.max(input.limit ?? 50, 1), 100);
   requireGroupMember(ctx.db, input.groupId, input.viewer);
-  const cursor = input.cursor ?? 0;
-  const { items, eventCursor } = ctx.db.transaction((transaction) => {
+  const newestFirst = input.before !== undefined || input.cursor === undefined;
+  const { items, nextCursor, eventCursor } = ctx.db.transaction((transaction) => {
     const db = transaction as unknown as RoomDb;
-    const page = db
+    const conditions = [
+      eq(messages.groupId, input.groupId),
+      isNull(messages.threadId),
+      isNull(messages.deletedAt),
+    ];
+    if (input.before !== undefined) {
+      conditions.push(lt(messages.seq, input.before));
+    } else {
+      conditions.push(gt(messages.seq, input.cursor ?? 0));
+    }
+    const rows = db
       .select()
       .from(messages)
-      .where(
-        and(
-          eq(messages.groupId, input.groupId),
-          isNull(messages.threadId),
-          gt(messages.seq, cursor),
-          isNull(messages.deletedAt),
-        ),
-      )
-      .orderBy(asc(messages.seq))
+      .where(and(...conditions))
+      .orderBy(newestFirst ? desc(messages.seq) : asc(messages.seq))
       .limit(limit)
       .all();
+    const page = newestFirst ? [...rows].reverse() : rows;
     const cursorRow = db
       .select({ value: max(events.seq) })
       .from(events)
       .where(eq(events.groupId, input.groupId))
       .get();
-    return { items: page, eventCursor: cursorRow?.value ?? 0 };
+    return {
+      items: page,
+      // Newest-first pages return the oldest seq of this page; legacy ascending
+      // pages return the newest one.
+      nextCursor:
+        rows.length === limit
+          ? newestFirst
+            ? (page[0]?.seq ?? null)
+            : (page.at(-1)?.seq ?? null)
+          : null,
+      eventCursor: cursorRow?.value ?? 0,
+    };
   });
-  const last = items.at(-1);
-  return {
-    items,
-    nextCursor: items.length === limit && last ? last.seq : null,
-    eventCursor,
-  };
+  return { items, nextCursor, eventCursor };
 }
 
 export interface ListThreadMessagesInput {
@@ -384,6 +397,7 @@ export interface ListThreadMessagesInput {
   viewer: Actor;
   limit?: number;
   cursor?: number;
+  before?: number;
 }
 
 export function listThreadMessages(
@@ -394,22 +408,27 @@ export function listThreadMessages(
   const thread = ctx.db.select().from(threads).where(eq(threads.id, input.threadId)).get();
   if (!thread) throw new NotFoundError(`thread ${input.threadId} not found`);
   requireGroupMember(ctx.db, thread.groupId, input.viewer);
-  const cursor = input.cursor ?? 0;
-  const items = ctx.db
+  const conditions = [eq(messages.threadId, input.threadId), isNull(messages.deletedAt)];
+  if (input.before !== undefined) conditions.push(lt(messages.seq, input.before));
+  else conditions.push(gt(messages.seq, input.cursor ?? 0));
+  const newestFirst = input.before !== undefined || input.cursor === undefined;
+  const rows = ctx.db
     .select()
     .from(messages)
-    .where(
-      and(
-        eq(messages.threadId, input.threadId),
-        gt(messages.seq, cursor),
-        isNull(messages.deletedAt),
-      ),
-    )
-    .orderBy(asc(messages.seq))
+    .where(and(...conditions))
+    .orderBy(newestFirst ? desc(messages.seq) : asc(messages.seq))
     .limit(limit)
     .all();
-  const last = items.at(-1);
-  return { items, nextCursor: items.length === limit && last ? last.seq : null };
+  const items = newestFirst ? [...rows].reverse() : rows;
+  return {
+    items,
+    nextCursor:
+      rows.length === limit
+        ? newestFirst
+          ? (items[0]?.seq ?? null)
+          : (items.at(-1)?.seq ?? null)
+        : null,
+  };
 }
 
 /**
@@ -467,6 +486,9 @@ export function deleteMessage(
   const message = ctx.db.select().from(messages).where(eq(messages.id, input.messageId)).get();
   if (!message) throw new NotFoundError(`message ${input.messageId} not found`);
   requireGroupMember(ctx.db, message.groupId, input.actor);
+  // Deleting a message is a write: readonly users cannot erase history even
+  // when they authored the message.
+  requireWritableActor(ctx.db, input.actor);
   const isSender = message.senderType === input.actor.type && message.senderId === input.actor.id;
   if (!isSender) {
     if (input.actor.type === "agent") {

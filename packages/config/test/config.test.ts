@@ -97,6 +97,25 @@ describe("loadConfig", () => {
     expect(() => loadConfig({ AGENT_SOCKET_TICKET_TTL_MS: "1000" })).toThrow(ConfigError);
   });
 
+  it("does not inherit the dev origin allowlist in access mode", () => {
+    const dev = loadConfig({});
+    expect(dev.realtimeAllowedOrigins).toContain("http://127.0.0.1:5173");
+    const access = loadConfig({
+      AUTH_MODE: "access",
+      ACCESS_TEAM_DOMAIN: "https://team.example.com",
+      ACCESS_AUDIENCE: "aud",
+    });
+    expect(access.realtimeAllowedOrigins).toEqual([]);
+    expect(
+      loadConfig({
+        AUTH_MODE: "access",
+        ACCESS_TEAM_DOMAIN: "https://team.example.com",
+        ACCESS_AUDIENCE: "aud",
+        REALTIME_ALLOWED_ORIGINS: "https://chat.example.com",
+      }).realtimeAllowedOrigins,
+    ).toEqual(["https://chat.example.com"]);
+  });
+
   it("returns a frozen object", () => {
     const config = loadConfig({});
     expect(Object.isFrozen(config)).toBe(true);

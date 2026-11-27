@@ -103,10 +103,23 @@ export function isRealtimeOriginAllowed(
   host: string | undefined,
 ): boolean {
   if (!origin) return true;
-  if (allowed.includes(origin)) return true;
+  let normalized: string;
+  try {
+    normalized = new URL(origin).origin;
+  } catch {
+    return false;
+  }
+  for (const entry of allowed) {
+    try {
+      if (new URL(entry).origin === normalized) return true;
+    } catch {
+      // Ignore malformed allowlist entries; configuration validation rejects
+      // them before this point, and a bad entry must never broaden access.
+    }
+  }
   if (allowed.length > 0) return false;
   try {
-    return new URL(origin).host === host;
+    return new URL(normalized).host === host;
   } catch {
     return false;
   }

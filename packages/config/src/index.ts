@@ -42,12 +42,11 @@ export const configSchema = z
     /** One-time WebSocket upgrade ticket; session tokens never go into a URL. */
     agentSocketTicketTtlMs: z.coerce.number().int().min(5_000).max(300_000).default(60_000),
     /**
-     * Browser origins allowed to open the realtime socket. Empty means
-     * same-host only; production deployments should set an explicit list.
+     * Browser origins allowed to open the realtime socket. Development auth
+     * defaults to the Vite dev server; access mode defaults to same-host only
+     * so a production deployment never inherits localhost.
      */
-    realtimeAllowedOrigins: z
-      .array(z.string().url())
-      .default(["http://127.0.0.1:5173", "http://localhost:5173"]),
+    realtimeAllowedOrigins: z.array(z.string().url()).default([]),
     realtimeMaxConnectionsPerUser: z.coerce.number().int().min(1).max(100).default(5),
     realtimeTicketsPerMinute: z.coerce.number().int().min(1).max(600).default(30),
   })
@@ -94,6 +93,9 @@ function collect(env: NodeJS.ProcessEnv): Record<string, unknown> {
   if (env.LOG_LEVEL) input.logLevel = env.LOG_LEVEL;
   const nodeEnv = env.NODE_ENV ?? "development";
   input.authMode = env.AUTH_MODE ?? (nodeEnv === "production" ? "access" : "dev");
+  if (env.REALTIME_ALLOWED_ORIGINS === undefined && input.authMode === "dev") {
+    input.realtimeAllowedOrigins = ["http://127.0.0.1:5173", "http://localhost:5173"];
+  }
   if (env.ACCESS_TEAM_DOMAIN) input.accessTeamDomain = env.ACCESS_TEAM_DOMAIN;
   if (env.ACCESS_AUDIENCE) input.accessAudience = env.ACCESS_AUDIENCE;
   if (env.BOOTSTRAP_OWNER_EMAIL) input.bootstrapOwnerEmail = env.BOOTSTRAP_OWNER_EMAIL;

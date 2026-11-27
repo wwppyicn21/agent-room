@@ -10,6 +10,7 @@ import {
 } from "../api";
 import { Button, Card, Empty, Field, Select, TextArea, TextInput } from "../ui";
 import { formatTime, shortId, statusLabel } from "../format";
+import { mergeMessages } from "../state";
 
 export function ThreadsView({
   api,
@@ -31,6 +32,7 @@ export function ThreadsView({
   const [title, setTitle] = useState("");
   const [busy, setBusy] = useState(false);
   const [task, setTask] = useState<Task | null>(null);
+  const [olderCursor, setOlderCursor] = useState<number | null>(null);
 
   const loadThreads = useCallback(async () => {
     try {
@@ -69,6 +71,7 @@ export function ThreadsView({
         if (!active) return;
         setDetail(threadDetail);
         setMessages(threadMessages.items);
+        setOlderCursor(threadMessages.nextCursor);
         setEvents(threadEvents.items);
         setTask(threadDetail.task);
       } catch (err) {
@@ -210,6 +213,24 @@ export function ThreadsView({
             </Card>
             <Card title="Thread 消息">
               <div className="thread-messages">
+                {olderCursor !== null && (
+                  <button
+                    className="link small load-earlier"
+                    onClick={() => {
+                      const cursor = olderCursor;
+                      if (cursor === null || !selectedId) return;
+                      void api
+                        .listThreadMessages(selectedId, { limit: 50, before: cursor })
+                        .then((page) => {
+                          setMessages((current) => mergeMessages(page.items, current));
+                          setOlderCursor(page.nextCursor);
+                        })
+                        .catch(onError);
+                    }}
+                  >
+                    加载更早消息
+                  </button>
+                )}
                 {messages.map((message) => (
                   <div key={message.id} className={`message ${message.senderType}`}>
                     <header>

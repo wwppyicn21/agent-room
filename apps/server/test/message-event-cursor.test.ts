@@ -79,7 +79,8 @@ describe("message history event cursor", () => {
       limit: 2,
     });
     expect(page.items).toHaveLength(2);
-    expect(page.nextCursor).toBe(page.items[1]?.seq);
+    expect(page.items.at(-1)?.content).toBe("a-4");
+    expect(page.nextCursor).toBe(page.items[0]?.seq);
     expect(page.eventCursor).toBe(maxEventSeq(groupA));
   });
 });

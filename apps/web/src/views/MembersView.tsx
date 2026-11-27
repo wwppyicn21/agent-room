@@ -20,25 +20,40 @@ export function MembersView({
   const [kind, setKind] = useState<"user" | "agent">("user");
   const [memberId, setMemberId] = useState("");
   const [busy, setBusy] = useState(false);
+  const isSystemAdmin = me.role === "owner" || me.role === "admin";
 
-  const load = useCallback(async () => {
+  const loadMembers = useCallback(async () => {
     try {
-      const [memberList, userList, agentList] = await Promise.all([
-        api.listMembers(group.id),
-        api.listUsers(),
-        api.listAgents(),
-      ]);
+      const memberList = await api.listMembers(group.id);
       setMembers(memberList.members);
-      setUsers(userList.users);
-      setAgents(agentList.agents);
     } catch (err) {
       onError(err);
     }
   }, [api, group.id, onError]);
 
+  // Directory endpoints are owner/admin-only. A regular member must still see
+  // the member list even though these calls return 403.
+  const loadDirectory = useCallback(async () => {
+    if (!isSystemAdmin) return;
+    try {
+      const [userList, agentList] = await Promise.all([api.listUsers(), api.listAgents()]);
+      setUsers(userList.users);
+      setAgents(agentList.agents);
+    } catch {
+      setUsers([]);
+      setAgents([]);
+    }
+  }, [api, isSystemAdmin]);
+
+  const refresh = useCallback(async () => {
+    await loadMembers();
+    await loadDirectory();
+  }, [loadMembers, loadDirectory]);
+
   useEffect(() => {
-    void load();
-  }, [load]);
+    void loadMembers();
+    void loadDirectory();
+  }, [loadMembers, loadDirectory]);
 
   const add = async () => {
     if (!memberId) return;
@@ -46,7 +61,7 @@ export function MembersView({
     try {
       await api.addMember(group.id, { memberType: kind, memberId, memberRole: "member" });
       setMemberId("");
-      await load();
+      await refresh();
     } catch (err) {
       onError(err);
     } finally {
@@ -57,7 +72,7 @@ export function MembersView({
   const changeRole = async (member: Member, role: string) => {
     try {
       await api.updateMemberRole(group.id, member.memberType, member.memberId, role);
-      await load();
+      await refresh();
     } catch (err) {
       onError(err);
     }
@@ -67,13 +82,16 @@ export function MembersView({
     if (!window.confirm(`移除成员 ${member.displayName}？`)) return;
     try {
       await api.removeMember(group.id, member.memberType, member.memberId);
-      await load();
+      await refresh();
     } catch (err) {
       onError(err);
     }
   };
 
-  const canManage = me.role === "owner" || me.role === "admin";
+  const myMembership = members.find(
+    (member) => member.memberType === "user" && member.memberId === me.id,
+  );
+  const canManage = myMembership?.memberRole === "owner" || myMembership?.memberRole === "admin";
   const candidates =
     kind === "user"
       ? users.filter(

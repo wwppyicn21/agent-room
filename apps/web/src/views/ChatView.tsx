@@ -36,6 +36,7 @@ export function ChatView({ api, me, group, notify, onError }: ChatViewProps) {
   const [sending, setSending] = useState(false);
   const [state, setState] = useState<"connecting" | "open" | "closed">("connecting");
   const [eventCursor, setEventCursor] = useState<number | null>(null);
+  const [olderCursor, setOlderCursor] = useState<number | null>(null);
   const onErrorRef = useRef(onError);
   onErrorRef.current = onError;
   const bottomRef = useRef<HTMLDivElement | null>(null);
@@ -48,6 +49,7 @@ export function ChatView({ api, me, group, notify, onError }: ChatViewProps) {
       ]);
       setMessages(history.items);
       setEventCursor(history.eventCursor);
+      setOlderCursor(history.nextCursor);
       setMembers(memberList.members);
     } catch (err) {
       onError(err);
@@ -58,6 +60,7 @@ export function ChatView({ api, me, group, notify, onError }: ChatViewProps) {
     setMessages([]);
     setReplyTo(null);
     setEventCursor(null);
+    setOlderCursor(null);
     void load();
   }, [load]);
 
@@ -205,6 +208,24 @@ export function ChatView({ api, me, group, notify, onError }: ChatViewProps) {
         </div>
       </div>
       <div className="messages">
+        {olderCursor !== null && (
+          <button
+            className="link small load-earlier"
+            onClick={() => {
+              const cursor = olderCursor;
+              if (cursor === null) return;
+              void api
+                .listMessages(group.id, { limit: 50, before: cursor })
+                .then((page) => {
+                  setMessages((current) => mergeMessages(page.items, current));
+                  setOlderCursor(page.nextCursor);
+                })
+                .catch(onErrorRef.current);
+            }}
+          >
+            加载更早消息
+          </button>
+        )}
         {messages.length === 0 && <Empty>还没有消息，说点什么吧。</Empty>}
         {messages.map((message) => (
           <article key={message.id} className={`message ${message.senderType}`}>

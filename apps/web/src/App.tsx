@@ -56,6 +56,11 @@ export function App() {
     return err instanceof Error ? err.message : String(err);
   }, []);
 
+  const onError = useCallback(
+    (err: unknown) => setError(describeError(err)),
+    [describeError],
+  );
+
   const loadGroups = useCallback(async () => {
     const result = await api.listGroups();
     setGroups(result.groups);
@@ -266,17 +271,17 @@ export function App() {
               me={me.user}
               group={group}
               notify={notify}
-              onError={(err) => setError(describeError(err))}
+              onError={onError}
             />
           )}
           {group && view === "threads" && (
-            <ThreadsView api={api} group={group} onError={(err) => setError(describeError(err))} />
+            <ThreadsView api={api} group={group} onError={onError} />
           )}
           {group && view === "tasks" && (
             <TasksView
               api={api}
               group={group}
-              onError={(err) => setError(describeError(err))}
+              onError={onError}
               notify={notify}
             />
           )}
@@ -285,14 +290,14 @@ export function App() {
               api={api}
               group={group}
               me={me.user}
-              onError={(err) => setError(describeError(err))}
+              onError={onError}
             />
           )}
           {group && view === "agents" && (
             <AgentsView
               api={api}
               me={me.user}
-              onError={(err) => setError(describeError(err))}
+              onError={onError}
               notify={notify}
             />
           )}
@@ -300,7 +305,7 @@ export function App() {
             <UsersView
               api={api}
               me={me.user}
-              onError={(err) => setError(describeError(err))}
+              onError={onError}
               notify={notify}
             />
           )}
@@ -309,7 +314,7 @@ export function App() {
               api={api}
               group={group}
               onUpdated={() => void loadGroups()}
-              onError={(err) => setError(describeError(err))}
+              onError={onError}
               notify={notify}
             />
           )}
@@ -317,7 +322,7 @@ export function App() {
             <DiagnosticsView
               api={api}
               group={group}
-              onError={(err) => setError(describeError(err))}
+              onError={onError}
             />
           )}
         </div>

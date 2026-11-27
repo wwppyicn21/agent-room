@@ -358,7 +358,7 @@ export class ApiClient {
 
   listMessages(
     groupId: string,
-    options: { limit?: number; cursor?: number } = {},
+    options: { limit?: number; cursor?: number; before?: number } = {},
   ): Promise<{ items: Message[]; nextCursor: number | null; eventCursor: number }> {
     return this.get(`/api/v1/groups/${groupId}/messages${queryString(options)}`);
   }
@@ -399,7 +399,7 @@ export class ApiClient {
 
   listThreadMessages(
     threadId: string,
-    options: { limit?: number; cursor?: number } = {},
+    options: { limit?: number; cursor?: number; before?: number } = {},
   ): Promise<{ items: Message[]; nextCursor: number | null }> {
     return this.get(`/api/v1/threads/${threadId}/messages${queryString(options)}`);
   }

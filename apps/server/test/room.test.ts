@@ -301,30 +301,33 @@ describe("Room Core: pagination and indexes", () => {
     }
     const page1 = listMessages(ctx, { groupId, viewer: { type: "user", id: owner }, limit: 50 });
     expect(page1.items).toHaveLength(50);
-    expect(page1.items[0]?.seq).toBe(1);
-    expect(page1.nextCursor).toBe(50);
+    expect(page1.items[0]?.seq).toBe(71);
+    expect(page1.items.at(-1)?.seq).toBe(120);
+    expect(page1.nextCursor).toBe(71);
 
     const page2 = listMessages(ctx, {
       groupId,
       viewer: { type: "user", id: owner },
       limit: 50,
-      cursor: page1.nextCursor ?? 0,
+      before: page1.nextCursor ?? 0,
     });
-    expect(page2.items[0]?.seq).toBe(51);
+    expect(page2.items[0]?.seq).toBe(21);
+    expect(page2.items.at(-1)?.seq).toBe(70);
     const page3 = listMessages(ctx, {
       groupId,
       viewer: { type: "user", id: owner },
       limit: 50,
-      cursor: page2.nextCursor ?? 0,
+      before: page2.nextCursor ?? 0,
     });
+    expect(page3.items[0]?.seq).toBe(1);
     expect(page3.items).toHaveLength(20);
     expect(page3.nextCursor).toBeNull();
 
     const plan = handle.sqlite
       .prepare(
-        "EXPLAIN QUERY PLAN SELECT * FROM messages WHERE group_id = ? AND seq > ? AND deleted_at IS NULL ORDER BY seq LIMIT 50",
+        "EXPLAIN QUERY PLAN SELECT * FROM messages WHERE group_id = ? AND seq < ? AND deleted_at IS NULL ORDER BY seq LIMIT 50",
       )
-      .all(groupId, 0) as Array<{ detail: string }>;
+      .all(groupId, 121) as Array<{ detail: string }>;
     expect(plan.some((row) => row.detail.includes("messages_group_seq_uq"))).toBe(true);
   });
 
