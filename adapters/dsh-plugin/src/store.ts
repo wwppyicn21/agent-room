@@ -11,7 +11,13 @@ export interface DeliveryRecord {
   error?: string;
 }
 
-export type TurnState = "prompting" | "awaiting_response" | "replied" | "completed" | "failed";
+export type TurnState =
+  | "prompting"
+  | "awaiting_response"
+  | "reply_pending"
+  | "completed"
+  | "failed"
+  | "cancelled";
 
 /** Durable association between one Room delivery and its DSH turn. */
 export interface PendingTurnRecord {
@@ -41,7 +47,11 @@ interface StoreFileV2 {
   turns: Record<string, PendingTurnRecord>;
 }
 
-const TERMINAL_TURN_STATES: ReadonlySet<TurnState> = new Set(["completed", "failed"]);
+const TERMINAL_TURN_STATES: ReadonlySet<TurnState> = new Set([
+  "completed",
+  "failed",
+  "cancelled",
+]);
 
 /**
  * Durable delivery and turn bookkeeping for the DSH plugin.
@@ -121,9 +131,10 @@ export class DeliveryStore {
     const counts: Record<TurnState, number> = {
       prompting: 0,
       awaiting_response: 0,
-      replied: 0,
+      reply_pending: 0,
       completed: 0,
       failed: 0,
+      cancelled: 0,
     };
     for (const turn of this.turns.values()) counts[turn.state] += 1;
     return counts;
@@ -309,9 +320,10 @@ function isTurnRecord(value: unknown): value is PendingTurnRecord {
   return (
     (turn.state === "prompting" ||
       turn.state === "awaiting_response" ||
-      turn.state === "replied" ||
+      turn.state === "reply_pending" ||
       turn.state === "completed" ||
-      turn.state === "failed") &&
+      turn.state === "failed" ||
+      turn.state === "cancelled") &&
     typeof turn.eventId === "string" &&
     typeof turn.requestId === "string" &&
     typeof turn.sessionId === "string" &&

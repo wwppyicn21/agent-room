@@ -15,18 +15,26 @@ import { DeliveryStore } from "../src/store.js";
 
 class FakeClient implements RoomClientLike {
   connected = false;
+  openCalls = 0;
+  failSend = false;
+  connectDelayMs = 0;
   sent: { groupId: string; content: string; options?: Record<string, unknown> }[] = [];
   options: AgentClientOptions | undefined;
   async connect(): Promise<void> {
+    if (this.connectDelayMs > 0) {
+      await new Promise((resolve) => setTimeout(resolve, this.connectDelayMs));
+    }
     this.connected = true;
   }
   async open(): Promise<{ agentId: string }> {
+    this.openCalls += 1;
     return { agentId: "agt_self" };
   }
   close(): void {
     this.connected = false;
   }
   sendMessage(groupId: string, content: string, options?: Record<string, unknown>): void {
+    if (this.failSend) throw new Error("socket is not open");
     this.sent.push({ groupId, content, options });
   }
 }
@@ -62,6 +70,7 @@ function makeHarness(
     temp?: string;
     resolveAgentError?: boolean;
     turnTimeoutMs?: number;
+    connectDelayMs?: number;
   } = {},
 ): Harness {
   const temp = options.temp ?? mkdtempSync(join(tmpdir(), "room-dsh-plugin-"));
@@ -84,6 +93,7 @@ function makeHarness(
   };
   const readSession = options.readSession ?? (async () => ({ id: "ok" }));
   const client = new FakeClient();
+  client.connectDelayMs = options.connectDelayMs ?? 0;
   const ctx: DshContextLike = {
     logger: { info: () => {}, warn: () => {}, error: () => {} },
     get: (service: string) => {
@@ -527,5 +537,98 @@ describe("DSH plugin turn recovery", () => {
     await new Promise((resolve) => setTimeout(resolve, 80));
     expect(harness.client.sent).toHaveLength(0);
     expect(harness.prompts).toHaveLength(0);
+  });
+
+  it("correlates a turn with the rpcId of its user message", async () => {
+    const harness = makeHarness([{ groupId: "grp_a", sessionId: "ses_a" }]);
+    await harness.bridge.start();
+    await waitFor(() => harness.client.connected);
+    await harness.deliver(messageEvent({ eventId: "evd_1", payload: { ...messageEvent().payload, messageId: "msg_1" } }));
+    await harness.deliver(messageEvent({ eventId: "evd_2", payload: { ...messageEvent().payload, messageId: "msg_2" } }));
+
+    harness.emit("ses_a", {
+      type: "user/message",
+      data: { source: { rpcId: "room-evd_2" } },
+    });
+    harness.emit("ses_a", {
+      type: "assistant/message",
+      data: { message: { content: [{ type: "text", text: "second answer" }] } },
+    });
+    harness.emit("ses_a", { type: "turn/end", data: { reason: { kind: "completed" } } });
+
+    await waitFor(() => harness.client.sent.length === 1);
+    await waitFor(() => harness.bridge.deliveryStore.getTurn("evd_2")?.state === "completed");
+    expect(harness.client.sent[0]).toMatchObject({
+      content: "second answer",
+      options: { replyToMessageId: "msg_2" },
+    });
+    expect(harness.bridge.deliveryStore.getTurn("evd_1")?.state).toBe("awaiting_response");
+    await harness.bridge.stop();
+  });
+
+  it("persists task cancellation so a restart cannot resume the turn", async () => {
+    const harness = makeHarness([{ groupId: "grp_a", sessionId: "ses_a" }]);
+    await harness.bridge.start();
+    await waitFor(() => harness.client.connected);
+    await harness.deliver(messageEvent());
+    harness.recover([
+      { task: { id: "tsk_1", groupId: "grp_a" } } as unknown as AgentTaskView,
+    ]);
+    await harness.cancel({
+      commandId: "cmd_1",
+      type: "task.cancel",
+      taskId: "tsk_1",
+      runId: null,
+      reason: "removed",
+      createdAt: new Date().toISOString(),
+    });
+    expect(harness.bridge.deliveryStore.getTurn("evd_1")?.state).toBe("cancelled");
+
+    const reopened = new DeliveryStore(join(harness.temp, "deliveries.json"));
+    await reopened.load();
+    expect(reopened.getTurn("evd_1")?.state).toBe("cancelled");
+    expect(reopened.listTurns(["prompting", "awaiting_response"])).toHaveLength(0);
+    await harness.bridge.stop();
+  });
+
+  it("retries a reply generated while the socket was down after reconnect", async () => {
+    const harness = makeHarness([{ groupId: "grp_a", sessionId: "ses_a" }]);
+    await harness.bridge.start();
+    await waitFor(() => harness.client.connected);
+    await harness.deliver(messageEvent());
+    harness.client.failSend = true;
+    harness.emit("ses_a", {
+      type: "assistant/message",
+      data: { message: { content: [{ type: "text", text: "durable answer" }] } },
+    });
+    harness.emit("ses_a", { type: "turn/end", data: { reason: { kind: "completed" } } });
+    await waitFor(() => harness.bridge.deliveryStore.getTurn("evd_1")?.state === "reply_pending");
+    expect(harness.client.sent).toHaveLength(0);
+    await harness.bridge.deliveryStore.flush();
+
+    const second = makeHarness([{ groupId: "grp_a", sessionId: "ses_a" }], { temp: harness.temp });
+    await second.bridge.start();
+    await waitFor(() => second.client.sent.length === 1);
+    expect(second.client.sent[0]).toMatchObject({
+      content: "durable answer",
+      options: { clientMessageId: "plugin-reply-evd_1" },
+    });
+    await waitFor(() => second.bridge.deliveryStore.getTurn("evd_1")?.state === "completed");
+    await harness.bridge.stop();
+    await second.bridge.stop();
+  });
+
+  it("does not open a connection or schedule reconnect after stop during connect", async () => {
+    const harness = makeHarness([{ groupId: "grp_a", sessionId: "ses_a" }], {
+      connectDelayMs: 60,
+    });
+    const starting = harness.bridge.start();
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    await harness.bridge.stop();
+    await starting;
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    expect(harness.client.openCalls).toBe(0);
+    expect(harness.client.connected).toBe(false);
+    expect(harness.bridge.status().connected).toBe(false);
   });
 });

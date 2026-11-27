@@ -202,7 +202,7 @@ function openSession(
   now: number,
   sessionTtlMs: number,
 ): { session: AgentSessionRow; token: string } {
-  const token = randomBytes(32).toString("base64url");
+  const token = `agt_${randomBytes(32).toString("base64url")}`;
   const session = {
     id: newId("ses"),
     agentId,

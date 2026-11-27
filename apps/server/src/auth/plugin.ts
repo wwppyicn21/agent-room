@@ -1,6 +1,7 @@
 import type { FastifyInstance } from "fastify";
 import type { Config } from "@room/config";
 import type { RoomContext } from "../modules/context.js";
+import { requireAgentSession } from "../modules/agentAuth.js";
 import { UnauthorizedError } from "../modules/errors.js";
 import { AccessTokenVerifier, resolveAccessUser } from "./access.js";
 import { resolveDevPrincipal } from "./dev.js";
@@ -45,10 +46,16 @@ export async function registerAuth(
     // Agent endpoints authenticate their own opaque session token; they never
     // resolve a user principal.
     if (path.startsWith("/api/v1/agent/")) return;
-    // Agent bearer tokens are validated by the route that handles them; they
-    // are never exchanged for a user principal.
+    // Agent bearer tokens are never exchanged for a user principal, but the
+    // prefix alone must not bypass user authentication: validate the session
+    // before letting the route rely on it.
     const authorization = request.headers.authorization ?? "";
-    if (authorization.startsWith("Bearer agt_")) return;
+    if (authorization.startsWith("Bearer agt_")) {
+      const token = authorization.slice(7).trim();
+      if (!token) throw new UnauthorizedError("agent bearer token required");
+      requireAgentSession(dependencies.ctx, token);
+      return;
+    }
     if (dependencies.config.authMode === "dev") {
       request.principal = resolveDevPrincipal(
         dependencies.ctx,

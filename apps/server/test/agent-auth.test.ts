@@ -581,6 +581,75 @@ describe("agent websocket deliveries", () => {
   }, 20_000);
 });
 
+describe("real agent session HTTP authentication", () => {
+  it("issues an agt_ token that authenticates room tools and is not a user principal", async () => {
+    const { room, app } = await setup();
+    const owner = seedUser(room.ctx, "owner", "owner");
+    const groupId = seedGroup(room.ctx, owner);
+    const keys = pair();
+    const agent = registerAgentWithKey(room.ctx, {
+      displayName: "real-agent",
+      runtime: "test",
+      publicKey: keys.pem,
+      actorUserId: owner,
+    });
+    addMember(room.ctx, {
+      groupId,
+      actorUserId: owner,
+      memberType: "agent",
+      memberId: agent.agent.id,
+    });
+
+    const connected = await completeConnect(app, keys, agent.key.fingerprint);
+    expect(connected.statusCode).toBe(200);
+    const token = String(connected.body.sessionToken);
+    expect(token).toMatch(/^agt_/);
+
+    const groups = await app.inject({
+      method: "GET",
+      url: "/api/v1/agent/groups",
+      headers: { authorization: `Bearer ${token}` },
+    });
+    expect(groups.statusCode).toBe(200);
+    expect(groups.json().groups).toHaveLength(1);
+
+    const tasks = await app.inject({
+      method: "GET",
+      url: "/api/v1/agent/tasks",
+      headers: { authorization: `Bearer ${token}` },
+    });
+    expect(tasks.statusCode).toBe(200);
+
+    const messages = await app.inject({
+      method: "GET",
+      url: `/api/v1/agent/groups/${groupId}/messages`,
+      headers: { authorization: `Bearer ${token}` },
+    });
+    expect(messages.statusCode).toBe(200);
+
+    const me = await app.inject({
+      method: "GET",
+      url: "/api/v1/me",
+      headers: { authorization: `Bearer ${token}` },
+    });
+    expect(me.statusCode).toBe(401);
+
+    const forged = await app.inject({
+      method: "GET",
+      url: `/api/v1/agent/groups/${groupId}/messages`,
+      headers: { authorization: "Bearer agt_forged-token" },
+    });
+    expect(forged.statusCode).toBe(401);
+
+    const forgedUserPath = await app.inject({
+      method: "GET",
+      url: "/api/v1/me",
+      headers: { authorization: "Bearer agt_forged-token" },
+    });
+    expect(forgedUserPath.statusCode).toBe(401);
+  });
+});
+
 function statusOf(room: TestRoom, agentId: string): string | undefined {
   return room.ctx.db.select().from(agents).where(eq(agents.id, agentId)).get()?.status;
 }

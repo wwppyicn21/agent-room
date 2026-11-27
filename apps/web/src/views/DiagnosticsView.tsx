@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
-import { ApiClient, type Delivery, type DeliveryStats, type EventRow, type Group } from "../api";
+import { ApiClient, type DeliveryItem, type DeliveryStats, type EventRow, type Group } from "../api";
 import { Button, Card, Empty, Select } from "../ui";
 import { formatTime, shortId, statusLabel } from "../format";
 
@@ -13,7 +13,7 @@ export function DiagnosticsView({
   onError: (error: unknown) => void;
 }) {
   const [stats, setStats] = useState<DeliveryStats | null>(null);
-  const [deliveries, setDeliveries] = useState<Delivery[]>([]);
+  const [deliveries, setDeliveries] = useState<DeliveryItem[]>([]);
   const [deliveryStatus, setDeliveryStatus] = useState("");
   const [deliveryCursor, setDeliveryCursor] = useState<string | null>(null);
   const [events, setEvents] = useState<EventRow[]>([]);
@@ -115,20 +115,22 @@ export function DiagnosticsView({
               </tr>
             </thead>
             <tbody>
-              {deliveries.map((delivery) => (
-                <tr key={delivery.id}>
-                  <td className="mono small">{shortId(delivery.id)}</td>
-                  <td className="mono small">{shortId(delivery.agentId)}</td>
-                  <td className="mono small">{shortId(delivery.eventId)}</td>
+              {deliveries.map((item) => (
+                <tr key={item.delivery.id}>
+                  <td className="mono small">{shortId(item.delivery.id)}</td>
+                  <td className="small">
+                    {item.agentDisplayName || shortId(item.delivery.agentId)}
+                  </td>
+                  <td className="mono small">{item.eventType || shortId(item.delivery.eventId)}</td>
                   <td>
                     <span
-                      className={`badge badge-${delivery.status === "failed" ? "danger" : "accent"}`}
+                      className={`badge badge-${item.delivery.status === "failed" ? "danger" : "accent"}`}
                     >
-                      {statusLabel(delivery.status)}
+                      {statusLabel(item.delivery.status)}
                     </span>
                   </td>
-                  <td>{delivery.attempts}</td>
-                  <td className="small">{formatTime(delivery.createdAt)}</td>
+                  <td>{item.delivery.attempts}</td>
+                  <td className="small">{formatTime(item.delivery.createdAt)}</td>
                 </tr>
               ))}
             </tbody>

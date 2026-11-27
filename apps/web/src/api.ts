@@ -146,6 +146,12 @@ export interface Delivery {
   failedAt: number | null;
 }
 
+export interface DeliveryItem {
+  delivery: Delivery;
+  agentDisplayName: string;
+  eventType: string;
+}
+
 export interface DeliveryStats {
   statuses: Record<string, number>;
   oldestPendingAt: number | null;
@@ -479,7 +485,7 @@ export class ApiClient {
   listDeliveries(
     groupId: string,
     options: { status?: string; agentId?: string; limit?: number; cursor?: string } = {},
-  ): Promise<{ items: Delivery[]; nextCursor: string | null }> {
+  ): Promise<{ items: DeliveryItem[]; nextCursor: string | null }> {
     return this.get(`/api/v1/groups/${groupId}/deliveries${queryString(options)}`);
   }
 

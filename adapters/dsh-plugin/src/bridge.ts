@@ -28,6 +28,8 @@ export interface DshSessionEvent {
   data?: {
     message?: { content?: readonly { type?: string; text?: string; [key: string]: unknown }[] };
     reason?: { kind?: string };
+    turn?: number;
+    source?: { rpcId?: string };
   };
 }
 
@@ -108,6 +110,7 @@ export class RoomBridge {
   >();
   private readonly validSessions = new Set<string>();
   private readonly pendingBySession = new Map<string, PendingTurn[]>();
+  private activeBySession = new Map<string, PendingTurn>();
   private readonly taskSessions = new Map<string, string>();
   private recovering = false;
   private client: RoomClientLike | null = null;
@@ -183,6 +186,7 @@ export class RoomBridge {
       for (const turn of turns) if (turn.timer) clearTimeout(turn.timer);
     }
     this.pendingBySession.clear();
+    this.activeBySession.clear();
     if (typeof this.disposeSessionEvents === "function") this.disposeSessionEvents();
     this.disposeSessionEvents = undefined;
     this.client?.close();
@@ -205,6 +209,7 @@ export class RoomBridge {
   private connectLoop(): void {
     if (this.stopped) return;
     void this.connectOnce().catch((error) => {
+      if (this.stopped) return;
       this.lastError = errorText(error);
       this.connected = false;
       this.logger.error(`agent-room: connect failed: ${this.lastError}`);
@@ -214,16 +219,22 @@ export class RoomBridge {
 
   private async connectOnce(): Promise<void> {
     if (this.stopped || !this.keys) return;
-    if (!this.client) {
-      this.client = this.createClient();
+    const client = this.client ?? (this.client = this.createClient());
+    await client.connect();
+    if (this.stopped || this.client !== client) {
+      client.close();
+      return;
     }
-    await this.client.connect();
-    const hello = await this.client.open();
+    const hello = await client.open();
+    if (this.stopped || this.client !== client) {
+      client.close();
+      return;
+    }
     this.agentId = hello.agentId;
     this.connected = true;
     this.lastError = null;
     this.reconnectAttempts = 0;
-    void this.recoverPendingTurns();
+    void this.flushPendingReplies().then(() => this.recoverPendingTurns());
     this.logger.info(
       `agent-room: connected as ${hello.agentId} with ${this.mappings.size} group mapping(s)`,
     );
@@ -428,15 +439,28 @@ export class RoomBridge {
   private handleSessionEvent(sessionId: string, event: DshSessionEvent): void {
     const queue = this.pendingBySession.get(sessionId);
     if (!queue || queue.length === 0) return;
-    const turn = queue[0];
+    // Correlate a user message with the exact queued turn via its rpcId. The
+    // queue alone is not enough: a later queued turn may start before an older
+    // turn's assistant output arrives.
+    if (event.type === "user/message") {
+      const rpcId = event.data?.source?.rpcId;
+      if (!rpcId) return;
+      const turn = queue.find((candidate) => candidate.requestId === rpcId);
+      if (turn) this.activeBySession.set(sessionId, turn);
+      return;
+    }
+    const turn = this.activeBySession.get(sessionId) ?? queue[0];
+    if (!turn) return;
     if (event.type === "assistant/message") {
       const text = extractAssistantText(event.data?.message?.content);
       if (text) turn.text = text;
       return;
     }
     if (event.type !== "turn/end") return;
+    this.activeBySession.delete(sessionId);
     if (turn.timer) clearTimeout(turn.timer);
-    queue.shift();
+    const index = queue.findIndex((candidate) => candidate.eventId === turn.eventId);
+    if (index >= 0) queue.splice(index, 1);
     if (queue.length === 0) this.pendingBySession.delete(sessionId);
     const reason = event.data?.reason?.kind ?? "completed";
     void this.finishTurn(turn, reason);
@@ -454,13 +478,16 @@ export class RoomBridge {
       await this.store.updateTurn(turn.eventId, { state: "completed", text: "" });
       return;
     }
+    const pending = this.store.updateTurn(turn.eventId, { state: "reply_pending", text });
     try {
       this.postReply(turn, text);
+      await pending;
       await this.store.updateTurn(turn.eventId, { state: "completed", text });
     } catch (error) {
-      const reasonText = errorText(error);
-      await this.store.updateTurn(turn.eventId, { state: "failed", error: reasonText });
-      this.logger.error(`agent-room: reply for ${turn.eventId} failed: ${reasonText}`);
+      await pending;
+      // Keep the generated text durable; a reconnect retries the same
+      // clientMessageId, so the server can deduplicate a late first attempt.
+      this.logger.warn(`agent-room: reply for ${turn.eventId} is pending: ${errorText(error)}`);
     }
   }
 
@@ -472,6 +499,22 @@ export class RoomBridge {
       replyToMessageId: turn.replyToMessageId ?? undefined,
       clientMessageId: `plugin-reply-${turn.eventId}`,
     });
+  }
+
+  /** Retry replies generated while the socket was down (idempotent send). */
+  private async flushPendingReplies(): Promise<void> {
+    for (const turn of this.store.listTurns(["reply_pending"])) {
+      if (this.stopped) return;
+      try {
+        this.postReply(turn, turn.text);
+        await this.store.updateTurn(turn.eventId, { state: "completed", text: turn.text });
+      } catch (error) {
+        this.logger.warn(
+          `agent-room: pending reply for ${turn.eventId} is still undeliverable: ${errorText(error)}`,
+        );
+        return;
+      }
+    }
   }
 
   /**
@@ -544,14 +587,14 @@ export class RoomBridge {
           await this.store.updateTurn(record.eventId, { state: "completed", text: "" });
           continue;
         }
+        await this.store.updateTurn(record.eventId, { state: "reply_pending", text });
         try {
           this.postReply(record, text);
           await this.store.updateTurn(record.eventId, { state: "completed", text });
         } catch (error) {
-          await this.store.updateTurn(record.eventId, {
-            state: "failed",
-            error: errorText(error),
-          });
+          this.logger.warn(
+            `agent-room: recovered reply for ${record.eventId} is pending: ${errorText(error)}`,
+          );
         }
       }
     } finally {
@@ -587,12 +630,20 @@ export class RoomBridge {
       );
       return;
     }
-    const controller = this.deps.ctx.get("sessionController") as SessionControllerLike | undefined;
-    if (!controller) return;
-    controller.cancel({ sessionId });
+    // Persist the cancellation before cancelling the Session so a restart
+    // cannot resume a task the user already cancelled.
+    const turns = this.store
+      .listTurns(["prompting", "awaiting_response", "reply_pending"])
+      .filter((turn) => turn.sessionId === sessionId);
+    for (const turn of turns) {
+      await this.store.updateTurn(turn.eventId, { state: "cancelled", error: "task cancelled" });
+    }
     const queue = this.pendingBySession.get(sessionId);
     for (const turn of queue ?? []) if (turn.timer) clearTimeout(turn.timer);
     this.pendingBySession.delete(sessionId);
+    this.activeBySession.delete(sessionId);
+    const controller = this.deps.ctx.get("sessionController") as SessionControllerLike | undefined;
+    controller?.cancel({ sessionId });
     this.taskSessions.delete(command.taskId);
     this.logger.info(`agent-room: cancelled session ${sessionId} for task ${command.taskId}`);
   }

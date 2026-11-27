@@ -79,4 +79,37 @@ describe("web api client", () => {
     expect(messageFromEvent(event, "grp_1")?.content).toBe("hello");
     expect(messageFromEvent({ ...event, type: "task.created" }, "grp_1")).toBeNull();
   });
+
+  it("keeps the nested delivery diagnostics DTO intact", async () => {
+    const { api } = client(
+      () =>
+        new Response(
+          JSON.stringify({
+            items: [
+              {
+                delivery: {
+                  id: "dly_1",
+                  agentId: "agt_1",
+                  eventId: "evt_1",
+                  status: "pending",
+                  attempts: 2,
+                  createdAt: 100,
+                  deliveredAt: null,
+                  ackedAt: null,
+                  failedAt: null,
+                },
+                agentDisplayName: "dsh",
+                eventType: "message.created",
+              },
+            ],
+            nextCursor: null,
+          }),
+          { status: 200 },
+        ),
+    );
+    const result = await api.listDeliveries("grp_1");
+    expect(result.items[0].delivery.id).toBe("dly_1");
+    expect(result.items[0].agentDisplayName).toBe("dsh");
+    expect(result.items[0].eventType).toBe("message.created");
+  });
 });
