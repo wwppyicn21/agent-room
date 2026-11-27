@@ -43,6 +43,9 @@ DeliveryStore 并发写、CI、WebSocket 安全与浏览器 E2E。所有结论�
 
 ## 3. 测试结果
 
+> 本节保留 2026-11-26 整改时的历史基线（39 files / 277 tests）。2026-11-27 的 DSH 后续整改将基线更新为
+> **43 files / 291 tests**（E2E 9 passed），详见 `docs/QUALITY_REVIEW_FOLLOWUP_2026-11-27.md`。
+
 实际执行的命令与结果：
 
 ```text

@@ -1,34 +1,31 @@
 # 实施记录
 
-## 当前进度总览（2026-11-26）
+## 当前进度总览（2026-11-27）
 
 | 里程碑 | 状态 |
 |---|---|
 | M0–M5 | 完成；M5 于 2026-11-25 验收（215 tests） |
 | M6 DSH Plugin | 实现与实机协议验证完成；bundle 已安装/启用，真实 Room 消息 → DSH Session → 回复链路通过；**卸载/更新实机验收未关闭** |
 | M7 Codex Plugin | 未开始（用户交由 ChatGPT 开发）；服务端 Agent Room Tools HTTP 已就绪 |
-| M8 React Web Client | 实现完成（2026-11-26）：登录、群组/群聊、实时消息与 presence、Thread、Task/Approval、成员/角色、Agent/Key、用户、设置、Delivery 诊断、事件历史；无浏览器 E2E |
+| M8 React Web Client | 实现完成（2026-11-26）：登录、群组/群聊、实时消息与 presence、Thread、Task/Approval、成员/角色、Agent/Key、用户、设置、Delivery 诊断、事件历史；浏览器 E2E 9 例通过 |
+| DSH 后续整改 | 本地完成（2026-11-27）：SQLite/配置权限、Realtime 发送失败清理、PendingTurn 超时持久化、DeliveryStore prune 提交；最新 HEAD 的 CI 待授权 push |
 | M9 Deployment | 未开始 |
 
-验证基线：**37 files / 260 tests**；`lint` / `typecheck` / `format:check` / `build` 全部通过；
-M8 UI 代码提交见文末「M8」一节。
+验证基线：**43 files / 291 tests**；`pnpm e2e` 9 passed；`lint` / `typecheck` / `format:check` / `build` 全部通过。
 
 服务端前置提交：`9dae94e`（浏览器实时 WebSocket）、`783ead7`（Agent HTTP Room Tools）、
 `1432b42`（Delivery 诊断 + Agent Presence）、`8b30fed`（用户管理端点）。
 
-已知缺口：M6 卸载/更新实机项与文档验收；M7 未开始；M8 UI 未开始；M9 未开始；
-M4 skip 诊断事件；`request_task` 属 M7 Room Tools；审批过期扫描为单进程定时器；
-realtime ticket 与 presence 为单进程实现。
+已知缺口：最新 HEAD 的 CI 未验收（需授权 push）；M6 卸载/更新实机项；M7 未开始；
+M9 未开始；M4 skip 诊断事件；`request_task` 属 M7 Room Tools；审批过期扫描为单进程定时器；
+realtime ticket/presence 与连接限制为单进程实现。
 
-## 后续计划（2026-11-26）
+## 后续计划（2026-11-27）
 
-1. **收尾 M6 验收（可选）**：补 uninstall/update 实机流程、插件配置/日志/status 截图或记录，
-   再决定是否把 M6 标为 Completed。
-2. **M8 服务端剩余前置**：Agent 管理端点（禁用/启用、在线状态查询）、Group 成员角色调整、
-   消息删除/编辑（如 UI 需要）、系统设置读取；为 UI 提供稳定的分页与错误契约。
-3. **M8 React Web Client**：登录、群组/消息、Thread、Task Board、Agent 状态与 Key 管理、
-   Delivery 诊断、用户与角色管理。
-4. **M7 Codex Plugin**：由 ChatGPT 继续；可直接使用现有 Agent WSS + HTTP Room Tools。
+1. **完成 DSH 整改 CI 验收**：获得 push 授权后在最新 HEAD 上跑 GitHub Actions；通过后再把复核项标为 PASS。
+2. **M6 收尾（可选）**：补 uninstall/update 实机流程与状态记录，再决定是否把 M6 标为 Completed。
+3. **M7 Codex Plugin**：由 ChatGPT 继续；可直接使用 Agent WSS + HTTP Room Tools。
+4. **M8 体验补强**：附件、无限滚动、移动端布局；不改变现有权限模型。
 5. **M9 Deployment**：systemd 单实例、备份/恢复、Cloudflare Tunnel、观察与多实例边界评估。
 
 ## M0：仓库调查与基线冻结
@@ -1041,3 +1038,19 @@ M6 卸载/更新验收、M7、M9。
 安全回归：未放宽系统级 Agent API（仍仅 owner/admin）；群组 Agent 查询要求当前用户为群组成员；创建/重新指派继续由服务端校验 Agent 群成员关系；Realtime 仍按群组与成员权限过滤；history 与 cursor 来自同一事务快照。
 
 剩余：任务页缺少 Agent 时的交互仅通过 Playwright 路由模拟验证；历史消息分页时 cursor 语义已覆盖，但前端未实现无限滚动自动翻页。
+
+## DSH 整改（2026-11-27）
+
+针对 DSH 插件与服务器复核（`agent-room-dsh-remediation.md`）的 6 项意见：
+
+| 项目 | 结果 | 证据 |
+|---|---|---|
+| SQLite / 配置权限 | PASS（本地） | 数据库/锁库/sidecar `0600`、新建目录 `0700`、systemd `UMask=0077`；`file-permissions.test.ts` 3 例 |
+| Realtime send 异常清理 | PASS | `closed`/`cleaned` 分离、幂等 `cleanup()`、`1011`/`1008` 关闭；`realtime-cleanup.test.ts` 2 例 |
+| PendingTurn 超时 | PASS | 超时异步落盘 `failed/turn_timeout`，迟到事件忽略，stop 保留 awaiting；`bridge.test.ts` 19 例 |
+| DeliveryStore prune 提交 | PASS | 删除任一记录即提交；未终态 turn 永不删；store 6 例 |
+| 文档一致 | PASS | README、本文件、部署手册、`QUALITY_REVIEW_FOLLOWUP_2026-11-27.md` |
+| 最新 HEAD CI | PENDING（需授权 push） | 远端 `main=9c26f8d` 的 Run `45909756374` 全绿；本轮改动未 push |
+
+本轮实际执行：`pnpm test` 43 files / 291 tests；`CI=true pnpm e2e` 9 passed；`lint` / `typecheck` / `format:check` / `build` 全过。
+未修改 SQLite schema；`deliveries.json` 保持 v1 读取、v2 写入；API/帧格式未变。
