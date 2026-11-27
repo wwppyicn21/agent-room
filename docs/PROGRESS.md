@@ -11,7 +11,7 @@
 | DSH 后续整改 | 完成（2026-11-27）：SQLite/配置权限、Realtime 发送失败清理、PendingTurn 超时持久化、DeliveryStore prune 提交；GitHub Actions Run `46047104203` 全绿 |
 | M9 Deployment | 未开始 |
 
-验证基线：**43 files / 291 tests**；`pnpm e2e` 9 passed；`lint` / `typecheck` / `format:check` / `build` 全部通过。
+验证基线：**45 files / 307 tests**；`pnpm e2e` 9 passed；`lint` / `typecheck` / `format:check` / `build` 全部通过。
 
 服务端前置提交：`9dae94e`（浏览器实时 WebSocket）、`783ead7`（Agent HTTP Room Tools）、
 `1432b42`（Delivery 诊断 + Agent Presence）、`8b30fed`（用户管理端点）。
@@ -1054,3 +1054,22 @@ M6 卸载/更新验收、M7、M9。
 
 本轮实际执行：`pnpm test` 43 files / 291 tests；`CI=true pnpm e2e` 9 passed；`lint` / `typecheck` / `format:check` / `build` 全过。
 未修改 SQLite schema；`deliveries.json` 保持 v1 读取、v2 写入；API/帧格式未变。
+
+## 代码审查修复（2026-11-27）
+
+针对 13 项审查清单逐项复核并修复（P0 → P1 → P2 → P3），每阶段先补测试再改代码：
+
+- **P0-01** Agent Token 前缀与认证：`openSession()` 签发 `agt_` 前缀 token；`auth/plugin.ts` 对 `Bearer agt_` 先调用 `requireAgentSession` 验证再放行；新增真实 `challenge → connect → sessionToken → /agent/tasks|groups` 集成测试，伪造/非法 token 401。
+- **P0-02** Diagnostics Delivery DTO：服务端 `{delivery, agentDisplayName, eventType}` 与 Web `DeliveryItem` 对齐，`DiagnosticsView` 按嵌套结构渲染并分页。
+- **P0-03** DSH Plugin 回合状态：按 `rpcId/requestId` 关联 turn；取消状态持久化 `cancelled`；新增 `reply_pending` 持久化与重连幂等补发；`connectOnce`/`stop` 竞态修复。
+- **P1-01** Origin 默认值：dev 仅注入本地 5173 白名单，access 默认空且不继承 localhost；URL 规范化后比较 `.origin`。
+- **P1-02** MembersView：`onError` 用 `useCallback` 固定；成员列表与系统 Users/Agents 目录拆分；群管理权限改用群内 `memberRole`。
+- **P1-03** 消息历史分页：默认最新 50 条，`before` 向前加载，`eventCursor` 与实时订阅衔接；ChatView/ThreadsView 支持「加载更早消息」。
+- **P1-04** readonly 删除：`deleteMessage` 统一 `requireWritableActor`。
+- **P2-01** Task 幂等：查询、thread/task 插入、事件/审计合并事务；唯一冲突回查并校验 payload，不返回 500。
+- **P2-02** Group PATCH：基本信息与 AI Settings 单事务一次更新，仅 Settings 不写多余 base 审计，校验失败无部分提交。
+- **P2-03** cursor 校验：四个消息列表接口统一非负整数校验，非法值 400。
+- **P2-04** Realtime 安全：ticket 状态迁入 `RealtimeHub` 实例；Agent 帧上限 256 KiB（1009）；单个 Session offline 不再误断其他 Session；300ms 轮询评估后保留（单实例、SQLite、当前规模可接受）。
+- **P3-01/02/03/04** 补齐缺失 CSS 类；ChatView 对被回复消息不可见时显示「较早的消息」；修正 `pauseTask`/`resumeTask` 返回 `{task, run}` 与 `removeMember` 的 204 类型；`sweepStaleSessions` 删除重复分支。
+
+验证：`pnpm test` 45 files / 307 tests；`CI=true pnpm e2e` 9 passed；`lint` / `typecheck` / `format:check` / `build` 全部通过。提交：`e9c705f`（P0）、`5c3b354`（P1）、`020e49d`（P2）、`33be0bb`（P2/P3 测试与收尾）。未解决：P3 的 UI 样式与回复引用没有独立组件测试（由构建与 E2E 覆盖）；Realtime 仍为轮询，事件驱动推送留待后续。
