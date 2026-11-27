@@ -1,4 +1,4 @@
-import { mkdirSync } from "node:fs";
+import { chmodSync, closeSync, existsSync, mkdirSync, openSync } from "node:fs";
 import { dirname } from "node:path";
 import Database from "better-sqlite3";
 
@@ -33,13 +33,35 @@ function describe(error: unknown): string {
  * lock file to reclaim (and therefore no reclaim race). The pid is recorded in
  * the open transaction for diagnostics.
  */
+const IS_POSIX = process.platform !== "win32";
+
+function ensurePrivateDirectory(directory: string): void {
+  const existed = existsSync(directory);
+  mkdirSync(directory, { recursive: true, mode: 0o700 });
+  if (IS_POSIX && !existed) chmodSync(directory, 0o700);
+}
+
+function withRestrictedUmask<T>(operation: () => T): T {
+  if (!IS_POSIX) return operation();
+  const previous = process.umask(0o077);
+  try {
+    return operation();
+  } finally {
+    process.umask(previous);
+  }
+}
+
 export function acquireInstanceLock(lockPath: string): InstanceLock {
-  mkdirSync(dirname(lockPath), { recursive: true });
+  ensurePrivateDirectory(dirname(lockPath));
+  if (IS_POSIX) {
+    closeSync(openSync(lockPath, "a", 0o600));
+    chmodSync(lockPath, 0o600);
+  }
 
   let sqlite: Database.Database;
   try {
     // timeout: 0 -> a contending writer fails with SQLITE_BUSY immediately.
-    sqlite = new Database(lockPath, { timeout: 0 });
+    sqlite = withRestrictedUmask(() => new Database(lockPath, { timeout: 0 }));
   } catch (error) {
     throw new InstanceLockError(`cannot open lock database ${lockPath}: ${describe(error)}`);
   }

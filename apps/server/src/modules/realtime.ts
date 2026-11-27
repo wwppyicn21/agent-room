@@ -229,8 +229,33 @@ export function handleRealtimeSocket(
   const actor = { type: "user" as const, id: userId };
   let groupId: string | null = null;
   let cursor = 0;
+  // `closed` stops further frames; `cleaned` guarantees the poll timer and hub
+  // registration are released exactly once. A send failure sets both.
   let closed = false;
+  let cleaned = false;
+  let socketClosed = false;
+  let poll: ReturnType<typeof setInterval> | null = null;
   let presenceSignature = "";
+
+  const cleanup = (): void => {
+    if (cleaned) return;
+    cleaned = true;
+    if (poll) {
+      clearInterval(poll);
+      poll = null;
+    }
+    hub?.unregister(socket);
+  };
+
+  const closeSocket = (code: number, reason: string): void => {
+    if (socketClosed) return;
+    socketClosed = true;
+    try {
+      socket.close(code, reason);
+    } catch {
+      // The transport may already be gone; cleanup already ran.
+    }
+  };
 
   const send = (frame: Record<string, unknown>): void => {
     if (closed) return;
@@ -238,6 +263,8 @@ export function handleRealtimeSocket(
       socket.send(JSON.stringify(frame));
     } catch {
       closed = true;
+      cleanup();
+      closeSocket(1011, "send_failed");
     }
   };
 
@@ -320,29 +347,26 @@ export function handleRealtimeSocket(
     send({ type: "presence", groupId, agents: snapshot });
   };
 
-  const poll = setInterval(() => {
+  poll = setInterval(() => {
+    if (closed) return;
     deliver();
     sendPresence();
   }, pollMs);
   poll.unref();
 
-  const cleanup = (): void => {
-    if (closed) return;
-    closed = true;
-    clearInterval(poll);
-    hub?.unregister(socket);
-  };
-
   const connection: RealtimeConnection = {
     userId,
     revokeGroup: (revokedGroupId: string, reason: string) => {
+      if (closed) return;
       if (groupId === revokedGroupId) revokeCurrent(reason);
     },
     close: (reason: string) => {
-      if (closed) return;
-      send({ type: "error", code: reason });
+      if (!closed) {
+        send({ type: "error", code: reason });
+        closed = true;
+      }
       cleanup();
-      socket.close(1008, reason);
+      closeSocket(1008, reason);
     },
   };
   hub?.register(socket, connection);

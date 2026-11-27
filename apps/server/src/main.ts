@@ -10,6 +10,10 @@ import {
 import { expireDueApprovals } from "./modules/approvals.js";
 import { buildApp } from "./app.js";
 
+// Room data contains users, messages and audit records. Force private files
+// for SQLite sidecars and backups even outside a systemd UMask=0077 unit.
+if (process.platform !== "win32") process.umask(0o077);
+
 const config = loadConfig();
 const lockPath = `${config.databasePath}.lockdb`;
 

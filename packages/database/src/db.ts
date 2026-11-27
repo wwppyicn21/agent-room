@@ -1,4 +1,4 @@
-import { mkdirSync } from "node:fs";
+import { chmodSync, closeSync, existsSync, mkdirSync, openSync } from "node:fs";
 import { dirname } from "node:path";
 import Database from "better-sqlite3";
 import { drizzle, type BetterSQLite3Database } from "drizzle-orm/better-sqlite3";
@@ -19,6 +19,50 @@ export interface OpenDatabaseOptions {
   migrationsFolder?: string;
 }
 
+const IS_POSIX = process.platform !== "win32";
+
+/**
+ * Creates the data directory with private permissions. An existing directory is
+ * left untouched: it may be a shared parent such as /tmp chosen by the caller,
+ * and the deployment guide tightens /var/lib/agentroom explicitly.
+ */
+function ensurePrivateDirectory(directory: string): void {
+  const existed = existsSync(directory);
+  mkdirSync(directory, { recursive: true, mode: 0o700 });
+  if (IS_POSIX && !existed) chmodSync(directory, 0o700);
+}
+
+/** Tightens an existing file we own; a missing file is not an error. */
+function ensurePrivateFile(file: string): void {
+  if (!IS_POSIX) return;
+  try {
+    chmodSync(file, 0o600);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+  }
+}
+
+/**
+ * SQLite creates `-wal`/`-shm` sidecars with the process umask, so files
+ * created during open/migration are made private here. The systemd unit also
+ * sets UMask=0077 so later sidecars stay private in production.
+ */
+function secureSqliteFiles(path: string): void {
+  ensurePrivateFile(path);
+  ensurePrivateFile(`${path}-wal`);
+  ensurePrivateFile(`${path}-shm`);
+}
+
+function withRestrictedUmask<T>(operation: () => T): T {
+  if (!IS_POSIX) return operation();
+  const previous = process.umask(0o077);
+  try {
+    return operation();
+  } finally {
+    process.umask(previous);
+  }
+}
+
 export interface PragmaSnapshot {
   journalMode: string;
   foreignKeys: number;
@@ -31,25 +75,36 @@ export interface PragmaSnapshot {
  * WAL, foreign keys, a write lock timeout and full synchronous writes.
  */
 export function openDatabase({ path, migrationsFolder }: OpenDatabaseOptions): DatabaseHandle {
-  mkdirSync(dirname(path), { recursive: true });
+  ensurePrivateDirectory(dirname(path));
+  if (IS_POSIX) {
+    // Pre-create the database with 0600 so better-sqlite3 never creates it with
+    // the ambient umask; WAL/SHM inherit the restricted umask below.
+    closeSync(openSync(path, "a", 0o600));
+  }
 
-  const sqlite = new Database(path);
-  sqlite.pragma("journal_mode = WAL");
-  sqlite.pragma("foreign_keys = ON");
-  sqlite.pragma("busy_timeout = 5000");
-  sqlite.pragma("synchronous = FULL");
+  const sqlite = withRestrictedUmask(() => {
+    const database = new Database(path);
+    database.pragma("journal_mode = WAL");
+    database.pragma("foreign_keys = ON");
+    database.pragma("busy_timeout = 5000");
+    database.pragma("synchronous = FULL");
+    return database;
+  });
 
   const db = drizzle(sqlite, { schema });
   if (migrationsFolder) {
     try {
-      assertNoDuplicateUserEmails(sqlite);
-      migrate(db, { migrationsFolder });
+      withRestrictedUmask(() => {
+        assertNoDuplicateUserEmails(sqlite);
+        migrate(db, { migrationsFolder });
+      });
     } catch (error) {
       // Never leak an open handle when a pre-migration check or migration fails.
       if (sqlite.open) sqlite.close();
       throw error;
     }
   }
+  secureSqliteFiles(path);
 
   return {
     db,

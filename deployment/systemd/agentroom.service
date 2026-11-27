@@ -6,6 +6,8 @@ Wants=network-online.target
 
 [Service]
 Type=simple
+# Room data (SQLite, WAL/SHM, lock db, backups) must stay private.
+UMask=0077
 User=agentroom
 Group=agentroom
 WorkingDirectory=/opt/agentroom/current
