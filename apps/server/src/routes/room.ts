@@ -13,7 +13,6 @@ import {
   removeMember,
   updateGroup,
   updateMemberRole,
-  updateGroupAISettings,
 } from "../modules/groups.js";
 import {
   deleteMessage,
@@ -101,6 +100,19 @@ function params<T>(request: FastifyRequest): T {
 function limitOf(value: string | undefined, fallback: number): number {
   const parsed = Number(value);
   return Number.isFinite(parsed) && parsed > 0 ? Math.floor(parsed) : fallback;
+}
+
+/** Strict non-negative integer query parameter; empty means absent. */
+function intParam(value: string | undefined, name: string): number | undefined {
+  if (value === undefined || value === "") return undefined;
+  if (!/^\d+$/.test(value)) {
+    throw new ValidationError(`${name} must be a non-negative integer`);
+  }
+  const parsed = Number(value);
+  if (!Number.isSafeInteger(parsed)) {
+    throw new ValidationError(`${name} must be a non-negative integer`);
+  }
+  return parsed;
 }
 
 const createGroupBody = z.object({
@@ -199,20 +211,15 @@ export function registerRoomRoutes(app: FastifyInstance, deps: RoomRouteDependen
     const actor = actorOf(request);
     const { groupId } = params<{ groupId: string }>(request);
     const body = parseBody(updateGroupBody, request.body);
-    let group = updateGroup(ctx, {
-      groupId,
-      actorUserId: actor.id,
-      name: body.name,
-      description: body.description,
-    });
-    if (body.settings) {
-      group = updateGroupAISettings(ctx, {
+    return {
+      group: updateGroup(ctx, {
         groupId,
         actorUserId: actor.id,
+        name: body.name,
+        description: body.description,
         settings: body.settings,
-      });
-    }
-    return { group };
+      }),
+    };
   });
 
   app.get("/api/v1/groups/:groupId/members", async (request) => {
@@ -292,12 +299,17 @@ export function registerRoomRoutes(app: FastifyInstance, deps: RoomRouteDependen
   app.get("/api/v1/groups/:groupId/messages", async (request) => {
     const actor = actorOf(request);
     const { groupId } = params<{ groupId: string }>(request);
-    const { limit, cursor } = query<{ limit?: string; cursor?: string }>(request);
+    const { limit, cursor, before } = query<{
+      limit?: string;
+      cursor?: string;
+      before?: string;
+    }>(request);
     return listMessages(ctx, {
       groupId,
       viewer: actor,
       limit: limitOf(limit, 50),
-      cursor: cursor ? Number(cursor) : undefined,
+      cursor: intParam(cursor, "cursor"),
+      before: intParam(before, "before"),
     });
   });
 
@@ -376,12 +388,17 @@ export function registerRoomRoutes(app: FastifyInstance, deps: RoomRouteDependen
   app.get("/api/v1/threads/:threadId/messages", async (request) => {
     const actor = actorOf(request);
     const { threadId } = params<{ threadId: string }>(request);
-    const { limit, cursor } = query<{ limit?: string; cursor?: string }>(request);
+    const { limit, cursor, before } = query<{
+      limit?: string;
+      cursor?: string;
+      before?: string;
+    }>(request);
     return listThreadMessages(ctx, {
       threadId,
       viewer: actor,
       limit: limitOf(limit, 50),
-      cursor: cursor ? Number(cursor) : undefined,
+      cursor: intParam(cursor, "cursor"),
+      before: intParam(before, "before"),
     });
   });
 
@@ -511,12 +528,17 @@ export function registerRoomRoutes(app: FastifyInstance, deps: RoomRouteDependen
   app.get("/api/v1/agent/groups/:groupId/messages", async (request) => {
     const agentId = agentOf(ctx, request);
     const { groupId } = params<{ groupId: string }>(request);
-    const { limit, cursor } = query<{ limit?: string; cursor?: string }>(request);
+    const { limit, cursor, before } = query<{
+      limit?: string;
+      cursor?: string;
+      before?: string;
+    }>(request);
     return listMessages(ctx, {
       groupId,
       viewer: { type: "agent", id: agentId },
       limit: limitOf(limit, 50),
-      cursor: cursor ? Number(cursor) : undefined,
+      cursor: intParam(cursor, "cursor"),
+      before: intParam(before, "before"),
     });
   });
 
@@ -569,12 +591,17 @@ export function registerRoomRoutes(app: FastifyInstance, deps: RoomRouteDependen
   app.get("/api/v1/agent/threads/:threadId/messages", async (request) => {
     const agentId = agentOf(ctx, request);
     const { threadId } = params<{ threadId: string }>(request);
-    const { limit, cursor } = query<{ limit?: string; cursor?: string }>(request);
+    const { limit, cursor, before } = query<{
+      limit?: string;
+      cursor?: string;
+      before?: string;
+    }>(request);
     return listThreadMessagesForAgent(ctx, {
       agentId,
       threadId,
       limit: limitOf(limit, 50),
-      cursor: cursor ? Number(cursor) : undefined,
+      cursor: intParam(cursor, "cursor"),
+      before: intParam(before, "before"),
     });
   });
 

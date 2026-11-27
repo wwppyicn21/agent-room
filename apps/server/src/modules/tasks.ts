@@ -16,7 +16,12 @@ import { newId } from "@room/protocol";
 import { messageContentSchema } from "@room/protocol";
 import type { RoomContext, RoomDb } from "./context.js";
 import { recordAudit } from "./audit.js";
-import { ConflictError, NotFoundError, ValidationError } from "./errors.js";
+import {
+  ConflictError,
+  NotFoundError,
+  ValidationError,
+  isUniqueViolation,
+} from "./errors.js";
 import { appendEvent, enqueueDelivery, enqueueGroupAgentDeliveries } from "./events.js";
 import { getGroupMessageRow } from "./messages.js";
 import { createTaskCancelCommand } from "./agentCommands.js";
@@ -52,6 +57,29 @@ export function assertTaskTransition(from: TaskRow["status"], to: TaskRow["statu
   }
 }
 
+function replayTask(
+  existing: TaskRow,
+  input: { groupId: string; sourceMessageId: string },
+  title: string,
+  description: string | null,
+  assignedAgentId: string | null,
+  workspaceId: string | null,
+): { task: TaskRow; threadId: string } {
+  const samePayload =
+    existing.sourceMessageId === input.sourceMessageId &&
+    existing.title === title &&
+    (existing.description ?? null) === description &&
+    (existing.assignedAgentId ?? null) === assignedAgentId &&
+    (existing.workspaceId ?? null) === workspaceId;
+  if (!samePayload) {
+    throw new ConflictError(
+      `idempotency key ${existing.idempotencyKey} was already used with a different payload`,
+    );
+  }
+  if (!existing.threadId) throw new ConflictError(`task ${existing.id} has no thread`);
+  return { task: existing, threadId: existing.threadId };
+}
+
 export function createTaskFromMessage(
   ctx: RoomContext,
   input: {
@@ -73,28 +101,6 @@ export function createTaskFromMessage(
   const assignedAgentId = input.assignedAgentId ?? null;
   const workspaceId = input.workspaceId?.trim() || null;
   const idempotencyKey = input.idempotencyKey?.trim() || null;
-  if (idempotencyKey) {
-    const existing = ctx.db
-      .select()
-      .from(tasks)
-      .where(and(eq(tasks.groupId, input.groupId), eq(tasks.idempotencyKey, idempotencyKey)))
-      .get();
-    if (existing) {
-      const samePayload =
-        existing.sourceMessageId === input.sourceMessageId &&
-        existing.title === title &&
-        (existing.description ?? null) === description &&
-        (existing.assignedAgentId ?? null) === assignedAgentId &&
-        (existing.workspaceId ?? null) === workspaceId;
-      if (!samePayload) {
-        throw new ConflictError(
-          `idempotency key ${idempotencyKey} was already used with a different payload`,
-        );
-      }
-      if (!existing.threadId) throw new ConflictError(`task ${existing.id} has no thread`);
-      return { task: existing, threadId: existing.threadId };
-    }
-  }
   getGroupMessageRow(ctx, input.groupId, input.sourceMessageId);
   if (workspaceId) workspaceForTask(ctx, { workspaceId, groupId: input.groupId });
   if (assignedAgentId) {
@@ -106,8 +112,19 @@ export function createTaskFromMessage(
   const now = ctx.now();
   const threadId = newId("thr");
   const taskId = newId("tsk");
-  return ctx.db.transaction((transaction) => {
-    const db = transaction as unknown as RoomDb;
+  const attempt = () =>
+    ctx.db.transaction((transaction) => {
+      const db = transaction as unknown as RoomDb;
+      if (idempotencyKey) {
+        const existing = db
+          .select()
+          .from(tasks)
+          .where(and(eq(tasks.groupId, input.groupId), eq(tasks.idempotencyKey, idempotencyKey)))
+          .get();
+        if (existing) {
+          return replayTask(existing, input, title, description, assignedAgentId, workspaceId);
+        }
+      }
     db.insert(threads)
       .values({
         id: threadId,
@@ -196,8 +213,22 @@ export function createTaskFromMessage(
       threadId,
     };
   });
+  try {
+    return attempt();
+  } catch (error) {
+    if (idempotencyKey && isUniqueViolation(error)) {
+      const existing = ctx.db
+        .select()
+        .from(tasks)
+        .where(and(eq(tasks.groupId, input.groupId), eq(tasks.idempotencyKey, idempotencyKey)))
+        .get();
+      if (existing) {
+        return replayTask(existing, input, title, description, assignedAgentId, workspaceId);
+      }
+    }
+    throw error;
+  }
 }
-
 export function assignTask(
   ctx: RoomContext,
   input: { taskId: string; agentId: string; actorUserId: string },

@@ -469,14 +469,25 @@ export function updateGroup(
     actorUserId: string;
     name?: string;
     description?: string | null;
+    settings?: GroupAISettings;
   },
 ): GroupRow {
   requireGroupManager(ctx.db, input.groupId, { type: "user", id: input.actorUserId });
   requireWriteUser(ctx.db, input.actorUserId);
   requireActiveGroup(ctx.db, input.groupId);
-  const patch: { name?: string; description?: string | null; updatedAt: number } = {
-    updatedAt: ctx.now(),
-  };
+  const settings =
+    input.settings === undefined ? undefined : groupAISettingsSchema.parse(input.settings);
+  const patch: {
+    name?: string;
+    description?: string | null;
+    participationMode?: GroupAISettings["participationMode"];
+    allowAgentMessages?: boolean;
+    maxHops?: number;
+    maxRepliesPerRoot?: number;
+    maxAgentMessagesPerMinute?: number;
+    maxTokensPerRoot?: number | null;
+    updatedAt?: number;
+  } = {};
   if (input.name !== undefined) patch.name = validateTitle(input.name, "name", 120);
   if (input.description !== undefined) {
     const description = input.description?.trim() || null;
@@ -485,18 +496,53 @@ export function updateGroup(
     }
     patch.description = description;
   }
+  if (settings) {
+    patch.participationMode = settings.participationMode;
+    patch.allowAgentMessages = settings.allowAgentMessages;
+    patch.maxHops = settings.maxHops;
+    patch.maxRepliesPerRoot = settings.maxRepliesPerRoot;
+    patch.maxAgentMessagesPerMinute = settings.maxAgentMessagesPerMinute;
+    patch.maxTokensPerRoot = settings.maxTokensPerRoot ?? null;
+  }
+  const baseChanged = input.name !== undefined || input.description !== undefined;
+  if (!baseChanged && !settings) return requireActiveGroup(ctx.db, input.groupId);
+  const now = ctx.now();
+  patch.updatedAt = now;
   return ctx.db.transaction((transaction) => {
     const db = transaction as unknown as RoomDb;
     db.update(groups).set(patch).where(eq(groups.id, input.groupId)).run();
-    recordAudit(db, {
-      actorType: "user",
-      actorId: input.actorUserId,
-      action: "group.updated",
-      targetType: "group",
-      targetId: input.groupId,
-      metadata: patch,
-      createdAt: ctx.now(),
-    });
+    if (baseChanged) {
+      recordAudit(db, {
+        actorType: "user",
+        actorId: input.actorUserId,
+        action: "group.updated",
+        targetType: "group",
+        targetId: input.groupId,
+        metadata: {
+          ...(input.name !== undefined ? { name: patch.name } : {}),
+          ...(input.description !== undefined ? { description: patch.description } : {}),
+        },
+        createdAt: now,
+      });
+    }
+    if (settings) {
+      appendEvent(db, {
+        type: "group.updated",
+        actor: { type: "user", id: input.actorUserId },
+        groupId: input.groupId,
+        payload: { settings },
+        createdAt: now,
+      });
+      recordAudit(db, {
+        actorType: "user",
+        actorId: input.actorUserId,
+        action: "group.settings_update",
+        targetType: "group",
+        targetId: input.groupId,
+        metadata: { settings },
+        createdAt: now,
+      });
+    }
     return db.select().from(groups).where(eq(groups.id, input.groupId)).get()!;
   });
 }

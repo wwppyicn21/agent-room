@@ -34,6 +34,9 @@ import {
   markCommandDelivered,
 } from "../modules/agentCommands.js";
 import { DomainError, UnauthorizedError, ValidationError } from "../modules/errors.js";
+
+/** Refuse oversized Agent frames instead of buffering unbounded JSON. */
+const MAX_AGENT_FRAME_BYTES = 256 * 1024;
 import {
   ackDelivery,
   failDelivery,
@@ -328,6 +331,16 @@ export function registerAgentRoutes(app: FastifyInstance, deps: AgentRouteDepend
     timers.expiryTimer.unref();
 
     socket.on("message", (raw: Buffer) => {
+      const bytes = typeof raw === "string" ? Buffer.byteLength(raw) : raw.length;
+      if (bytes > MAX_AGENT_FRAME_BYTES) {
+        send(socket, {
+          type: "error",
+          code: "frame_too_large",
+          message: `agent frame exceeds ${MAX_AGENT_FRAME_BYTES} bytes`,
+        });
+        socket.close(1009, "frame too large");
+        return;
+      }
       if (closed) return;
       if (sessionExpired()) {
         closeForExpiry();
@@ -409,9 +422,13 @@ export function registerAgentRoutes(app: FastifyInstance, deps: AgentRouteDepend
         }
         if (message.type === "agent.status") {
           if (message.status === "offline") {
-            setAgentStatus(ctx, agent.id, "offline", "agent-requested-offline");
             closeAgentSession(ctx, session.id, "agent-requested-offline");
-            hub.closeAgent(agent.id, "agent requested offline");
+            // One Session going offline must not tear down other live Sessions
+            // for the same Agent; only mark the Agent offline when none remain.
+            if (!liveSessionAgentIds(ctx, config.agentPresenceTtlMs).has(agent.id)) {
+              setAgentStatus(ctx, agent.id, "offline", "agent-requested-offline");
+            }
+            socket.close(1008, "agent requested offline");
           } else {
             setAgentStatus(ctx, agent.id, "online", "agent-requested-online");
           }

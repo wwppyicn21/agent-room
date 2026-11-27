@@ -3,10 +3,8 @@ import { requireUserPrincipal } from "../auth/plugin.js";
 import type { RoomContext } from "../modules/context.js";
 import {
   REALTIME_TICKET_TTL_MS,
-  consumeRealtimeTicket,
   handleRealtimeSocket,
   isRealtimeOriginAllowed,
-  issueRealtimeTicket,
   type RealtimeHub,
   type RealtimeSocket,
 } from "../modules/realtime.js";
@@ -30,7 +28,7 @@ export function registerRealtimeRoutes(
   // they exchange their authenticated REST session for a one-time ticket.
   app.post("/api/v1/realtime/ticket", async (request) => {
     const principal = requireUserPrincipal(request);
-    const issued = issueRealtimeTicket(
+    const issued = hub.issueTicket(
       ctx,
       principal.userId,
       REALTIME_TICKET_TTL_MS,
@@ -52,7 +50,7 @@ export function registerRealtimeRoutes(
       return;
     }
     const url = new URL(request.url, "http://localhost");
-    const userId = consumeRealtimeTicket(ctx, url.searchParams.get("ticket"));
+    const userId = hub.consumeTicket(ctx, url.searchParams.get("ticket"));
     if (!userId) {
       socket.close(1008, "invalid realtime ticket");
       return;

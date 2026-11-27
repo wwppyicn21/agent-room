@@ -20,76 +20,13 @@ interface RealtimeTicket {
   expiresAt: number;
 }
 
-const tickets = new Map<string, RealtimeTicket>();
-/** Ticket issuance timestamps per user, used to cap reconnect storms. */
-const ticketIssued = new Map<string, number[]>();
-
 function digest(token: string): string {
   return createHash("sha256").update(token).digest("hex");
-}
-
-function sweepTickets(now: number): void {
-  for (const [key, ticket] of tickets) {
-    if (ticket.expiresAt <= now) tickets.delete(key);
-  }
-  for (const [userId, timestamps] of ticketIssued) {
-    const recent = timestamps.filter((at) => at > now - TICKET_RATE_WINDOW_MS);
-    if (recent.length === 0) ticketIssued.delete(userId);
-    else ticketIssued.set(userId, recent);
-  }
 }
 
 export interface IssuedRealtimeTicket {
   ticket: string;
   expiresAt: number;
-}
-
-/**
- * Issue a short-lived, single-use ticket for the browser WebSocket. Browsers
- * cannot set the Authorization header on an upgrade, so they trade their
- * authenticated REST session for this opaque ticket instead of putting a JWT
- * or dev identity in the URL.
- */
-export function issueRealtimeTicket(
-  ctx: RoomContext,
-  userId: string,
-  ttlMs: number = REALTIME_TICKET_TTL_MS,
-  limitPerMinute = 30,
-): IssuedRealtimeTicket {
-  const now = ctx.now();
-  sweepTickets(now);
-  const recent = ticketIssued.get(userId) ?? [];
-  if (recent.length >= limitPerMinute) {
-    throw new RateLimitError(
-      `user ${userId} requested more than ${limitPerMinute} realtime tickets per minute`,
-    );
-  }
-  recent.push(now);
-  ticketIssued.set(userId, recent);
-  const token = randomBytes(32).toString("base64url");
-  const expiresAt = now + ttlMs;
-  tickets.set(digest(token), { userId, expiresAt });
-  return { ticket: token, expiresAt };
-}
-
-/**
- * Redeem a ticket. The user is looked up again here: a ticket issued before a
- * disable cannot be redeemed afterwards, and a deleted user never connects.
- */
-export function consumeRealtimeTicket(ctx: RoomContext, token: string | null): string | null {
-  if (!token) return null;
-  const key = digest(token);
-  const ticket = tickets.get(key);
-  if (!ticket) return null;
-  tickets.delete(key);
-  if (ticket.expiresAt <= ctx.now()) return null;
-  const user = ctx.db
-    .select({ status: users.status })
-    .from(users)
-    .where(eq(users.id, ticket.userId))
-    .get();
-  if (!user || user.status !== "active") return null;
-  return ticket.userId;
 }
 
 /**
@@ -149,6 +86,68 @@ export interface RealtimeConnection {
 export class RealtimeHub {
   private readonly bySocket = new Map<RealtimeSocket, RealtimeConnection>();
   private readonly byUser = new Map<string, Set<RealtimeConnection>>();
+  private readonly tickets = new Map<string, RealtimeTicket>();
+  /** Ticket issuance timestamps per user, used to cap reconnect storms. */
+  private readonly ticketIssued = new Map<string, number[]>();
+
+  private sweepTickets(now: number): void {
+    for (const [key, ticket] of this.tickets) {
+      if (ticket.expiresAt <= now) this.tickets.delete(key);
+    }
+    for (const [userId, timestamps] of this.ticketIssued) {
+      const recent = timestamps.filter((at) => at > now - TICKET_RATE_WINDOW_MS);
+      if (recent.length === 0) this.ticketIssued.delete(userId);
+      else this.ticketIssued.set(userId, recent);
+    }
+  }
+
+  /**
+   * Issue a short-lived, single-use ticket for the browser WebSocket.
+   * Browsers cannot set the Authorization header on an upgrade, so they trade
+   * their authenticated REST session for this opaque ticket instead of putting
+   * a JWT or dev identity in the URL.
+   */
+  issueTicket(
+    ctx: RoomContext,
+    userId: string,
+    ttlMs: number = REALTIME_TICKET_TTL_MS,
+    limitPerMinute = 30,
+  ): IssuedRealtimeTicket {
+    const now = ctx.now();
+    this.sweepTickets(now);
+    const recent = this.ticketIssued.get(userId) ?? [];
+    if (recent.length >= limitPerMinute) {
+      throw new RateLimitError(
+        `user ${userId} requested more than ${limitPerMinute} realtime tickets per minute`,
+      );
+    }
+    const next = [...recent, now];
+    this.ticketIssued.set(userId, next);
+    const token = randomBytes(32).toString("base64url");
+    const expiresAt = now + ttlMs;
+    this.tickets.set(digest(token), { userId, expiresAt });
+    return { ticket: token, expiresAt };
+  }
+
+  /**
+   * Redeem a ticket. The user is looked up again here: a ticket issued before
+   * a disable cannot be redeemed afterwards, and a deleted user never connects.
+   */
+  consumeTicket(ctx: RoomContext, token: string | null): string | null {
+    if (!token) return null;
+    const key = digest(token);
+    const ticket = this.tickets.get(key);
+    if (!ticket) return null;
+    this.tickets.delete(key);
+    if (ticket.expiresAt <= ctx.now()) return null;
+    const user = ctx.db
+      .select({ status: users.status })
+      .from(users)
+      .where(eq(users.id, ticket.userId))
+      .get();
+    if (!user || user.status !== "active") return null;
+    return ticket.userId;
+  }
 
   register(socket: RealtimeSocket, connection: RealtimeConnection): void {
     this.bySocket.set(socket, connection);

@@ -438,7 +438,13 @@ export function listThreadMessages(
  */
 export function listThreadMessagesForAgent(
   ctx: RoomContext,
-  input: { agentId: string; threadId: string; limit?: number; cursor?: number },
+  input: {
+    agentId: string;
+    threadId: string;
+    limit?: number;
+    cursor?: number;
+    before?: number;
+  },
 ): { items: MessageRow[]; nextCursor: number | null } {
   const limit = Math.min(Math.max(input.limit ?? 50, 1), 100);
   const thread = ctx.db.select().from(threads).where(eq(threads.id, input.threadId)).get();
@@ -454,18 +460,27 @@ export function listThreadMessagesForAgent(
   if (!assignment) {
     throw new ForbiddenError(`agent ${input.agentId} is not assigned to thread ${thread.id}`);
   }
-  const cursor = input.cursor ?? 0;
-  const items = ctx.db
+  const conditions = [eq(messages.threadId, thread.id), isNull(messages.deletedAt)];
+  if (input.before !== undefined) conditions.push(lt(messages.seq, input.before));
+  else conditions.push(gt(messages.seq, input.cursor ?? 0));
+  const newestFirst = input.before !== undefined || input.cursor === undefined;
+  const rows = ctx.db
     .select()
     .from(messages)
-    .where(
-      and(eq(messages.threadId, thread.id), gt(messages.seq, cursor), isNull(messages.deletedAt)),
-    )
-    .orderBy(asc(messages.seq))
+    .where(and(...conditions))
+    .orderBy(newestFirst ? desc(messages.seq) : asc(messages.seq))
     .limit(limit)
     .all();
-  const last = items.at(-1);
-  return { items, nextCursor: items.length === limit && last ? last.seq : null };
+  const items = newestFirst ? [...rows].reverse() : rows;
+  return {
+    items,
+    nextCursor:
+      rows.length === limit
+        ? newestFirst
+          ? (items[0]?.seq ?? null)
+          : (items.at(-1)?.seq ?? null)
+        : null,
+  };
 }
 
 export function getMessage(
