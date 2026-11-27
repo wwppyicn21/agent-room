@@ -20,6 +20,22 @@
 | JSON     | `payload` / `metadata` / `capabilities` 先经 zod 校验再序列化                                     |
 | 删除     | 消息软删除（`deleted_at`）；结构性删除靠外键 `ON DELETE CASCADE`                                  |
 
+### 1.1 文件权限
+
+SQLite 主库、`-wal`、`-shm` 与单实例锁库 `room.db.lockdb` 含认证、消息和审计数据，默认仅运行用户可读写：
+
+| 路径                                   | 权限        | 创建/收紧方式                                                               |
+| -------------------------------------- | ----------- | --------------------------------------------------------------------------- |
+| 数据目录                               | `0700`      | `ensurePrivateDirectory` 仅对**新建**目录 chmod；已存在父目录不会被自动修改 |
+| `room.db`                              | `0600`      | 打开前以 `0600` 预创建；打开后再收紧一次                                    |
+| `room.db-wal` / `room.db-shm`          | `0600`      | 由 SQLite 创建；`openDatabase` 在 `umask 0077` 下执行 pragma/迁移并事后收紧 |
+| `room.db.lockdb`                       | `0600`      | `acquireInstanceLock` 预创建并收紧，目录同样要求 `0700`                     |
+| 备份文件                               | 建议 `0600` | 备份工具/脚本自行保证；不要放在其他账号可读的目录                           |
+| `/etc/agentroom/agentroom.env`（部署） | `0600 root` | systemd 以 root 读取；见 `deployment/systemd/README.md` 的升级步骤          |
+
+服务端启动时（非 Windows）设置 `process.umask(0o077)`，保证运行期 SQLite 新建的 sidecar 与备份文件默认私有；
+不会递归 chmod 数据目录。已有部署升级时先停服，再按部署手册修正 `room.db` / `lockdb` / `-wal` / `-shm` 的属主与权限。
+
 ## 2. ERD
 
 ```mermaid

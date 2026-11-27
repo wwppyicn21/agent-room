@@ -83,6 +83,10 @@ Promise queue 串行化，唯一临时文件 + 原子 rename，`0600`；启动�
 - PendingTurn：Prompt 前写入 `prompting`（含 requestId、eventId、session、group、thread、
   来源 message、prompt 文本），Prompt 接受后转 `awaiting_response`，收到 `turn/end` 并
   成功写回 Room 后转 `completed`；`[skip]` / 异常也落终态；
+- PendingTurn 超时：每个 turn 有 `turnTimeoutMs` 计时器；超时后异步从等待队列移除，并把
+  持久化状态置为 `failed` / `error=turn_timeout`（若已 completed/failed 则不覆盖）；迟到
+  的 `assistant/message` / `turn/end` 因队列已空被忽略；`stop()` 只清 timer，保留
+  `awaiting_response` 供重启恢复；重启后 failed 的 turn 不会再次执行；
 - 回复统一使用 `clientMessageId = plugin-reply-<eventId>`，Room 侧幂等；Prompt 使用
   `requestId = room-<eventId>`，DSH 侧去重；
 - 重启恢复：连接成功后读取 `sessionQuery.readSession()` 快照，用
@@ -90,7 +94,8 @@ Promise queue 串行化，唯一临时文件 + 原子 rename，`0600`；启动�
   则直接提取 assistant 文本写回（同 clientMessageId），未结束则恢复 waiter，尚未进入
   且 state=prompting 时用同一 requestId 重试；
 - 保留期：`deliveryRetentionDays`（默认 30）只清理已终态记录；`pending` / `processing` /
-  `awaiting_response` 永不清理；加载时执行清理。
+  `awaiting_response` 永不清理；加载时执行清理；prune 只要删除了任意 delivery 或 turn 就
+  必须原子提交（即使同一 eventId 的 turn 因未终态而保留），删除与保留在同一次写入中生效。
 
 语义是 at-least-once + 幂等副作用，不承诺 exactly-once。Socket 断开时按 0.5s–30s
 指数退避重连；每次 `hello` 后 SDK 会重投未 ack 的 Delivery 并调用 `onRecover`。
@@ -124,6 +129,6 @@ pnpm test        # 全量；插件集成测试会启动真实 Room Server 与真
 ```
 
 - 单元测试覆盖映射、Session 校验、去重、文本抽取、skip、双群隔离、取消、重启恢复、
-  key 权限与 store 原子性；
+  超时持久化、prune 提交、key 权限与 store 原子性（`bridge` 19 例、`store` 6 例）；
 - 集成测试用假 DSH ctx + 真实 Room Server/AgentClient，验证认证、投递、Prompt、
   assistant 抽取与 Room 回复。

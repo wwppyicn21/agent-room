@@ -57,12 +57,12 @@ URL 不携带路由；当前 Group 与 dev 邮箱存 localStorage。刷新后重
 - `src/state.ts`：消息/实体合并工具；
 - `src/App.tsx`：登录、群组选择、Tab 路由、全局错误/toast；
 - `src/views/*`：8 个页面；
-- `test/`：api / state / realtime 单元测试（无浏览器 E2E）。
+- `test/`：api / state / realtime 单元测试（7 例）；`e2e/room.spec.ts`：Playwright 浏览器 E2E（9 例）。
 
 ## 已知边界
 
 - 没有 react-router；页面状态不进入 URL，不能直接分享深链。
-- 没有浏览器 E2E（Playwright 等）；M8 验收中的“刷新恢复/多 Agent 显示”由 API + realtime 单测和手工 smoke 覆盖。
+- 浏览器 E2E 已覆盖登录/群组、发消息去重、断线重连补偿、Thread/Task、成员移除后不可读、普通成员任务页、群组 Agent 隔离与 `eventCursor` 断点；仍不做跨浏览器矩阵与视觉回归。
 - 文件上传/下载未实现（Server 尚无附件 API）。
 - `Task Progress` 的 run 明细没有独立 REST 端点，UI 展示 Task 级状态与摘要；细粒度 progress 属于后续增强。
 - 实时通道是单进程内存实现；多实例部署需要 M9 评估。

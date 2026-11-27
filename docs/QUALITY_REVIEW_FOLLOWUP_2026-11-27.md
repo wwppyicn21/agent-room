@@ -55,9 +55,14 @@ pnpm build        -> exit 0
 
 ## 4. 文档同步
 
-- `README.md`：测试基线改为 43 files / 291 tests，并记录本轮整改。
+- `README.md`：测试基线改为 43 files / 291 tests，记录本轮整改，补 REALTIME / DSH_PLUGIN / WEB_CLIENT / DATABASE 文档入口。
 - `docs/PROGRESS.md`：新增「DSH 整改（2026-11-27）」并更新当前进度与后续计划。
 - `docs/QUALITY_REVIEW_REMEDIATION.md`：标注其 39/277 为 2026-11-26 整改时的历史基线，指向本文件。
+- `docs/REALTIME.md`：补 send 异常清理（1011）、`closed`/`cleaned` 幂等与测试。
+- `docs/DSH_PLUGIN.md`：补 PendingTurn 超时持久化、迟到事件忽略、stop 保留 awaiting、prune 提交与测试数量。
+- `docs/DATABASE.md`：新增「文件权限」表（db/lockdb/WAL/SHM 0600、目录 0700、umask）。
+- `docs/WEB_CLIENT.md`：移除“无浏览器 E2E”，补 Playwright 9 例覆盖范围。
+- `docs/PLAN.md`、`docs/ROADMAP.md`：M8 状态更新为 43 files / 291 tests + E2E 9；本地 HEAD `d51b840` 未 push。
 - `deployment/systemd/README.md`：权限与升级步骤。
 
 ## 5. 未解决与需授权项

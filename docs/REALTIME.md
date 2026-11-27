@@ -102,7 +102,10 @@ Server → Client 确认：
 - 事件先提交事务、后广播（WebSocket 只是 `events` 表的读取者），广播失败不会丢事件；
 - 刷新页面后先用 REST 拉历史（`/api/v1/groups/{groupId}/messages`、
   `/api/v1/groups/{groupId}/events`），再用最后看到的 `seq` 作为 `afterSeq` 订阅；
-- 单帧上限 64 KiB，超出以 `1009` 关闭。
+- 单帧上限 64 KiB，超出以 `1009` 关闭；
+- `send()` 抛错（客户端消失/缓冲不可写）时不能只标记 `closed`：必须清理 poll interval、
+  从 `RealtimeHub` 注销，并以 `1011 send_failed` 关闭 socket；`closed`（停止发送）与
+  `cleaned`（资源释放）分离，重复清理/重复关闭安全。
 
 ## 权限生命周期
 
@@ -126,12 +129,14 @@ user_disabled` + `1008`）；
 
 ## 测试
 
-`apps/server/test/realtime.test.ts`（7 例）与 `realtime-revocation.test.ts`（9 例）：
+`apps/server/test/realtime.test.ts`（7 例）、`realtime-revocation.test.ts`（9 例）与
+`realtime-cleanup.test.ts`（2 例）：
 
 - ticket 未认证 401、无效/重复 ticket 1008、成员收事件、afterSeq 重放、非成员
   forbidden、ping/pong、unsubscribe；
 - 移出 Group 后撤销订阅并停止推送、禁用后关闭全部连接、禁用后旧 ticket 失效、
-  非成员不能订阅、连接上限、ticket 限流 429、Origin 允许/拒绝、并发撤销后不再推送。
+  非成员不能订阅、连接上限、ticket 限流 429、Origin 允许/拒绝、并发撤销后不再推送；
+- send 抛错后 interval 停止、hub 注销、1011 关闭、重复 close 安全；主动 close 只清理一次。
 
 ## 已知边界
 

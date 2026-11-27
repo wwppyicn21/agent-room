@@ -152,7 +152,7 @@ Agent Room 是独立的 Agent 协作中心。
 | M5 | Thread / Task Engine | Completed (M5 Review Fix 3 / 3A, 2026-11-24) |
 | M6 | DSH Plugin | In progress — implementation & live protocol verified; uninstall/update acceptance open |
 | M7 | Codex Plugin | Planned |
-| M8 | Web Client | In progress — web UI implemented (37 files / 260 tests); browser E2E and production serving pending |
+| M8 | Web Client | Completed (2026-11-27) — web UI + Playwright E2E 9; 43 files / 291 tests; production serving pending (M9) |
 | M9 | Deployment / Migration | Planned |
 
 开发必须按照依赖顺序进行。
