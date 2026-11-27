@@ -8,7 +8,7 @@
 | M6 DSH Plugin | 实现与实机协议验证完成；bundle 已安装/启用，真实 Room 消息 → DSH Session → 回复链路通过；**卸载/更新实机验收未关闭** |
 | M7 Codex Plugin | 未开始（用户交由 ChatGPT 开发）；服务端 Agent Room Tools HTTP 已就绪 |
 | M8 React Web Client | 实现完成（2026-11-26）：登录、群组/群聊、实时消息与 presence、Thread、Task/Approval、成员/角色、Agent/Key、用户、设置、Delivery 诊断、事件历史；浏览器 E2E 9 例通过 |
-| DSH 后续整改 | 本地完成（2026-11-27）：SQLite/配置权限、Realtime 发送失败清理、PendingTurn 超时持久化、DeliveryStore prune 提交；最新 HEAD 的 CI 待授权 push |
+| DSH 后续整改 | 完成（2026-11-27）：SQLite/配置权限、Realtime 发送失败清理、PendingTurn 超时持久化、DeliveryStore prune 提交；GitHub Actions Run `46047104203` 全绿 |
 | M9 Deployment | 未开始 |
 
 验证基线：**43 files / 291 tests**；`pnpm e2e` 9 passed；`lint` / `typecheck` / `format:check` / `build` 全部通过。
@@ -16,7 +16,7 @@
 服务端前置提交：`9dae94e`（浏览器实时 WebSocket）、`783ead7`（Agent HTTP Room Tools）、
 `1432b42`（Delivery 诊断 + Agent Presence）、`8b30fed`（用户管理端点）。
 
-已知缺口：最新 HEAD 的 CI 未验收（需授权 push）；M6 卸载/更新实机项；M7 未开始；
+已知缺口：M6 卸载/更新实机项；M7 未开始；
 M9 未开始；M4 skip 诊断事件；`request_task` 属 M7 Room Tools；审批过期扫描为单进程定时器；
 realtime ticket/presence 与连接限制为单进程实现。
 
@@ -1050,7 +1050,7 @@ M6 卸载/更新验收、M7、M9。
 | PendingTurn 超时 | PASS | 超时异步落盘 `failed/turn_timeout`，迟到事件忽略，stop 保留 awaiting；`bridge.test.ts` 19 例 |
 | DeliveryStore prune 提交 | PASS | 删除任一记录即提交；未终态 turn 永不删；store 6 例 |
 | 文档一致 | PASS | README、本文件、部署手册、`QUALITY_REVIEW_FOLLOWUP_2026-11-27.md` |
-| 最新 HEAD CI | PENDING（需授权 push） | 远端 `main=9c26f8d` 的 Run `45909756374` 全绿；本轮改动未 push |
+| 最新 HEAD CI | PASS | push `fb005d2` 后 Run `46047104203` 全绿（lint/typecheck/test/build/E2E） |
 
 本轮实际执行：`pnpm test` 43 files / 291 tests；`CI=true pnpm e2e` 9 passed；`lint` / `typecheck` / `format:check` / `build` 全过。
 未修改 SQLite schema；`deliveries.json` 保持 v1 读取、v2 写入；API/帧格式未变。

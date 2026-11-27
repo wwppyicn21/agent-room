@@ -1946,7 +1946,7 @@ M9  Cloudflare + Mini PC 原生部署、SQLite 备份/恢复、JSON 数据导入
 | M5 | 完成（2026-11-25：Thread / Task / Approval / 摘要回流 / REST + Review Fix 2 / 3 / 3A / 3B / 3C / 4；215 tests） | 8df761a | lint / typecheck / format / 215 tests / build 全过；Thread 定向投递、审批过期竞态、Agent 恢复、Workspace Policy、Group 权限撤销、审批过期 assignee 定向投递、Message 幂等一致性、Task 转换并发守卫、持久化 Agent 取消指令 / ACK、OpenAPI Cursor 契约实测 | 记录见 docs/PROGRESS.md「M5」「M5 Review Fix」「M5 Review Fix 2」「M5 Review Fix 3」「M5 Review Fix 3A」「M5 Review Fix 3B」「M5 Review Fix 3C」「M5 Review Fix 4」；Web UI 属 M8，DSH/Codex Plugin 属 M6/M7 |
 | M6 | 实现完成并实机验证（2026-11-25：DSH Plugin bundle、显式 Session 映射、Message/Thread/Task 上下文、Delivery 幂等、重连恢复；230 tests）；卸载/更新实机验收未关闭 | 12c12ea | lint / typecheck / format / 230 tests / build 全过；插件单测 14 + 真实 Room 端到端 1；web profile 安装、真实消息→Session→回复实测 | 记录见 docs/PROGRESS.md「M6」「实机验证」与 docs/DSH_PLUGIN.md；安装保留、映射清空、插件禁用；卸载/更新未实测 |
 | M7 | 未开始（由 ChatGPT 开发）；服务端 Agent Room Tools HTTP 已提供 | | | |
-| M8 | 实现完成（2026-11-26：React Web Client；2026-11-27 复审整改 + DSH 后续整改） | 9c26f8d | lint / typecheck / format / 43 files / 291 tests / build / Playwright E2E 9 例全过 | 记录见 docs/PROGRESS.md「M8」「M8 整改」「DSH 整改」、docs/WEB_CLIENT.md、docs/QUALITY_REVIEW_FOLLOWUP_2026-11-27.md；当前本地 HEAD `d51b840` 未 push，CI 待授权 |
+| M8 | 实现完成（2026-11-26：React Web Client；2026-11-27 复审整改 + DSH 后续整改） | 9c26f8d | lint / typecheck / format / 43 files / 291 tests / build / Playwright E2E 9 例全过 | 记录见 docs/PROGRESS.md「M8」「M8 整改」「DSH 整改」、docs/WEB_CLIENT.md、docs/QUALITY_REVIEW_FOLLOWUP_2026-11-27.md；HEAD `fb005d2` 已 push，CI Run `46047104203` 全绿 |
 | M9 | 未开始 | | | |
 
 ---
