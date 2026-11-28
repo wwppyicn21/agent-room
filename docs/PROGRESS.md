@@ -1088,3 +1088,22 @@ M6 卸载/更新验收、M7、M9。
 
 验证：`pnpm test` 46 files / 334 tests；`CI=true pnpm e2e` 10 passed；`lint` / `typecheck` / `format:check` / `build` 全部通过。数据库无迁移变更；`deliveries.json` v1/v2 兼容。
 未验证/边界：P2-06 到期注销无独立单测（由现有 1009/到期流程覆盖）；P2-07 UUID 回退无独立单测；插件仍为 at-least-once + 幂等；Realtime 仍 300ms 轮询。
+
+## 第三轮审查整改（2026-11-28）
+
+针对第三轮 17 项审查清单（P0-01..P3-03）逐项复核并修复，先补回归测试再改实现：
+
+- **P0-01 Agent 禁用状态保护**：`setAgentStatus` 对 `disabled` 直接返回；UPDATE 增加 `status <> 'disabled'` 条件并校验受影响行数，WebSocket close/心跳不能把禁用 Agent 改回 offline；`apps/server/test/third-review-p0.test.ts` 覆盖禁用后 close、重新认证与并发心跳。
+- **P0-02 ZodError 统一映射**：`apps/server/src/app.ts` 全局 errorHandler 识别 ZodError → 400 `validation_error`；路由补 memberType 枚举校验；程序异常仍 500。
+- **P0-03 归档群只读**：`deleteMessage` 增加 `requireActiveGroup`，归档群不写 `message.deleted` 事件与审计；readonly 限制保留。
+- **P1-01 Delivery/Turn 状态保护**：completed/cancelled 不重跑；failed 不重试；reply_pending 只重发持久化文本；prompting 先查 Session 快照，已记录则 attach，否则拒绝无条件重复执行；`apps/server/test/third-review-p0.test.ts` + bridge 回归覆盖。
+- **P1-02 retryPrompt 恢复**：先 `resolveAgent`，再注册 PendingTurn 并持久化 prompting，最后 `prompt`；失败清理队列与 Timer。
+- **P1-03 多回合匹配**：优先按 `event.data.turn` 精确匹配 PendingTurn，`activeBySession` 仅作无 turn 事件回退；assistant/turn-end 不再串 Turn。
+- **P1-04 Command 重投**：Server `listAgentCommands` 支持 `staleDeliveredBefore`，Agent poll 重发过期 delivered；Plugin 未恢复 Task 映射前不 ACK，等待重投。
+- **P1-05 回复队列隔离**：`flushPendingReplies` 单条失败不中断；400/403/404/409 永久错误标记 failed，暂时错误保留 reply_pending；bridge 39 例。
+- **P1 Web**：UsersView/AgentsView 按系统角色避免无权限请求；ChatView presence 与更早消息守卫；TasksView 审批 `selectedIdRef`；ThreadsView/MembersView 切群清空与请求守卫；DiagnosticsView 筛选 generation 防旧结果混入；App 合并初始化、Toast Timer 清理。
+- **P2**：创建用户返回 201（OpenAPI 同步）；Key 撤销校验真实归属并 404；Delivery status 非法 400；`liveSessionAgentIds` 增加 `expiresAt > now`；`listMemberCandidates` 关键词下推 SQL、limit、禁止邮箱搜索；App 重复请求/Toast Timer 修复。
+- **P3**：统一创建状态码与查询参数 400；Key 撤销/禁用审计使用真实资源 ID；补齐相关文档。
+
+验证：`pnpm test` 48 files / 350 tests；`CI=true pnpm e2e` 10 passed；`lint` / `typecheck` / `format:check` / `build` 全过。无数据库 schema 迁移；`deliveries.json` 保持 v1/v2 兼容。
+未验证/边界：Web 视图竞态尚无组件级单测（由 E2E 与类型检查覆盖）；Realtime 仍 300ms 轮询；命令 lease 依赖插件重连/轮询。

@@ -704,6 +704,7 @@ paths:
         - $ref: "#/components/parameters/cursorId"
       responses:
         "200": { description: Deliveries with agent and event type }
+        "400": { $ref: "#/components/responses/Error" }
         "401": { $ref: "#/components/responses/Error" }
         "403": { $ref: "#/components/responses/Error" }
   /api/v1/groups/{groupId}/deliveries/stats:
