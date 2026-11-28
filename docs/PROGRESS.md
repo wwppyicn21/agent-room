@@ -1122,3 +1122,15 @@ M6 卸载/更新验收、M7、M9。
 验证（本地）：`pnpm test` 50 files / 358 tests、E2E 10、lint/typecheck/format/build 全过；无 schema 变更。
 
 未验证（目标环境）：cloudflared 实际隧道、Access 策略、目标机 systemd 启动/重启、真实数据备份恢复、公网多客户端与回滚演练。M9 不宣称完成，待目标机落实后关闭。
+
+
+## DSH 插件设置页（2026-11-28）
+
+在 DSH 内直接管理 `@room/dsh-plugin` 的 Group→Session 映射，不再只能手改 profile patch：
+
+- **配置暴露**：`roomBaseUrl` 与 `groups` 标为 schemastery `.volatile()`（Settings 只渲染 volatile 字段）；`resolvePluginConfig` 兼容 volatile 字段的 `.get()` 访问器。
+- **客户端设置页**：新增 `adapters/dsh-plugin/client.js`，通过 `window.__ModuleLoader__` 注册 `settings.plugins.tab`，用 `configForms` 读写 `include:agent-room`；页面提供 Room URL、映射增删、groupId/sessionId 唯一校验、保存。
+- **运行时生效**：`RoomBridge` 每秒重新解析配置并更新映射；Room URL 变化时关闭旧连接并自动重连，不需要重启插件。其余非 volatile 字段仍需重启。
+- **bundle 启用**：profile 仅有依赖/override 时 Settings 不会出现配置；通过 `plugin_manager set_bundle @room/dsh-plugin enabled=true` 启用后 `Config.listConfigs` 出现 `include:agent-room`。
+
+测试与实机：`adapters/dsh-plugin/test/config.test.ts` 3 例、bridge 39 例；实机 Settings → Built-in plugins → Agent Room 可加载/保存，label 修改写入 `cordis.patch.yml` 且 Agent 保持 online。全量 `pnpm test` 51 files / 363 tests、E2E 10、lint/typecheck/format/build 全过。
