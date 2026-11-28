@@ -279,6 +279,12 @@ describe("realtime origin allowlist", () => {
     ).toBe(false);
   });
 
+  it("allows same-origin pages even when an explicit allowlist is set", () => {
+    expect(
+      isRealtimeOriginAllowed("http://127.0.0.1:8787", ["http://127.0.0.1:5173"], "127.0.0.1:8787"),
+    ).toBe(true);
+  });
+
   it("falls back to same-host when the allowlist is empty", () => {
     expect(isRealtimeOriginAllowed("https://room.example.com", [], "room.example.com")).toBe(true);
     expect(isRealtimeOriginAllowed("https://evil.example", [], "room.example.com")).toBe(false);

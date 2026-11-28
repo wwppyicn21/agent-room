@@ -46,6 +46,12 @@ export function isRealtimeOriginAllowed(
   } catch {
     return false;
   }
+  // Same-origin is always safe: the page is served by this Room Server.
+  try {
+    if (new URL(normalized).host === host) return true;
+  } catch {
+    return false;
+  }
   for (const entry of allowed) {
     try {
       if (new URL(entry).origin === normalized) return true;
@@ -54,12 +60,7 @@ export function isRealtimeOriginAllowed(
       // them before this point, and a bad entry must never broaden access.
     }
   }
-  if (allowed.length > 0) return false;
-  try {
-    return new URL(normalized).host === host;
-  } catch {
-    return false;
-  }
+  return false;
 }
 
 export interface RealtimeSocket {
