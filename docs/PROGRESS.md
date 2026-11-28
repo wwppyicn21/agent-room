@@ -1073,3 +1073,18 @@ M6 卸载/更新验收、M7、M9。
 - **P3-01/02/03/04** 补齐缺失 CSS 类；ChatView 对被回复消息不可见时显示「较早的消息」；修正 `pauseTask`/`resumeTask` 返回 `{task, run}` 与 `removeMember` 的 204 类型；`sweepStaleSessions` 删除重复分支。
 
 验证：`pnpm test` 45 files / 307 tests；`CI=true pnpm e2e` 9 passed；`lint` / `typecheck` / `format:check` / `build` 全部通过。提交：`e9c705f`（P0）、`5c3b354`（P1）、`020e49d`（P2）、`33be0bb`（P2/P3 测试与收尾）。未解决：P3 的 UI 样式与回复引用没有独立组件测试（由构建与 E2E 覆盖）；Realtime 仍为轮询，事件驱动推送留待后续。
+
+## 第二轮审查整改（2026-11-28）
+
+针对第二轮 20 项审查清单（P0-01..P3-05）逐项复核并修复，代码提交 `6249863`：
+
+- **P0-01** 群组 Owner 越权：`permissions.requireGroupOwnerRole` 统一 `addMember` / `removeMember` / `updateMemberRole` 的 Owner 授予/移除规则，系统管理员放行，保留最后 Owner 约束；`group-owner-permissions.test.ts` 6 例。
+- **P0-02/03** DSH Turn 串扰与取消隔离：`rpcId/requestId` + `turnNumber` 关联，移除 `queue[0]`；终态不可变；超时/取消/完成同步清理 `activeBySession`；Turn 持久化 `taskId`，`cancelTaskTurns` 只取消该 Task 的 Turn；task.cancelled 事件消费；bridge 34 例。
+- **P0-04** 回复服务端 ACK：SDK `sendMessageWithAck` + `message.sent` waiter；Bridge 先持久化 `reply_pending`，ACK 后才 completed，失败/断线保留并按同一 `clientMessageId` 幂等补发；SDK 22 例。
+- **P1-01..05** Prompt 前注册 PendingTurn、恢复 active/turnNumber 与文本、取消后重投不重新 Prompt、`stop()` 等待 `store.flush()`；bridge 覆盖。
+- **P1 Web**：ChatView Grid/主区布局、切群请求守卫、历史滚动位置、MembersView 群范围候选（新增 `GET /groups/:id/member-candidates`）、DiagnosticsView 权限守卫与切群重置、TasksView 切群清空；E2E 增切群隔离用例。
+- **P2**：回复预算对用户插话同样停止 fan-out；`agentSessionTtlMs` 上限 2,147,483,647；生产 Origin 示例改为 `https://room.example.com`；`limitOf` 与 threads/tasks status 严格 400；Realtime error frame 带 message；Agent 到期先注销 Socket； UUID 回退。
+- **P3**：Bearer 大小写不敏感、`deleteMessage` 返回 void/无 reason、AgentsView 删除不可达 revokedAt 分支、ThreadsView 统一 mergeMessages、finishTurn 异常路径收敛。
+
+验证：`pnpm test` 46 files / 334 tests；`CI=true pnpm e2e` 10 passed；`lint` / `typecheck` / `format:check` / `build` 全部通过。数据库无迁移变更；`deliveries.json` v1/v2 兼容。
+未验证/边界：P2-06 到期注销无独立单测（由现有 1009/到期流程覆盖）；P2-07 UUID 回退无独立单测；插件仍为 at-least-once + 幂等；Realtime 仍 300ms 轮询。

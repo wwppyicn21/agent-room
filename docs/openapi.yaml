@@ -163,6 +163,26 @@ paths:
       responses:
         "200": { description: Updated group }
         "403": { $ref: "#/components/responses/Error" }
+  /api/v1/groups/{groupId}/member-candidates:
+    parameters:
+      - $ref: "#/components/parameters/groupId"
+    get:
+      summary: List users or agents that can still be added (group manager)
+      parameters:
+        - name: memberType
+          in: query
+          required: true
+          schema: { type: string, enum: [user, agent] }
+        - name: q
+          in: query
+          schema: { type: string }
+        - name: limit
+          in: query
+          schema: { type: integer, minimum: 1, maximum: 200 }
+      responses:
+        "200": { description: Group-scoped member candidates; existing members excluded }
+        "400": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
   /api/v1/groups/{groupId}/members:
     parameters:
       - $ref: "#/components/parameters/groupId"
