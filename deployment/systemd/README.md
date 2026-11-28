@@ -74,3 +74,8 @@ sudo stat -c '%a %U:%G %n' /var/lib/agentroom /var/lib/agentroom/room.db*
 - `ProtectSystem=strict` 下只有 `ReadWritePaths` 里的目录可写；如果把数据库放到别处，需要同步修改单元。
 - 本地开发（非 systemd）可把数据库放到仅自己可访问的目录；服务进程启动时设置 `umask 0077`，但已有目录不会被自动 chmod。
 - `EnvironmentFile` 中的变量就是 `@room/config` 的唯一来源；不要另建配置文件。
+
+## M9 生产部署
+
+生产目录、Cloudflare Tunnel、Access、备份/恢复、升级/回滚与验收清单见
+`docs/DEPLOYMENT.md`。本文件只保留 unit 的安装步骤。

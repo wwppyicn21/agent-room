@@ -1,0 +1,11 @@
+[Unit]
+Description=AgentRoom SQLite backup
+After=agentroom.service
+Requires=agentroom.service
+
+[Service]
+Type=oneshot
+UMask=0077
+User=agentroom
+Group=agentroom
+ExecStart=/opt/agentroom/current/deployment/scripts/backup.sh /var/lib/agentroom/room.db /var/lib/agentroom/backups 14

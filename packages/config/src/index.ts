@@ -49,6 +49,10 @@ export const configSchema = z
     realtimeAllowedOrigins: z.array(z.string().url()).default([]),
     realtimeMaxConnectionsPerUser: z.coerce.number().int().min(1).max(100).default(5),
     realtimeTicketsPerMinute: z.coerce.number().int().min(1).max(600).default(30),
+    /** Production static Web client directory served by the Room Server. */
+    webRoot: z.string().min(1).optional(),
+    /** Trust `X-Forwarded-*` from the local Cloudflare Tunnel process. */
+    trustProxy: z.boolean().default(false),
   })
   .superRefine((config, ctx) => {
     const loopbackHosts = new Set(["127.0.0.1", "localhost", "::1", "[::1]"]);
@@ -116,6 +120,10 @@ function collect(env: NodeJS.ProcessEnv): Record<string, unknown> {
   }
   if (env.REALTIME_TICKETS_PER_MINUTE) {
     input.realtimeTicketsPerMinute = env.REALTIME_TICKETS_PER_MINUTE;
+  }
+  if (env.WEB_ROOT) input.webRoot = env.WEB_ROOT;
+  if (env.TRUST_PROXY !== undefined) {
+    input.trustProxy = env.TRUST_PROXY === "true" || env.TRUST_PROXY === "1";
   }
   return input;
 }

@@ -13,6 +13,7 @@ import { registerAgentRoutes } from "./routes/agent.js";
 import { registerHttpRoutes } from "./routes/http.js";
 import { registerRoomRoutes } from "./routes/room.js";
 import { registerRealtimeRoutes } from "./routes/realtime.js";
+import { resolveWebAsset, spaFallback, sendWebAsset } from "./staticWeb.js";
 
 /**
  * Access logs must never contain upgrade tickets (or any query string), so the
@@ -54,6 +55,7 @@ export async function buildApp({
   accessVerifier: injectedAccessVerifier,
 }: BuildAppOptions): Promise<FastifyInstance> {
   const app = Fastify({
+    trustProxy: config.trustProxy,
     logger: {
       level: config.logLevel,
       redact: ["req.headers.authorization", "req.headers.cookie", "res.headers['set-cookie']"],
@@ -94,6 +96,22 @@ export async function buildApp({
   });
 
   app.setNotFoundHandler((request, reply) => {
+    const path = request.url.split("?")[0] ?? "/";
+    let decoded = "";
+    try {
+      decoded = decodeURIComponent(path);
+    } catch {
+      decoded = "";
+    }
+    const traversal = path.includes("..") || decoded.includes("..");
+    if (config.webRoot && (request.method === "GET" || request.method === "HEAD")) {
+      const asset =
+        resolveWebAsset(config.webRoot, path) ??
+        (path.startsWith("/api/") || path === "/ws" || traversal
+          ? null
+          : spaFallback(config.webRoot));
+      if (asset) return sendWebAsset(reply, asset);
+    }
     return reply.status(404).send({
       error: { code: "not_found", message: `Route ${request.method} ${request.url} not found` },
     });
