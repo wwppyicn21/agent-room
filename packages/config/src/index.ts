@@ -48,7 +48,7 @@ export const configSchema = z
      */
     realtimeAllowedOrigins: z.array(z.string().url()).default([]),
     realtimeMaxConnectionsPerUser: z.coerce.number().int().min(1).max(100).default(5),
-    realtimeTicketsPerMinute: z.coerce.number().int().min(1).max(600).default(30),
+    realtimeTicketsPerMinute: z.coerce.number().int().min(1).max(600).default(120),
     /** Production static Web client directory served by the Room Server. */
     webRoot: z.string().min(1).optional(),
     /** Trust `X-Forwarded-*` from the local Cloudflare Tunnel process. */

@@ -124,7 +124,7 @@ user_disabled` + `1008`）；
 - `REALTIME_ALLOWED_ORIGINS`（逗号分隔）限制浏览器 Origin；无 Origin 的 CLI 允许，
   但仍必须提供有效 ticket；
 - `REALTIME_MAX_CONNECTIONS_PER_USER`（默认 5）限制同时连接数，超出以 1008 关闭；
-- `REALTIME_TICKETS_PER_MINUTE`（默认 30）限制 ticket 获取频率，超出返回 429；
+- `REALTIME_TICKETS_PER_MINUTE`（默认 120）限制 ticket 获取频率，超出返回 429；客户端在 429 后按 15s 退避重试，且同一错误只展示一次；
 - 以上均为单进程内存计数，多实例部署需改为共享存储（M9 评估）。
 
 ## 测试

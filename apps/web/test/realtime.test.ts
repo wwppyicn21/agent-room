@@ -109,4 +109,30 @@ describe("web realtime client", () => {
     ]);
     client.close();
   });
+
+  it("reports a ticket rate limit once and backs off instead of flickering", async () => {
+    const states: Array<{ state: string; error?: string }> = [];
+    (globalThis as unknown as Record<string, unknown>).window = {
+      location: { protocol: "http:", host: "127.0.0.1:5173" },
+    };
+    const api = new ApiClient({
+      fetchImpl: async () =>
+        new Response(
+          JSON.stringify({ code: "rate_limited", message: "requested more than 30 tickets" }),
+          { status: 429 },
+        ),
+    });
+    const client = new RealtimeClient(api, "grp_1", {
+      onEvent: () => undefined,
+      onPresence: () => undefined,
+      onState: (state, error) => states.push({ state, error }),
+    });
+    client.connect();
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    expect(states).toEqual([
+      { state: "connecting", error: undefined },
+      { state: "closed", error: "实时连接请求过于频繁，稍后自动重试" },
+    ]);
+    client.close();
+  });
 });

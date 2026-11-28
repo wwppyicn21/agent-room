@@ -222,8 +222,7 @@ describe("DSH plugin bridge", () => {
       sessionId: "ses_a",
       mode: "queue",
     });
-    expect(harness.prompts[0]?.content[0]?.text).toContain("Alpha");
-    expect(harness.prompts[0]?.content[0]?.text).toContain("hello room");
+    expect(harness.prompts[0]?.content[0]?.text).toBe("hello room");
     expect(harness.bridge.deliveryStore.state("evd_1")).toBe("completed");
     await harness.bridge.stop();
   });
@@ -339,7 +338,7 @@ describe("DSH plugin bridge", () => {
     await harness.bridge.start();
     await waitFor(() => harness.client.connected);
     await harness.deliver(messageEvent({ threadId: "thr_1" }));
-    expect(harness.prompts[0]?.content[0]?.text).toContain("thread_id: thr_1");
+    expect(harness.prompts[0]?.content[0]?.text).toBe("hello room");
 
     startTurn(harness, "ses_a", "evd_1", 1);
     harness.emit("ses_a", {

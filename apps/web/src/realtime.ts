@@ -32,6 +32,9 @@ export class RealtimeClient {
   private retry: ReturnType<typeof setTimeout> | null = null;
   private ping: ReturnType<typeof setInterval> | null = null;
   private backoffMs = 500;
+  private attempts = 0;
+  private connectedAt = 0;
+  private lastState = "";
 
   constructor(
     private readonly api: ApiClient,
@@ -44,6 +47,7 @@ export class RealtimeClient {
 
   connect(): void {
     this.closed = false;
+    this.attempts = 0;
     void this.open();
   }
 
@@ -61,7 +65,7 @@ export class RealtimeClient {
     this.clearTimers();
     this.socket?.close(1000, "client closed");
     this.socket = null;
-    this.handlers.onState("closed");
+    this.notify("closed");
   }
 
   private clearTimers(): void {
@@ -73,7 +77,9 @@ export class RealtimeClient {
 
   private async open(): Promise<void> {
     if (this.closed) return;
-    this.handlers.onState("connecting");
+    const firstAttempt = this.attempts === 0;
+    this.attempts += 1;
+    if (firstAttempt) this.notify("connecting");
     try {
       const { ticket } = await this.api.realtimeTicket();
       if (this.closed) return;
@@ -83,7 +89,6 @@ export class RealtimeClient {
       );
       this.socket = socket;
       socket.onopen = () => {
-        this.backoffMs = 500;
         socket.send(
           JSON.stringify({ type: "subscribe", groupId: this.groupId, afterSeq: this.afterSeq }),
         );
@@ -92,17 +97,26 @@ export class RealtimeClient {
         }, 20_000);
       };
       socket.onmessage = (message) => this.handleFrame(message.data);
-      socket.onerror = () => this.handlers.onState("closed", "websocket error");
+      socket.onerror = () => this.notify("closed", "websocket error");
       socket.onclose = (event) => {
         this.stopSocket();
         if (this.closed) return;
-        this.handlers.onState("closed", event.reason || "connection closed");
+        if (this.connectedAt && Date.now() - this.connectedAt > 15_000) this.backoffMs = 500;
+        this.connectedAt = 0;
+        this.notify("closed", event.reason || "connection closed");
         this.scheduleReconnect();
       };
     } catch (error) {
       if (this.closed) return;
-      this.handlers.onState("closed", error instanceof Error ? error.message : String(error));
-      this.scheduleReconnect();
+      const status = (error as { status?: unknown }).status;
+      const message =
+        status === 429
+          ? "实时连接请求过于频繁，稍后自动重试"
+          : error instanceof Error
+            ? error.message
+            : String(error);
+      this.notify("closed", message);
+      this.scheduleReconnect(status === 429 ? 15_000 : 0);
     }
   }
 
@@ -112,14 +126,21 @@ export class RealtimeClient {
     this.socket = null;
   }
 
-  private scheduleReconnect(): void {
+  private scheduleReconnect(minDelayMs = 0): void {
     if (this.closed || this.retry) return;
-    const delay = Math.min(this.backoffMs, 30_000);
+    const delay = Math.max(Math.min(this.backoffMs, 30_000), minDelayMs);
     this.backoffMs = Math.min(this.backoffMs * 2, 30_000);
     this.retry = setTimeout(() => {
       this.retry = null;
       void this.open();
     }, delay);
+  }
+
+  private notify(state: "connecting" | "open" | "closed", error?: string): void {
+    const key = `${state}|${error ?? ""}`;
+    if (key === this.lastState) return;
+    this.lastState = key;
+    this.handlers.onState(state, error);
   }
 
   private handleFrame(raw: unknown): void {
@@ -131,7 +152,8 @@ export class RealtimeClient {
       return;
     }
     if (frame.type === "subscribed") {
-      this.handlers.onState("open");
+      this.connectedAt = Date.now();
+      this.notify("open");
       return;
     }
     if (frame.type === "event") {
@@ -144,7 +166,7 @@ export class RealtimeClient {
       return;
     }
     if (frame.type === "error") {
-      this.handlers.onState("closed", frame.message ?? frame.code);
+      this.notify("closed", frame.message ?? frame.code);
     }
   }
 }

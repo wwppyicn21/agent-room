@@ -111,7 +111,7 @@ export class RealtimeHub {
     ctx: RoomContext,
     userId: string,
     ttlMs: number = REALTIME_TICKET_TTL_MS,
-    limitPerMinute = 30,
+    limitPerMinute = 120,
   ): IssuedRealtimeTicket {
     const now = ctx.now();
     this.sweepTickets(now);

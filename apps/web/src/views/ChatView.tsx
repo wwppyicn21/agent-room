@@ -147,7 +147,8 @@ export function ChatView({ api, me, group, notify, onError }: ChatViewProps) {
           },
           onState: (next, error) => {
             setState(next);
-            setConnectionError(error ?? null);
+            if (next === "open") setConnectionError(null);
+            else if (error) setConnectionError(error);
           },
         },
         eventCursor,
@@ -229,7 +230,9 @@ export function ChatView({ api, me, group, notify, onError }: ChatViewProps) {
           ))}
           {onlineAgents.length === 0 && <span className="muted small">暂无在线 Agent</span>}
         </div>
-        {connectionError && <span className="badge badge-danger">{connectionError}</span>}
+        {state !== "open" && connectionError && (
+          <span className="badge badge-danger">{connectionError}</span>
+        )}
       </div>
       <div className="chat-main">
         <div

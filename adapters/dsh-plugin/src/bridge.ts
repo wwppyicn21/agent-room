@@ -443,7 +443,7 @@ export class RoomBridge {
     if (taskId) this.taskSessions.set(taskId, mapping.sessionId);
     const replyToMessageId =
       typeof event.payload.messageId === "string" ? event.payload.messageId : null;
-    const promptText = renderPrompt(event, mapping, this.config.replyPrefix);
+    const promptText = renderPrompt(event);
     const now = new Date().toISOString();
     const pending: PendingTurnRecord = {
       eventId: event.eventId,
@@ -890,29 +890,9 @@ function lastAssistantText(events: readonly SnapshotEvent[], turn: number): stri
   return text;
 }
 
-function renderPrompt(
-  event: AgentEvent,
-  mapping: { groupId: string; sessionId: string; label: string },
-  _prefix: string,
-): string {
-  const payload = event.payload;
-  const senderType = typeof payload.senderType === "string" ? payload.senderType : "unknown";
-  const senderId = typeof payload.senderId === "string" ? payload.senderId : "unknown";
-  const content = typeof payload.content === "string" ? payload.content : "";
-  const messageId = typeof payload.messageId === "string" ? payload.messageId : event.eventId;
-  const lines = [
-    "[Agent Room message]",
-    `group: ${mapping.label || mapping.groupId}`,
-    `group_id: ${mapping.groupId}`,
-    `thread_id: ${event.threadId ?? "-"}`,
-    `task_id: ${event.taskId ?? "-"}`,
-    `message_id: ${messageId}`,
-    `sender: ${senderType}:${senderId}`,
-    `reply_to: ${typeof payload.replyToMessageId === "string" ? payload.replyToMessageId : "-"}`,
-    "",
-    content,
-  ];
-  return lines.join("\n");
+function renderPrompt(event: AgentEvent): string {
+  const content = event.payload.content;
+  return typeof content === "string" ? content : "";
 }
 
 function extractAssistantText(
