@@ -31,3 +31,10 @@ groups:
 ```
 
 Session 必须已存在；插件不会创建 Session。两个 Group 不得共享同一个 Session。
+
+## 设置页
+
+安装 bundle 并在 DSH 中启用后，打开 **Settings → Built-in plugins → Agent Room**。
+页面可编辑 `roomBaseUrl` 与 Group→Session 映射（增删行、校验 groupId/sessionId 唯一）。
+这两个字段是 volatile：保存后插件不重启，`RoomBridge` 每秒读取新配置并应用；Room URL
+变化时自动重连。其余字段通过 profile patch 配置，修改后重启插件生效。

@@ -106,7 +106,9 @@ const SKIP_PATTERN = /^\[skip\](?:\s|$)/i;
  * prompts, extracts the public assistant output and posts it back.
  */
 export class RoomBridge {
-  private readonly config: PluginConfig;
+  private config: PluginConfig;
+  private readonly rawConfig: Partial<PluginConfig>;
+  private configTimer: ReturnType<typeof setInterval> | null = null;
   private readonly deps: BridgeDeps;
   private readonly logger: DshLogger;
   private readonly store: DeliveryStore;
@@ -131,6 +133,7 @@ export class RoomBridge {
   private disposeSessionEvents: (() => void) | void = undefined;
 
   constructor(config: Partial<PluginConfig>, deps: BridgeDeps) {
+    this.rawConfig = config;
     this.config = resolvePluginConfig(config);
     this.deps = deps;
     this.logger = deps.ctx.logger;
@@ -182,10 +185,41 @@ export class RoomBridge {
     );
     await this.warnMissingSessions();
     this.connectLoop();
+    this.configTimer = setInterval(() => this.refreshConfig(), 1_000);
+    this.configTimer.unref?.();
+  }
+
+  /** Re-read volatile settings without restarting the plugin. */
+  private refreshConfig(): void {
+    let next: PluginConfig;
+    try {
+      next = resolvePluginConfig(this.rawConfig);
+      assertMappings(next.groups);
+    } catch (error) {
+      this.logger.warn(`agent-room: ignoring invalid live configuration: ${errorText(error)}`);
+      return;
+    }
+    const urlChanged = next.roomBaseUrl !== this.config.roomBaseUrl;
+    this.config = next;
+    this.mappings.clear();
+    for (const group of next.groups) this.mappings.set(group.groupId, group);
+    if (urlChanged && this.client) {
+      this.connected = false;
+      const client = this.client;
+      this.client = null;
+      try {
+        client.close();
+      } catch {
+        // ignore close errors; reconnect below
+      }
+      this.scheduleReconnect();
+    }
   }
 
   async stop(): Promise<void> {
     this.stopped = true;
+    if (this.configTimer) clearInterval(this.configTimer);
+    this.configTimer = null;
     if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
     this.reconnectTimer = null;
     for (const turns of this.pendingBySession.values()) {

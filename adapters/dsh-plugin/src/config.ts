@@ -18,13 +18,13 @@ export const groupMappingSchema = z.object({
  */
 export const Config = z.object({
   enabled: z.boolean().default(true),
-  roomBaseUrl: z.string().default("http://127.0.0.1:8787"),
+  roomBaseUrl: z.string().default("http://127.0.0.1:8787").volatile(),
   /** Local Ed25519 private key (PKCS#8 PEM, mode 0600). Empty uses the profile data dir. */
   agentKeyPath: z.string().default(""),
   /** Durable delivery state directory. Empty uses the profile data dir. */
   dataDir: z.string().default(""),
   /** Explicit group -> session mappings. Empty disables message bridging. */
-  groups: z.array(groupMappingSchema).default([]),
+  groups: z.array(groupMappingSchema).default([]).volatile(),
   /** Hard cap for one Room reply. */
   maxReplyChars: z.number().step(1).min(200).max(100_000).default(8_000),
   /** How long to wait for a turn to end before forgetting its pending reply. */
@@ -47,13 +47,32 @@ export type PluginConfig = {
   deliveryRetentionDays: number;
 };
 
+function unwrap<T>(value: T | { get(): T } | undefined): T | undefined {
+  if (
+    value !== undefined &&
+    typeof value === "object" &&
+    value !== null &&
+    typeof (value as { get?: unknown }).get === "function"
+  ) {
+    return (value as { get(): T }).get();
+  }
+  return value as T | undefined;
+}
+
 export function resolvePluginConfig(config: Partial<PluginConfig>): PluginConfig {
+  const source = config as Partial<PluginConfig> & {
+    roomBaseUrl?: string | { get(): string };
+    groups?:
+      | { groupId: string; sessionId: string; label: string }[]
+      | { get(): { groupId: string; sessionId: string; label: string }[] };
+  };
+  const groups = unwrap(source.groups) ?? [];
   return {
     enabled: config.enabled ?? true,
-    roomBaseUrl: config.roomBaseUrl ?? "http://127.0.0.1:8787",
+    roomBaseUrl: unwrap(source.roomBaseUrl) ?? "http://127.0.0.1:8787",
     agentKeyPath: config.agentKeyPath ?? "",
     dataDir: config.dataDir ?? "",
-    groups: (config.groups ?? []).map((group) => ({
+    groups: groups.map((group) => ({
       groupId: group.groupId,
       sessionId: group.sessionId,
       label: group.label ?? "",

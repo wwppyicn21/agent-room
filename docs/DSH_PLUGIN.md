@@ -23,7 +23,13 @@ pnpm --filter @room/dsh-plugin build
 #   plugin_manager install_bundle  <new spec>
 ```
 
-安装后由 DSH Settings 的配置表单管理以下字段（`Config` schema 校验）：
+安装后在 DSH 的 **Settings → Built-in plugins → Agent Room** 打开插件设置页。设置页直接
+编辑 `roomBaseUrl` 与 `groups`（这两个字段是 volatile，保存后无需重启插件，`RoomBridge`
+每秒重新读取配置并应用；Room URL 变化时自动重连）。其余字段仍通过 profile patch /
+配置文件设置，修改后需要重启插件。
+
+设置页也可以手工填写 profile patch（`dsh.profile.bundles` 必须包含本 bundle），字段由
+`Config` schema 校验：
 
 | 字段            | 默认                    | 说明                                                      |
 | --------------- | ----------------------- | --------------------------------------------------------- |
@@ -44,7 +50,7 @@ pnpm --filter @room/dsh-plugin build
 - 映射目标必须是**未归档** Session：归档 Session 的 Agent 不执行 Prompt，`agent/pre-step`
   直接拒绝、`turn/end` 为 `blocked`；插件在 Prompt 前调用
   `sessionController.resolveAgent(sessionId)` 恢复冷 Session 的 Agent，失败则 failed；
-- 管理员修改映射后重启/重新加载插件即可生效。
+- 管理员在设置页修改 `groups` 后约 1 秒内生效；`roomBaseUrl` 变化会自动断开并重连。
 
 ## 2. 身份与私钥
 
