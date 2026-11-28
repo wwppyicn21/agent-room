@@ -1684,6 +1684,27 @@ Plugin 侧 Room Tools 封装仍属 M7。
 
 ---
 
+### M9 实现状态（2026-11-28）
+
+已完成（本地可验证交付）：
+
+- Room Server 托管 Web 静态产物：`WEB_ROOT`、SPA 回退、`/api/*` 不回退、路径穿越拒绝（`apps/server/src/staticWeb.ts`，`static-web.test.ts` 5 例）；
+- 生产配置：`WEB_ROOT`、`TRUST_PROXY`，env 示例与 systemd `UMask=0077`；
+- 备份/恢复脚本：在线 SQLite `.backup`、`PRAGMA integrity_check`、sha256、保留轮换、恢复拒绝覆盖（`deployment/scripts/backup.sh`、`restore.sh`，`deployment-scripts.test.ts` 3 例）；
+- 升级/回滚：`switch-release.sh` 原子符号链接切换（测试覆盖切换与回滚）；
+- 健康检查：`deployment/scripts/healthcheck.sh`；
+- systemd：Room Server、每日备份 service/timer；Cloudflare Tunnel 配置模板；
+- 运行手册：`docs/DEPLOYMENT.md`（目录权限、Tunnel/Access、备份恢复、升级回滚、迁移、验收清单）。
+
+未完成（需要真实目标机/域名/Cloudflare 账号，不能在本仓库宣称通过）：
+
+- cloudflared 实际隧道、Access 策略与公网访问；
+- 目标机 systemd 启动/重启演练；
+- 真实数据规模备份/恢复演练；
+- Mini PC 上线、多客户端公网验证与回滚演练。
+
+因此 M9 状态为“本地交付完成，目标环境验收待执行”，不标记为完成。
+
 # 17. 自动化测试策略
 
 ## 17.1 必须有的测试层
@@ -1947,7 +1968,7 @@ M9  Cloudflare + Mini PC 原生部署、SQLite 备份/恢复、JSON 数据导入
 | M6 | 实现完成并实机验证（2026-11-25：DSH Plugin bundle、显式 Session 映射、Message/Thread/Task 上下文、Delivery 幂等、重连恢复；230 tests）；卸载/更新实机验收未关闭 | 12c12ea | lint / typecheck / format / 230 tests / build 全过；插件单测 14 + 真实 Room 端到端 1；web profile 安装、真实消息→Session→回复实测 | 记录见 docs/PROGRESS.md「M6」「实机验证」与 docs/DSH_PLUGIN.md；安装保留、映射清空、插件禁用；卸载/更新未实测 |
 | M7 | 未开始（由 ChatGPT 开发）；服务端 Agent Room Tools HTTP 已提供 | | | |
 | M8 | 实现完成（2026-11-26：React Web Client；2026-11-27 复审整改 + DSH 后续整改） | 9c26f8d | lint / typecheck / format / 43 files / 291 tests / build / Playwright E2E 9 例全过 | 记录见 docs/PROGRESS.md「M8」「M8 整改」「DSH 整改」、docs/WEB_CLIENT.md、docs/QUALITY_REVIEW_FOLLOWUP_2026-11-27.md；HEAD `fb005d2` 已 push，CI Run `46047104203` 全绿 |
-| M9 | 未开始 | | | |
+| M9 | 本地交付完成，目标机/Cloudflare 验收待执行 | pending | lint / typecheck / format / 50 files / 358 tests / build 全过；静态 Web（`WEB_ROOT`/SPA/路径穿越）、在线 WAL 备份+恢复、release 切换测试通过 | 记录见 `docs/PROGRESS.md`「M9 部署与迁移」、`docs/DEPLOYMENT.md`；目标机 Tunnel/Access/systemd/真实备份未验证 |
 
 ---
 

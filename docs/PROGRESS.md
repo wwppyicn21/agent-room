@@ -1107,3 +1107,18 @@ M6 卸载/更新验收、M7、M9。
 
 验证：`pnpm test` 48 files / 350 tests；`CI=true pnpm e2e` 10 passed；`lint` / `typecheck` / `format:check` / `build` 全过。无数据库 schema 迁移；`deliveries.json` 保持 v1/v2 兼容。
 未验证/边界：Web 视图竞态尚无组件级单测（由 E2E 与类型检查覆盖）；Realtime 仍 300ms 轮询；命令 lease 依赖插件重连/轮询。
+
+
+## M9 部署与迁移（2026-11-28，本地交付）
+
+本轮完成可本地验证的部署能力，目标机/Cloudflare 实装保留为待验收：
+
+- **静态 Web**：`apps/server/src/staticWeb.ts` 支持 `/`、`/assets/*`、SPA 回退、`/api/*` 不回退、路径穿越拒绝；配置 `WEB_ROOT`、`TRUST_PROXY`；`static-web.test.ts` 5 例。
+- **备份/恢复**：`deployment/scripts/backup.sh` 在线 `.backup` + integrity_check + sha256 + 轮换；`restore.sh` 双重完整性检查、默认拒绝覆盖、`--force` 原子替换；`deployment-scripts.test.ts` 覆盖在线 WAL 备份、恢复、拒绝覆盖。
+- **升级/回滚**：`deployment/scripts/switch-release.sh` 原子切换 release 符号链接并保留旧版本，测试覆盖切换与回滚。
+- **运维**：`healthcheck.sh`、`agentroom-backup.service/timer`、`cloudflared` 配置模板、生产 env 示例、systemd hardening。
+- **文档**：`docs/DEPLOYMENT.md` 覆盖目录权限、构建发布、Tunnel/Access、备份恢复、升级回滚、迁移与验收清单。
+
+验证（本地）：`pnpm test` 50 files / 358 tests、E2E 10、lint/typecheck/format/build 全过；无 schema 变更。
+
+未验证（目标环境）：cloudflared 实际隧道、Access 策略、目标机 systemd 启动/重启、真实数据备份恢复、公网多客户端与回滚演练。M9 不宣称完成，待目标机落实后关闭。

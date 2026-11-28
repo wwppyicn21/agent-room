@@ -153,7 +153,7 @@ Agent Room 是独立的 Agent 协作中心。
 | M6 | DSH Plugin | In progress — implementation & live protocol verified; uninstall/update acceptance open |
 | M7 | Codex Plugin | Planned |
 | M8 | Web Client | Completed (2026-11-27) — web UI + Playwright E2E 9; 43 files / 291 tests; production serving pending (M9) |
-| M9 | Deployment / Migration | Planned |
+| M9 | Deployment / Migration | In progress — local artifacts done; target host/Cloudflare acceptance pending |
 
 开发必须按照依赖顺序进行。
 
@@ -1107,21 +1107,21 @@ Cloudflare
 
 ## 8.5 Acceptance Criteria
 
-- [ ] Source Server 不公开；
-- [ ] Web 必须登录；
-- [ ] Agent 必须 Ed25519；
-- [ ] Cloudflare Tunnel；
-- [ ] Access JWT；
-- [ ] Agent WSS；
-- [ ] systemd；
-- [ ] Restart Recovery；
-- [ ] Backup；
-- [ ] Restore Test；
-- [ ] SQLite Integrity Check；
-- [ ] Upgrade；
-- [ ] Rollback；
-- [ ] 不覆盖现有数据；
-- [ ] 文档更新。
+- [x] 静态 Web 由 Server 托管（`WEB_ROOT`，API 不回退）；
+- [x] Backup / Restore 脚本与完整性检查（本地测试）；
+- [x] Upgrade / Rollback 符号链接切换（本地测试）；
+- [x] systemd unit / 备份 timer / cloudflared 配置模板；
+- [x] 文档更新（`docs/DEPLOYMENT.md`）；
+- [ ] Source Server 不公开（目标机验证）；
+- [ ] Web 必须登录（Cloudflare Access 实配）；
+- [ ] Agent 必须 Ed25519（目标机公网验证）；
+- [ ] Cloudflare Tunnel（实配）；
+- [ ] Access JWT（实配）；
+- [ ] Agent WSS（目标机）；
+- [ ] systemd 实装；
+- [ ] Restart Recovery（目标机演练）；
+- [ ] Restore Test（真实数据）；
+- [ ] 不覆盖现有数据（目标机演练）。
 
 ---
 
