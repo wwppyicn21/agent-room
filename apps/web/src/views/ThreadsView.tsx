@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import {
   ApiClient,
   type EventRow,
@@ -34,9 +34,14 @@ export function ThreadsView({
   const [task, setTask] = useState<Task | null>(null);
   const [olderCursor, setOlderCursor] = useState<number | null>(null);
 
+  const groupIdRef = useRef(group.id);
+  groupIdRef.current = group.id;
+
   const loadThreads = useCallback(async () => {
+    const groupId = group.id;
     try {
-      const result = await api.listThreads(group.id, { status: status || undefined, limit: 50 });
+      const result = await api.listThreads(groupId, { status: status || undefined, limit: 50 });
+      if (groupIdRef.current !== groupId) return;
       setThreads(result.items);
       setSelectedId((current) =>
         current && result.items.some((item) => item.id === current)
@@ -49,6 +54,12 @@ export function ThreadsView({
   }, [api, group.id, status, onError]);
 
   useEffect(() => {
+    setThreads([]);
+    setSelectedId(null);
+    setDetail(null);
+    setMessages([]);
+    setEvents([]);
+    setTask(null);
     void loadThreads();
   }, [loadThreads]);
 

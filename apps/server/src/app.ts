@@ -2,6 +2,7 @@ import websocket from "@fastify/websocket";
 import type { Config } from "@room/config";
 import type { DatabaseHandle } from "@room/database";
 import Fastify, { type FastifyError, type FastifyInstance } from "fastify";
+import { ZodError } from "zod";
 import { createAccessVerifier, registerAuth } from "./auth/plugin.js";
 import type { AccessTokenVerifier } from "./auth/access.js";
 import { AgentHub } from "./modules/agentHub.js";
@@ -70,6 +71,12 @@ export async function buildApp({
   app.decorate("realtimeHub", realtimeHub);
 
   app.setErrorHandler((error: FastifyError, request, reply) => {
+    if (error instanceof ZodError) {
+      request.log.info({ err: error }, "request validation failed");
+      return reply.status(400).send({
+        error: { code: "validation_error", message: "request validation failed" },
+      });
+    }
     if (error instanceof DomainError) {
       request.log.info({ err: error, code: error.code }, "request rejected");
       return reply

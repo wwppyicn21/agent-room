@@ -18,7 +18,7 @@ import {
   liveSessionAgentIds,
 } from "../modules/agentAuth.js";
 import type { RoomContext } from "../modules/context.js";
-import { ForbiddenError, ValidationError } from "../modules/errors.js";
+import { ForbiddenError, NotFoundError, ValidationError } from "../modules/errors.js";
 import { normalizeEd25519PublicKey } from "../modules/keys.js";
 import { recordAudit } from "../modules/audit.js";
 import { createUser, disableUser, enableUser, listUsers, setUserRole } from "../modules/users.js";
@@ -93,7 +93,7 @@ export function registerHttpRoutes(app: FastifyInstance, deps: HttpRouteDependen
     return { users };
   });
 
-  app.post("/api/v1/users", async (request) => {
+  app.post("/api/v1/users", async (request, reply) => {
     const principal = requireUserPrincipal(request);
     const body = parseBody(createUserBodySchema, request.body);
     const user = createUser(ctx, {
@@ -102,6 +102,7 @@ export function registerHttpRoutes(app: FastifyInstance, deps: HttpRouteDependen
       role: body.role,
       actorUserId: principal.userId,
     });
+    reply.code(201);
     return { user };
   });
 
@@ -226,6 +227,9 @@ export function registerHttpRoutes(app: FastifyInstance, deps: HttpRouteDependen
     const principal = requireUserPrincipal(request);
     const { agentId, keyId } = params<{ agentId: string; keyId: string }>(request);
     const key = revokeAgentKey(ctx, { keyId, actorUserId: principal.userId });
+    if (key.agentId !== agentId) {
+      throw new NotFoundError(`agent key ${keyId} not found for agent ${agentId}`);
+    }
     const affected = closeAgentSessionsForKey(ctx, keyId, "key-revoked");
     for (const id of affected) hub.closeAgent(id, "key revoked");
     recordAudit(ctx.db, {
@@ -233,7 +237,7 @@ export function registerHttpRoutes(app: FastifyInstance, deps: HttpRouteDependen
       actorId: principal.userId,
       action: "agent.key_revoke.disconnect",
       targetType: "agent",
-      targetId: agentId,
+      targetId: key.agentId,
       metadata: { keyId, sessionsClosed: affected.length },
       createdAt: ctx.now(),
     });

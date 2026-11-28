@@ -98,6 +98,12 @@ function params<T>(request: FastifyRequest): T {
   return request.params as T;
 }
 
+function assertMemberType(value: string): asserts value is "user" | "agent" {
+  if (value !== "user" && value !== "agent") {
+    throw new ValidationError("memberType must be user or agent");
+  }
+}
+
 function limitOf(value: string | undefined, fallback: number): number {
   if (value === undefined || value === "") return fallback;
   if (!/^\d+$/.test(value)) {
@@ -302,9 +308,10 @@ export function registerRoomRoutes(app: FastifyInstance, deps: RoomRouteDependen
     const actor = actorOf(request);
     const { groupId, memberType, memberId } = params<{
       groupId: string;
-      memberType: "user" | "agent";
+      memberType: string;
       memberId: string;
     }>(request);
+    assertMemberType(memberType);
     const body = parseBody(updateMemberRoleBody, request.body);
     return {
       member: updateMemberRole(ctx, {
@@ -321,9 +328,10 @@ export function registerRoomRoutes(app: FastifyInstance, deps: RoomRouteDependen
     const actor = actorOf(request);
     const { groupId, memberType, memberId } = params<{
       groupId: string;
-      memberType: "user" | "agent";
+      memberType: string;
       memberId: string;
     }>(request);
+    assertMemberType(memberType);
     removeMember(ctx, { groupId, actorUserId: actor.id, memberType, memberId });
     reply.code(204);
   });
@@ -557,15 +565,16 @@ export function registerRoomRoutes(app: FastifyInstance, deps: RoomRouteDependen
       status?: string;
       agentId?: string;
     }>(request);
+    const deliveryStatus = z.enum(["pending", "delivered", "acked", "failed"]).safeParse(status);
+    if (status !== undefined && status !== "" && !deliveryStatus.success) {
+      throw new ValidationError("status must be pending, delivered, acked or failed");
+    }
     return listGroupDeliveries(ctx, {
       groupId,
       viewer: actor,
       limit: limitOf(limit, 50),
       cursor,
-      status:
-        status === "pending" || status === "delivered" || status === "acked" || status === "failed"
-          ? status
-          : undefined,
+      status: deliveryStatus.success ? deliveryStatus.data : undefined,
       agentId,
     });
   });

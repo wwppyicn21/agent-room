@@ -82,14 +82,23 @@ export function TasksView({
     void loadAgents();
   }, [loadAgents, group.id]);
 
+  const selectedIdRef = useRef<string | null>(null);
+  selectedIdRef.current = selected?.id ?? null;
+
   const loadApprovals = async (task: Task) => {
     const groupId = group.id;
     try {
       const result = await api.listApprovals(task.id);
-      if (groupIdRef.current !== groupId || task.groupId !== groupId) return;
+      if (
+        groupIdRef.current !== groupId ||
+        task.groupId !== groupId ||
+        selectedIdRef.current !== task.id
+      ) {
+        return;
+      }
       setApprovals(result.approvals);
     } catch (err) {
-      if (groupIdRef.current === groupId) onError(err);
+      if (groupIdRef.current === groupId && selectedIdRef.current === task.id) onError(err);
     }
   };
 

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ApiClient, ApiError, type AuthInfo, type Group, type MeResponse } from "./api";
 import { AgentsView } from "./views/AgentsView";
 import { ChatView } from "./views/ChatView";
@@ -43,9 +43,16 @@ export function App() {
 
   const group = groups.find((item) => item.id === groupId) ?? null;
 
+  const toastTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const notify = useCallback((message: string) => {
     setToast(message);
-    setTimeout(() => setToast(""), 3500);
+    if (toastTimer.current) clearTimeout(toastTimer.current);
+    toastTimer.current = setTimeout(() => setToast(""), 3500);
+  }, []);
+  useEffect(() => {
+    return () => {
+      if (toastTimer.current) clearTimeout(toastTimer.current);
+    };
   }, []);
 
   const describeError = useCallback((err: unknown): string => {
@@ -91,10 +98,6 @@ export function App() {
       active = false;
     };
   }, [api, loadGroups]);
-
-  useEffect(() => {
-    if (me) void loadGroups().catch((err) => setError(describeError(err)));
-  }, [me, loadGroups, describeError]);
 
   const login = async () => {
     setError("");

@@ -133,12 +133,16 @@ export function ChatView({ api, me, group, notify, onError }: ChatViewProps) {
             }
           },
           onPresence: (next) => {
+            if (groupIdRef.current !== group.id) return;
             setPresence(
               new Set(next.agents.filter((agent) => agent.online).map((agent) => agent.agentId)),
             );
+            const presenceGroupId = group.id;
             void api
-              .listMembers(group.id)
-              .then((result) => setMembers(result.members))
+              .listMembers(presenceGroupId)
+              .then((result) => {
+                if (groupIdRef.current === presenceGroupId) setMembers(result.members);
+              })
               .catch(() => undefined);
           },
           onState: (next, error) => {
@@ -246,13 +250,15 @@ export function ChatView({ api, me, group, notify, onError }: ChatViewProps) {
                 const el = listRef.current;
                 const previousHeight = el?.scrollHeight ?? 0;
                 const previousTop = el?.scrollTop ?? 0;
+                const olderGroupId = group.id;
                 void api
-                  .listMessages(group.id, { limit: 50, before: cursor })
+                  .listMessages(olderGroupId, { limit: 50, before: cursor })
                   .then((page) => {
+                    if (groupIdRef.current !== olderGroupId) return;
                     setMessages((current) => mergeMessages(page.items, current));
                     setOlderCursor(page.nextCursor);
                     requestAnimationFrame(() => {
-                      if (!el) return;
+                      if (!el || groupIdRef.current !== olderGroupId) return;
                       el.scrollTop = previousTop + (el.scrollHeight - previousHeight);
                       stickRef.current = false;
                     });

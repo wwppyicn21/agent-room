@@ -17,6 +17,7 @@ class FakeClient implements RoomClientLike {
   connected = false;
   openCalls = 0;
   failSend = false;
+  failGroups = new Set<string>();
   manualAcks = false;
   readonly acks: { resolve: () => void; reject: (error: Error) => void }[] = [];
   connectDelayMs = 0;
@@ -36,7 +37,7 @@ class FakeClient implements RoomClientLike {
     this.connected = false;
   }
   sendMessage(groupId: string, content: string, options?: Record<string, unknown>): void {
-    if (this.failSend) throw new Error("socket is not open");
+    if (this.failSend || this.failGroups.has(groupId)) throw new Error("socket is not open");
     this.sent.push({ groupId, content, options });
   }
   async sendMessageWithAck(
@@ -44,7 +45,7 @@ class FakeClient implements RoomClientLike {
     content: string,
     options?: Record<string, unknown>,
   ): Promise<void> {
-    if (this.failSend) throw new Error("socket is not open");
+    if (this.failSend || this.failGroups.has(groupId)) throw new Error("socket is not open");
     this.sent.push({ groupId, content, options });
     if (!this.manualAcks) return;
     await new Promise<void>((resolve, reject) => this.acks.push({ resolve, reject }));
@@ -968,5 +969,130 @@ describe("P0 turn isolation and reply ACK", () => {
     const flush = vi.spyOn(harness.bridge.deliveryStore, "flush");
     await harness.bridge.stop();
     expect(flush).toHaveBeenCalled();
+  });
+});
+
+describe("delivery state protection after a crash", () => {
+  const baseTurn = {
+    eventId: "evd_1",
+    requestId: "room-evd_1",
+    sessionId: "ses_a",
+    groupId: "grp_a",
+    threadId: null,
+    replyToMessageId: "msg_1",
+    messageId: "msg_1",
+    taskId: null,
+    turnNumber: null,
+    prompt: "hello room",
+    text: "",
+    createdAt: "2026-01-01T00:00:00.000Z",
+    updatedAt: "2026-01-01T00:00:00.000Z",
+  };
+
+  async function seed(temp: string, overrides: Record<string, unknown>): Promise<void> {
+    const store = new DeliveryStore(join(temp, "deliveries.json"));
+    await store.load();
+    const now = new Date().toISOString();
+    await store.recordTurn({ ...baseTurn, createdAt: now, updatedAt: now, ...overrides } as never);
+    await store.flush();
+  }
+
+  async function storeOf(temp: string): Promise<DeliveryStore> {
+    const store = new DeliveryStore(join(temp, "deliveries.json"));
+    await store.load();
+    return store;
+  }
+
+  it("refuses to re-prompt an ambiguous prompting turn without a session record", async () => {
+    const harness = makeHarness([{ groupId: "grp_a", sessionId: "ses_a" }], {
+      readSession: async () => ({ events: [] }),
+    });
+    await seed(harness.temp, { state: "prompting" });
+    await harness.bridge.start();
+    await waitFor(() => harness.client.connected);
+    await harness.deliver(messageEvent());
+    // Recovery may retry the same requestId once; delivery must not add a second prompt.
+    expect(harness.prompts).toHaveLength(1);
+    expect(harness.prompts[0]?.requestId).toBe("room-evd_1");
+    await harness.bridge.stop();
+  });
+
+  it("re-attaches a prompting turn that is present in the session log", async () => {
+    const harness = makeHarness([{ groupId: "grp_a", sessionId: "ses_a" }], {
+      readSession: async () => ({
+        events: [{ type: "user/message", data: { turn: 1, source: { rpcId: "room-evd_1" } } }],
+      }),
+    });
+    await seed(harness.temp, { state: "prompting" });
+    await harness.bridge.start();
+    await waitFor(() => harness.client.connected);
+    await harness.deliver(messageEvent());
+    expect(harness.prompts).toHaveLength(0);
+    expect((await storeOf(harness.temp)).getTurn("evd_1")?.state).toBe("awaiting_response");
+    await harness.bridge.stop();
+  });
+
+  it("resends a durable reply_pending turn without prompting again", async () => {
+    const harness = makeHarness([{ groupId: "grp_a", sessionId: "ses_a" }]);
+    await seed(harness.temp, { state: "reply_pending", text: "durable reply" });
+    await harness.bridge.start();
+    await waitFor(() => harness.client.connected);
+    await harness.deliver(messageEvent());
+    expect(harness.prompts).toHaveLength(0);
+    expect(harness.client.sent).toHaveLength(1);
+    expect(harness.client.sent[0]?.content).toContain("durable reply");
+    expect((await storeOf(harness.temp)).getTurn("evd_1")?.state).toBe("completed");
+    await harness.bridge.stop();
+  });
+
+  it("does not retry a failed turn", async () => {
+    const harness = makeHarness([{ groupId: "grp_a", sessionId: "ses_a" }]);
+    await seed(harness.temp, { state: "failed", error: "previous failure" });
+    await harness.bridge.start();
+    await waitFor(() => harness.client.connected);
+    await harness.deliver(messageEvent());
+    expect(harness.prompts).toHaveLength(0);
+    await harness.bridge.stop();
+  });
+});
+
+describe("pending reply isolation", () => {
+  it("does not let one failing group block another group's pending reply", async () => {
+    const harness = makeHarness([
+      { groupId: "grp_a", sessionId: "ses_a" },
+      { groupId: "grp_b", sessionId: "ses_b" },
+    ]);
+    const store = new DeliveryStore(join(harness.temp, "deliveries.json"));
+    await store.load();
+    const now = new Date().toISOString();
+    for (const [index, groupId] of ["grp_a", "grp_b"].entries()) {
+      await store.recordTurn({
+        eventId: `evd_${index + 1}`,
+        requestId: `room-evd_${index + 1}`,
+        sessionId: index === 0 ? "ses_a" : "ses_b",
+        groupId,
+        threadId: null,
+        replyToMessageId: "msg_1",
+        messageId: "msg_1",
+        taskId: null,
+        turnNumber: null,
+        prompt: "hello",
+        text: `reply for ${groupId}`,
+        state: "reply_pending",
+        createdAt: now,
+        updatedAt: now,
+      });
+    }
+    await store.flush();
+    harness.client.failGroups.add("grp_a");
+    await harness.bridge.start();
+    await waitFor(() => harness.client.connected);
+    await waitFor(() => harness.client.sent.some((entry) => entry.groupId === "grp_b"));
+    expect(harness.client.sent.filter((entry) => entry.groupId === "grp_a")).toHaveLength(0);
+    const after = new DeliveryStore(join(harness.temp, "deliveries.json"));
+    await after.load();
+    expect(after.getTurn("evd_2")?.state).toBe("completed");
+    expect(after.getTurn("evd_1")?.state).toBe("reply_pending");
+    await harness.bridge.stop();
   });
 });

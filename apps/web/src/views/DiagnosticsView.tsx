@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
   ApiClient,
+  ApiError,
   type DeliveryItem,
   type DeliveryStats,
   type EventRow,
@@ -14,7 +15,7 @@ export function DiagnosticsView({
   api,
   group,
   me,
-  onError: _onError,
+  onError,
 }: {
   api: ApiClient;
   group: Group;
@@ -30,6 +31,7 @@ export function DiagnosticsView({
   const [canManage, setCanManage] = useState<boolean | null>(null);
   const groupIdRef = useRef(group.id);
   groupIdRef.current = group.id;
+  const deliveryGeneration = useRef(0);
 
   useEffect(() => {
     setStats(null);
@@ -77,17 +79,21 @@ export function DiagnosticsView({
     async (cursor?: string) => {
       if (canManage !== true) return;
       const groupId = group.id;
+      const generation = deliveryGeneration.current;
       try {
         const result = await api.listDeliveries(groupId, {
           status: deliveryStatus || undefined,
           limit: 50,
           cursor,
         });
-        if (groupIdRef.current !== groupId) return;
+        if (groupIdRef.current !== groupId || generation !== deliveryGeneration.current) return;
         setDeliveries((current) => (cursor ? [...current, ...result.items] : result.items));
         setDeliveryCursor(result.nextCursor);
-      } catch {
-        if (groupIdRef.current === groupId) setDeliveries([]);
+      } catch (err) {
+        if (groupIdRef.current === groupId && generation === deliveryGeneration.current) {
+          setDeliveries([]);
+          if (!(err instanceof ApiError && err.status === 403)) onError(err);
+        }
       }
     },
     [api, canManage, group.id, deliveryStatus],
@@ -109,6 +115,9 @@ export function DiagnosticsView({
   );
 
   useEffect(() => {
+    deliveryGeneration.current += 1;
+    setDeliveries([]);
+    setDeliveryCursor(null);
     void loadStats();
     void loadDeliveries();
   }, [loadStats, loadDeliveries]);

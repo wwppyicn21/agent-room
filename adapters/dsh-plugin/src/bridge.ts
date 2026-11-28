@@ -369,12 +369,74 @@ export class RoomBridge {
     }
     const requestId = `room-${event.eventId}`;
     const previous = this.store.getTurn(event.eventId);
-    if (previous?.state === "awaiting_response") {
-      // The delivery ack was lost after the prompt was accepted. Re-attach the
-      // persisted turn instead of prompting the Session a second time.
-      this.enqueuePending(previous);
-      await this.store.markCompleted(event.eventId);
-      return;
+    if (previous) {
+      // Never re-run a Turn that already reached a terminal state, and never
+      // blindly re-prompt an ambiguous "prompting" state left by a crash.
+      if (isTerminalTurnState(previous.state)) {
+        if (previous.state === "completed") await this.store.markCompleted(event.eventId);
+        else await this.store.markFailed(event.eventId, `turn is ${previous.state}`);
+        return;
+      }
+      if (previous.state === "awaiting_response") {
+        // The delivery ack was lost after the prompt was accepted. Re-attach the
+        // persisted turn instead of prompting the Session a second time.
+        this.enqueuePending(previous);
+        await this.store.markCompleted(event.eventId);
+        return;
+      }
+      if (previous.state === "reply_pending") {
+        // The reply was generated before the crash; resend the durable text,
+        // never ask the model to produce it again.
+        try {
+          await this.deliverReply(previous, previous.text);
+          await this.store.updateTurn(previous.eventId, {
+            state: "completed",
+            text: previous.text,
+          });
+          await this.store.markCompleted(event.eventId);
+        } catch (error) {
+          await this.store.markFailed(event.eventId, `reply pending: ${errorText(error)}`);
+        }
+        return;
+      }
+      if (previous.state === "cancelled") {
+        await this.store.markCompleted(event.eventId);
+        return;
+      }
+      if (previous.state === "failed") {
+        await this.store.markFailed(event.eventId, previous.error ?? "turn failed");
+        return;
+      }
+      if (previous.state === "prompting") {
+        // The prompt may or may not have reached DSH before the crash. The
+        // session log is authoritative: attach if the request is recorded,
+        // otherwise stop and require an explicit recovery instead of running
+        // the Turn twice.
+        let snapshot: { events?: readonly SnapshotEvent[] };
+        try {
+          snapshot = (await this.readSession(mapping.sessionId)) as {
+            events?: readonly SnapshotEvent[];
+          };
+        } catch (error) {
+          await this.store.markFailed(event.eventId, `cannot inspect session: ${errorText(error)}`);
+          return;
+        }
+        const events = Array.isArray(snapshot.events) ? snapshot.events : [];
+        const recorded = events.find(
+          (item) => item.type === "user/message" && item.data?.source?.rpcId === previous.requestId,
+        );
+        if (recorded) {
+          this.enqueuePending(previous);
+          await this.store.updateTurn(previous.eventId, { state: "awaiting_response" });
+          await this.store.markCompleted(event.eventId);
+        } else {
+          await this.store.markFailed(
+            event.eventId,
+            "prompt state is ambiguous after restart; refusing to execute twice",
+          );
+        }
+        return;
+      }
     }
     const threadId = event.threadId ?? null;
     const taskId = event.taskId ?? null;
@@ -503,9 +565,15 @@ export class RoomBridge {
       this.activeBySession.set(sessionId, turn);
       return;
     }
-    const turn = this.activeBySession.get(sessionId);
-    if (!turn) return;
     const eventTurn = event.data?.turn;
+    // Prefer the exact DSH turn number carried by the event; the single active
+    // pointer is only a fallback for events that do not identify a turn.
+    let turn: PendingTurn | undefined =
+      typeof eventTurn === "number"
+        ? queue.find((candidate) => candidate.turnNumber === eventTurn)
+        : undefined;
+    if (!turn) turn = this.activeBySession.get(sessionId);
+    if (!turn) return;
     if (
       typeof eventTurn === "number" &&
       typeof turn.turnNumber === "number" &&
@@ -591,10 +659,21 @@ export class RoomBridge {
           await this.store.updateTurn(turn.eventId, { state: "completed", text: turn.text });
         }
       } catch (error) {
-        this.logger.warn(
-          `agent-room: pending reply for ${turn.eventId} is still undeliverable: ${errorText(error)}`,
-        );
-        return;
+        // One permanently rejected reply (removed member, deleted thread, ...)
+        // must not block unrelated groups; transient failures keep retrying.
+        if (isPermanentDeliveryError(error)) {
+          await this.store.updateTurn(turn.eventId, {
+            state: "failed",
+            error: `reply rejected: ${errorText(error)}`,
+          });
+          this.logger.warn(
+            `agent-room: pending reply for ${turn.eventId} was rejected permanently: ${errorText(error)}`,
+          );
+        } else {
+          this.logger.warn(
+            `agent-room: pending reply for ${turn.eventId} is still undeliverable: ${errorText(error)}`,
+          );
+        }
       }
     }
   }
@@ -692,6 +771,16 @@ export class RoomBridge {
     const controller = this.deps.ctx.get("sessionController") as SessionControllerLike | undefined;
     if (!controller) return;
     try {
+      // Recovery follows the same rules as first delivery: resume the Agent,
+      // register the waiter before prompting, then persist the acceptance.
+      if (controller.resolveAgent) {
+        const resolved = await controller.resolveAgent(record.sessionId);
+        if (resolved.error) {
+          throw new Error(`session agent is unavailable: ${JSON.stringify(resolved.error)}`);
+        }
+      }
+      const pending = this.enqueuePending({ ...record, state: "prompting" });
+      await this.store.updateTurn(record.eventId, { state: "prompting" });
       await controller.prompt(
         {
           requestId: record.requestId,
@@ -701,9 +790,15 @@ export class RoomBridge {
         },
         new AbortController().signal,
       );
-      this.enqueuePending({ ...record, state: "awaiting_response" });
-      await this.store.updateTurn(record.eventId, { state: "awaiting_response" });
+      const current = this.store.getTurn(record.eventId);
+      if (!current || !isTerminalTurnState(current.state)) {
+        await this.store.updateTurn(record.eventId, { state: "awaiting_response" });
+      }
+      if (!this.activeBySession.has(record.sessionId)) {
+        this.activeBySession.set(record.sessionId, pending);
+      }
     } catch (error) {
+      this.removePending(record.sessionId, record.eventId);
       await this.store.updateTurn(record.eventId, { state: "failed", error: errorText(error) });
     }
   }
@@ -834,6 +929,11 @@ function extractAssistantText(
 function truncate(text: string, max: number): string {
   if (text.length <= max) return text;
   return `${text.slice(0, Math.max(0, max - 1))}…`;
+}
+
+function isPermanentDeliveryError(error: unknown): boolean {
+  const status = (error as { status?: unknown }).status;
+  return status === 400 || status === 403 || status === 404 || status === 409;
 }
 
 function errorText(error: unknown): string {

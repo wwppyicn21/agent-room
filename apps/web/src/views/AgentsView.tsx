@@ -23,8 +23,10 @@ export function AgentsView({
   const [publicKey, setPublicKey] = useState("");
   const [newKey, setNewKey] = useState("");
   const [busy, setBusy] = useState(false);
+  const canAdmin = me.role === "owner" || me.role === "admin";
 
   const load = useCallback(async () => {
+    if (!canAdmin) return;
     try {
       const result = await api.listAgents();
       setAgents(result.agents);
@@ -34,11 +36,11 @@ export function AgentsView({
     } catch (err) {
       onError(err);
     }
-  }, [api, onError]);
+  }, [api, canAdmin, onError]);
 
   useEffect(() => {
-    void load();
-  }, [load]);
+    if (canAdmin) void load();
+  }, [canAdmin, load]);
 
   const loadKeys = async (agent: Agent) => {
     setSelected(agent);
@@ -108,7 +110,13 @@ export function AgentsView({
     }
   };
 
-  const canAdmin = me.role === "owner" || me.role === "admin";
+  if (!canAdmin) {
+    return (
+      <Card title="Agent 管理">
+        <Empty>需要系统管理员权限。</Empty>
+      </Card>
+    );
+  }
 
   return (
     <div className="split">

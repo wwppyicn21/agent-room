@@ -19,19 +19,21 @@ export function UsersView({
   const [email, setEmail] = useState("");
   const [role, setRole] = useState<RbacRole>("member");
   const [busy, setBusy] = useState(false);
+  const canAdmin = me.role === "owner" || me.role === "admin";
 
   const load = useCallback(async () => {
+    if (!canAdmin) return;
     try {
       const result = await api.listUsers();
       setUsers(result.users);
     } catch (err) {
       onError(err);
     }
-  }, [api, onError]);
+  }, [api, canAdmin, onError]);
 
   useEffect(() => {
-    void load();
-  }, [load]);
+    if (canAdmin) void load();
+  }, [canAdmin, load]);
 
   const create = async () => {
     if (!displayName.trim()) return;
@@ -72,7 +74,6 @@ export function UsersView({
     }
   };
 
-  const canAdmin = me.role === "owner" || me.role === "admin";
   const roleOptions: RbacRole[] =
     me.role === "owner" ? ["owner", "admin", "member", "readonly"] : ["member", "readonly"];
 

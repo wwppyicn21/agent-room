@@ -1,4 +1,4 @@
-import { and, desc, eq, sql } from "drizzle-orm";
+import { and, desc, eq, notInArray, sql } from "drizzle-orm";
 import {
   agents,
   groupMembers,
@@ -442,20 +442,20 @@ export function listMemberCandidates(
       .map((row) => row.memberId),
   );
   if (memberType === "user") {
+    const conditions = [eq(users.status, "active")];
+    if (query) {
+      conditions.push(sql`lower(${users.displayName}) like ${`%${query}%`}`);
+    }
+    if (existing.size > 0) {
+      conditions.push(notInArray(users.id, [...existing]));
+    }
     return ctx.db
       .select()
       .from(users)
+      .where(and(...conditions))
       .orderBy(users.displayName)
+      .limit(limit)
       .all()
-      .filter(
-        (user) =>
-          user.status === "active" &&
-          !existing.has(user.id) &&
-          (!query ||
-            user.displayName.toLowerCase().includes(query) ||
-            (user.email?.toLowerCase().includes(query) ?? false)),
-      )
-      .slice(0, limit)
       .map((user) => ({
         memberType: "user" as const,
         memberId: user.id,
@@ -463,18 +463,20 @@ export function listMemberCandidates(
         status: user.status,
       }));
   }
+  const agentConditions = [sql`${agents.status} <> 'disabled'`];
+  if (query) {
+    agentConditions.push(sql`lower(${agents.displayName}) like ${`%${query}%`}`);
+  }
+  if (existing.size > 0) {
+    agentConditions.push(notInArray(agents.id, [...existing]));
+  }
   return ctx.db
     .select()
     .from(agents)
+    .where(and(...agentConditions))
     .orderBy(agents.displayName)
+    .limit(limit)
     .all()
-    .filter(
-      (agent) =>
-        agent.status !== "disabled" &&
-        !existing.has(agent.id) &&
-        (!query || agent.displayName.toLowerCase().includes(query)),
-    )
-    .slice(0, limit)
     .map((agent) => ({
       memberType: "agent" as const,
       memberId: agent.id,

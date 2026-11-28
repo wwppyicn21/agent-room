@@ -504,6 +504,7 @@ export function deleteMessage(
   // Deleting a message is a write: readonly users cannot erase history even
   // when they authored the message.
   requireWritableActor(ctx.db, input.actor);
+  requireActiveGroup(ctx.db, message.groupId);
   const isSender = message.senderType === input.actor.type && message.senderId === input.actor.id;
   if (!isSender) {
     if (input.actor.type === "agent") {

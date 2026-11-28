@@ -274,12 +274,15 @@ export function registerAgentRoutes(app: FastifyInstance, deps: AgentRouteDepend
       }
     };
 
-    const deliverCommands = (includeDelivered = false): void => {
-      const commands = listAgentCommands(ctx, { agentId: agent.id, includeDelivered });
+    const deliverCommands = (includeDelivered = false, staleAfterMs?: number): void => {
+      const commands = listAgentCommands(ctx, {
+        agentId: agent.id,
+        includeDelivered,
+        staleDeliveredBefore: staleAfterMs === undefined ? undefined : ctx.now() - staleAfterMs,
+      });
       for (const command of commands) {
-        if (command.status === "pending") {
-          markCommandDelivered(ctx, { commandId: command.id, agentId: agent.id });
-        }
+        // No-op for commands already delivered; marks newly listed pending rows.
+        markCommandDelivered(ctx, { commandId: command.id, agentId: agent.id });
         send(socket, {
           type: "command",
           protocolVersion: AGENT_PROTOCOL_VERSION,
@@ -325,7 +328,7 @@ export function registerAgentRoutes(app: FastifyInstance, deps: AgentRouteDepend
           return;
         }
         deliverOutstanding();
-        deliverCommands();
+        deliverCommands(true, 5_000);
       } catch (error) {
         app.log.warn({ err: error, agentId: agent.id }, "delivery poll failed");
       }

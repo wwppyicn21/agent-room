@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { ApiClient, type Group, type Member, type MemberCandidate, type MeResponse } from "../api";
 import { Avatar, Button, Card, Empty, Field, Select } from "../ui";
 import { formatTime, statusLabel } from "../format";
@@ -21,13 +21,19 @@ export function MembersView({
   const [memberId, setMemberId] = useState("");
   const [busy, setBusy] = useState(false);
   const isSystemAdmin = me.role === "owner" || me.role === "admin";
+  const [loadedGroupId, setLoadedGroupId] = useState<string | null>(null);
+  const groupIdRef = useRef(group.id);
+  groupIdRef.current = group.id;
 
   const loadMembers = useCallback(async () => {
+    const groupId = group.id;
     try {
-      const memberList = await api.listMembers(group.id);
+      const memberList = await api.listMembers(groupId);
+      if (groupIdRef.current !== groupId) return;
       setMembers(memberList.members);
+      setLoadedGroupId(groupId);
     } catch (err) {
-      onError(err);
+      if (groupIdRef.current === groupId) onError(err);
     }
   }, [api, group.id, onError]);
 
@@ -35,7 +41,8 @@ export function MembersView({
     (member) => member.memberType === "user" && member.memberId === me.id,
   );
   const canManage =
-    isSystemAdmin || myMembership?.memberRole === "owner" || myMembership?.memberRole === "admin";
+    loadedGroupId === group.id &&
+    (isSystemAdmin || myMembership?.memberRole === "owner" || myMembership?.memberRole === "admin");
 
   const loadCandidates = useCallback(async () => {
     if (!canManage) {
@@ -58,6 +65,11 @@ export function MembersView({
   }, [loadMembers, loadCandidates]);
 
   useEffect(() => {
+    setMembers([]);
+    setCandidates([]);
+    setCandidateError(null);
+    setMemberId("");
+    setLoadedGroupId(null);
     void loadMembers();
   }, [loadMembers]);
 

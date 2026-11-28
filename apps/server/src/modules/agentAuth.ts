@@ -1,5 +1,5 @@
 import { createHash, createPublicKey, randomBytes, verify as verifySignature } from "node:crypto";
-import { and, eq, gt, inArray, isNull, isNotNull, lt, lte, or } from "drizzle-orm";
+import { and, eq, gt, inArray, isNull, isNotNull, lt, lte, ne, or } from "drizzle-orm";
 import {
   agentChallenges,
   agentDeliveries,
@@ -440,8 +440,16 @@ export function setAgentStatus(
 ): boolean {
   const agent = ctx.db.select().from(agents).where(eq(agents.id, agentId)).get();
   if (!agent || agent.status === status) return false;
+  // A disabled Agent can never be brought back online by a stale heartbeat or
+  // WebSocket close callback; only an explicit admin re-enable may change it.
+  if (agent.status === "disabled") return false;
   const now = ctx.now();
-  ctx.db.update(agents).set({ status, updatedAt: now }).where(eq(agents.id, agentId)).run();
+  const updated = ctx.db
+    .update(agents)
+    .set({ status, updatedAt: now })
+    .where(and(eq(agents.id, agentId), ne(agents.status, "disabled")))
+    .run();
+  if (updated.changes !== 1) return false;
   appendEvent(ctx.db, {
     type: "agent.status.changed",
     actor: { type: "system", id: "agent-hub" },
@@ -456,7 +464,13 @@ export function liveSessionAgentIds(ctx: RoomContext, presenceTtlMs: number): Se
   const sessions = ctx.db
     .select()
     .from(agentSessions)
-    .where(and(isNull(agentSessions.closedAt), gt(agentSessions.lastSeenAt, now - presenceTtlMs)))
+    .where(
+      and(
+        isNull(agentSessions.closedAt),
+        gt(agentSessions.lastSeenAt, now - presenceTtlMs),
+        gt(agentSessions.expiresAt, now),
+      ),
+    )
     .all();
   return new Set(sessions.map((session) => session.agentId));
 }

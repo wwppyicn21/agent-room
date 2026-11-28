@@ -235,3 +235,37 @@ describe("M5 Review Fix 4 — durable Agent control commands", () => {
     ).toThrow();
   });
 });
+
+describe("command redelivery lease", () => {
+  it("re-lists a delivered command only after its lease expires", () => {
+    const { room, ctx, agent, task } = setup();
+    try {
+      const command = createTaskCancelCommand(ctx.db, {
+        agentId: agent,
+        taskId: task.id,
+        runId: null,
+        reason: "test",
+        now: ctx.now(),
+      });
+      expect(listAgentCommands(ctx, { agentId: agent })).toHaveLength(1);
+      markCommandDelivered(ctx, { commandId: command.id, agentId: agent });
+      expect(listAgentCommands(ctx, { agentId: agent })).toHaveLength(0);
+      expect(
+        listAgentCommands(ctx, {
+          agentId: agent,
+          includeDelivered: true,
+          staleDeliveredBefore: ctx.now() + 1_000,
+        }),
+      ).toHaveLength(1);
+      expect(
+        listAgentCommands(ctx, {
+          agentId: agent,
+          includeDelivered: true,
+          staleDeliveredBefore: ctx.now() - 1_000,
+        }),
+      ).toHaveLength(0);
+    } finally {
+      room.close();
+    }
+  });
+});
