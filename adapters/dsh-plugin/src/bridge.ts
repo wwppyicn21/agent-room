@@ -15,7 +15,7 @@ import {
   resolvePluginConfig,
 } from "./config.js";
 import { ensureAgentKey, type AgentKeyPair } from "./keys.js";
-import { DeliveryStore, type PendingTurnRecord } from "./store.js";
+import { DeliveryStore, isTerminalTurnState, type PendingTurnRecord } from "./store.js";
 
 export interface DshLogger {
   info(message: string): void;
@@ -48,6 +48,12 @@ export interface RoomClientLike {
   open(): Promise<{ agentId: string }>;
   close(): void;
   sendMessage(groupId: string, content: string, options?: SendMessageOptions): void;
+  sendMessageWithAck?(
+    groupId: string,
+    content: string,
+    options?: SendMessageOptions,
+    timeoutMs?: number,
+  ): Promise<void>;
   getTask?(taskId: string): Promise<AgentTaskView>;
 }
 
@@ -192,6 +198,11 @@ export class RoomBridge {
     this.client?.close();
     this.client = null;
     this.connected = false;
+    try {
+      await this.store.flush();
+    } catch (error) {
+      this.logger.warn(`agent-room: delivery store flush failed during stop: ${errorText(error)}`);
+    }
   }
 
   private async warnMissingSessions(): Promise<void> {
@@ -300,6 +311,10 @@ export class RoomBridge {
     event: AgentEvent,
     _context: { deliveryId: string; attempt: number },
   ): Promise<void> {
+    if (event.eventType === "task.cancelled") {
+      if (event.taskId) await this.cancelTaskTurns(event.taskId, "task cancelled event");
+      return;
+    }
     if (event.eventType !== "message.created") return;
     const groupId = event.groupId;
     if (!groupId) return;
@@ -308,6 +323,7 @@ export class RoomBridge {
     if (senderType === "system") return;
     if (senderType === "agent" && this.agentId && senderId === this.agentId) return;
     if (this.store.state(event.eventId) === "completed") return;
+    if (this.store.getTurn(event.eventId)?.state === "cancelled") return;
     const mapping = this.mappings.get(groupId);
     if (!mapping) {
       await this.store.markFailed(event.eventId, `no session mapping for group ${groupId}`);
@@ -375,6 +391,8 @@ export class RoomBridge {
       threadId,
       replyToMessageId,
       messageId: replyToMessageId,
+      taskId,
+      turnNumber: null,
       prompt: promptText,
       text: "",
       state: "prompting",
@@ -384,6 +402,9 @@ export class RoomBridge {
     await this.store.begin(event.eventId);
     await this.store.markProcessing(event.eventId);
     await this.store.recordTurn(pending);
+    // Register the pending turn before prompting: DSH can emit user/message and
+    // turn/end before prompt() resolves, and those events must find the turn.
+    this.enqueuePending(pending);
     try {
       await controller.prompt(
         {
@@ -394,14 +415,16 @@ export class RoomBridge {
         },
         new AbortController().signal,
       );
-      // Register the pending turn before the delivery is persisted as completed:
-      // session events (assistant/message, turn/end) can arrive immediately after
-      // prompt acceptance and must not be dropped while the store write is in flight.
-      this.enqueuePending(pending);
-      await this.store.updateTurn(event.eventId, { state: "awaiting_response" });
+      // The turn may already have completed while prompt() was in flight; never
+      // overwrite a terminal state, but still mark the delivery acknowledged.
+      const current = this.store.getTurn(event.eventId);
+      if (!current || !isTerminalTurnState(current.state)) {
+        await this.store.updateTurn(event.eventId, { state: "awaiting_response" });
+      }
       await this.store.markCompleted(event.eventId);
     } catch (error) {
       const reason = errorText(error);
+      this.removePending(mapping.sessionId, event.eventId);
       await this.store.updateTurn(event.eventId, { state: "failed", error: reason });
       await this.store.markFailed(event.eventId, reason);
       this.lastError = reason;
@@ -409,9 +432,24 @@ export class RoomBridge {
     }
   }
 
-  private enqueuePending(record: PendingTurnRecord): void {
+  private removePending(sessionId: string, eventId: string): void {
+    const queue = this.pendingBySession.get(sessionId);
+    if (!queue) return;
+    const index = queue.findIndex((turn) => turn.eventId === eventId);
+    if (index >= 0) {
+      const [removed] = queue.splice(index, 1);
+      if (removed?.timer) clearTimeout(removed.timer);
+    }
+    if (queue.length === 0) this.pendingBySession.delete(sessionId);
+    if (this.activeBySession.get(sessionId)?.eventId === eventId) {
+      this.activeBySession.delete(sessionId);
+    }
+  }
+
+  private enqueuePending(record: PendingTurnRecord): PendingTurn {
     const queue = this.pendingBySession.get(record.sessionId) ?? [];
-    if (queue.some((turn) => turn.eventId === record.eventId)) return;
+    const existing = queue.find((turn) => turn.eventId === record.eventId);
+    if (existing) return existing;
     const turn: PendingTurn = { ...record, timer: null };
     turn.timer = setTimeout(() => {
       void (async () => {
@@ -422,9 +460,14 @@ export class RoomBridge {
         current.splice(index, 1);
         if (current.length === 0) this.pendingBySession.delete(record.sessionId);
         const persisted = this.store.getTurn(record.eventId);
+        // The active pointer must not survive a timeout, otherwise a late
+        // assistant/turn-end event would be attributed to the dead turn.
+        if (this.activeBySession.get(record.sessionId)?.eventId === record.eventId) {
+          this.activeBySession.delete(record.sessionId);
+        }
         // A late turn/end may have completed the same turn just before the
         // timer fired; never overwrite a terminal state.
-        if (!persisted || persisted.state === "completed" || persisted.state === "failed") return;
+        if (!persisted || isTerminalTurnState(persisted.state)) return;
         await this.store.updateTurn(record.eventId, { state: "failed", error: "turn_timeout" });
         this.logger.warn(
           `agent-room: turn for ${turn.eventId} timed out; marked failed and ignored any late events`,
@@ -434,39 +477,64 @@ export class RoomBridge {
     turn.timer.unref?.();
     queue.push(turn);
     this.pendingBySession.set(record.sessionId, queue);
+    return turn;
   }
 
   private handleSessionEvent(sessionId: string, event: DshSessionEvent): void {
     const queue = this.pendingBySession.get(sessionId);
     if (!queue || queue.length === 0) return;
-    // Correlate a user message with the exact queued turn via its rpcId. The
-    // queue alone is not enough: a later queued turn may start before an older
-    // turn's assistant output arrives.
+    // Correlate events strictly through the Room request id (rpcId) and the DSH
+    // turn number. A human DSH conversation or an unrelated queued turn must
+    // never be attributed to a Room delivery, so there is no queue[0] fallback.
     if (event.type === "user/message") {
       const rpcId = event.data?.source?.rpcId;
       if (!rpcId) return;
       const turn = queue.find((candidate) => candidate.requestId === rpcId);
-      if (turn) this.activeBySession.set(sessionId, turn);
+      if (!turn) return;
+      const turnNumber = event.data?.turn;
+      if (typeof turnNumber === "number") {
+        turn.turnNumber = turnNumber;
+        void this.store
+          .updateTurn(turn.eventId, { turnNumber })
+          .catch((error: unknown) =>
+            this.logger.warn(`agent-room: cannot persist turn number: ${errorText(error)}`),
+          );
+      }
+      this.activeBySession.set(sessionId, turn);
       return;
     }
-    const turn = this.activeBySession.get(sessionId) ?? queue[0];
+    const turn = this.activeBySession.get(sessionId);
     if (!turn) return;
+    const eventTurn = event.data?.turn;
+    if (
+      typeof eventTurn === "number" &&
+      typeof turn.turnNumber === "number" &&
+      eventTurn !== turn.turnNumber
+    ) {
+      return;
+    }
     if (event.type === "assistant/message") {
       const text = extractAssistantText(event.data?.message?.content);
       if (text) turn.text = text;
       return;
     }
     if (event.type !== "turn/end") return;
-    this.activeBySession.delete(sessionId);
+    if (this.activeBySession.get(sessionId)?.eventId === turn.eventId) {
+      this.activeBySession.delete(sessionId);
+    }
     if (turn.timer) clearTimeout(turn.timer);
     const index = queue.findIndex((candidate) => candidate.eventId === turn.eventId);
     if (index >= 0) queue.splice(index, 1);
     if (queue.length === 0) this.pendingBySession.delete(sessionId);
+    const persisted = this.store.getTurn(turn.eventId);
+    if (persisted && isTerminalTurnState(persisted.state)) return;
     const reason = event.data?.reason?.kind ?? "completed";
     void this.finishTurn(turn, reason);
   }
 
   private async finishTurn(turn: PendingTurn, reason: string): Promise<void> {
+    const current = this.store.getTurn(turn.eventId);
+    if (current && isTerminalTurnState(current.state)) return;
     if (reason !== "completed") {
       this.logger.warn(`agent-room: turn for ${turn.eventId} ended with ${reason}; no reply`);
       await this.store.updateTurn(turn.eventId, { state: "failed", error: `turn ${reason}` });
@@ -478,27 +546,38 @@ export class RoomBridge {
       await this.store.updateTurn(turn.eventId, { state: "completed", text: "" });
       return;
     }
-    const pending = this.store.updateTurn(turn.eventId, { state: "reply_pending", text });
+    // Persist the reply before any socket write: a crash or disconnect between
+    // here and the server ACK must leave a durable, retryable reply_pending.
+    await this.store.updateTurn(turn.eventId, { state: "reply_pending", text });
     try {
-      this.postReply(turn, text);
-      await pending;
-      await this.store.updateTurn(turn.eventId, { state: "completed", text });
+      await this.deliverReply(turn, text);
+      const after = this.store.getTurn(turn.eventId);
+      if (!after || !isTerminalTurnState(after.state)) {
+        await this.store.updateTurn(turn.eventId, { state: "completed", text });
+      }
     } catch (error) {
-      await pending;
       // Keep the generated text durable; a reconnect retries the same
       // clientMessageId, so the server can deduplicate a late first attempt.
       this.logger.warn(`agent-room: reply for ${turn.eventId} is pending: ${errorText(error)}`);
     }
   }
 
-  private postReply(turn: PendingTurnRecord, text: string): void {
+  /** Sends a reply and waits for the server's persisted-message ACK. */
+  private async deliverReply(turn: PendingTurnRecord, text: string): Promise<void> {
     if (!this.client) throw new Error("room client is not connected");
     const content = truncate(`${this.config.replyPrefix}${text}`, this.config.maxReplyChars);
-    this.client.sendMessage(turn.groupId, content, {
+    const options = {
       threadId: turn.threadId ?? undefined,
       replyToMessageId: turn.replyToMessageId ?? undefined,
       clientMessageId: `plugin-reply-${turn.eventId}`,
-    });
+    };
+    if (this.client.sendMessageWithAck) {
+      await this.client.sendMessageWithAck(turn.groupId, content, options, 10_000);
+      return;
+    }
+    // Legacy test doubles without the ACK method keep the old local-write
+    // behaviour; production always uses AgentClient.sendMessageWithAck.
+    this.client.sendMessage(turn.groupId, content, options);
   }
 
   /** Retry replies generated while the socket was down (idempotent send). */
@@ -506,8 +585,11 @@ export class RoomBridge {
     for (const turn of this.store.listTurns(["reply_pending"])) {
       if (this.stopped) return;
       try {
-        this.postReply(turn, turn.text);
-        await this.store.updateTurn(turn.eventId, { state: "completed", text: turn.text });
+        await this.deliverReply(turn, turn.text);
+        const current = this.store.getTurn(turn.eventId);
+        if (!current || !isTerminalTurnState(current.state)) {
+          await this.store.updateTurn(turn.eventId, { state: "completed", text: turn.text });
+        }
       } catch (error) {
         this.logger.warn(
           `agent-room: pending reply for ${turn.eventId} is still undeliverable: ${errorText(error)}`,
@@ -571,7 +653,11 @@ export class RoomBridge {
           (event) => event.type === "turn/end" && event.data?.turn === turnNumber,
         );
         if (!ended) {
-          this.enqueuePending(record);
+          const userTurn = userEvent.data?.turn;
+          if (typeof userTurn === "number") record.turnNumber = userTurn;
+          const turn = this.enqueuePending(record);
+          if (typeof userTurn === "number") turn.turnNumber = userTurn;
+          this.activeBySession.set(record.sessionId, turn);
           continue;
         }
         const reason = ended.data?.reason?.kind ?? "completed";
@@ -589,7 +675,7 @@ export class RoomBridge {
         }
         await this.store.updateTurn(record.eventId, { state: "reply_pending", text });
         try {
-          this.postReply(record, text);
+          await this.deliverReply(record, text);
           await this.store.updateTurn(record.eventId, { state: "completed", text });
         } catch (error) {
           this.logger.warn(
@@ -622,30 +708,60 @@ export class RoomBridge {
     }
   }
 
-  private async handleTaskCancel(command: TaskCancelCommand): Promise<void> {
-    const sessionId = this.taskSessions.get(command.taskId) ?? null;
-    if (!sessionId) {
-      this.logger.warn(
-        `agent-room: cancel for task ${command.taskId} has no known session; ignoring`,
-      );
-      return;
-    }
-    // Persist the cancellation before cancelling the Session so a restart
-    // cannot resume a task the user already cancelled.
-    const turns = this.store
-      .listTurns(["prompting", "awaiting_response", "reply_pending"])
-      .filter((turn) => turn.sessionId === sessionId);
+  private async cancelTaskTurns(taskId: string, reason: string): Promise<boolean> {
+    const activeStates = ["prompting", "awaiting_response", "reply_pending"] as const;
+    const turns = this.store.listTurns(activeStates).filter((turn) => turn.taskId === taskId);
+    const sessionId =
+      this.taskSessions.get(taskId) ??
+      turns[0]?.sessionId ??
+      this.store.listTurns().find((turn) => turn.taskId === taskId)?.sessionId ??
+      null;
+    if (!sessionId) return false;
+    // Persist cancellations before touching the Session so a restart cannot
+    // resume a task the user already cancelled.
     for (const turn of turns) {
-      await this.store.updateTurn(turn.eventId, { state: "cancelled", error: "task cancelled" });
+      await this.store.updateTurn(turn.eventId, { state: "cancelled", error: reason });
+      if (this.activeBySession.get(turn.sessionId)?.eventId === turn.eventId) {
+        this.activeBySession.delete(turn.sessionId);
+      }
+      const queue = this.pendingBySession.get(turn.sessionId);
+      if (!queue) continue;
+      const index = queue.findIndex((candidate) => candidate.eventId === turn.eventId);
+      if (index >= 0) {
+        const [removed] = queue.splice(index, 1);
+        if (removed?.timer) clearTimeout(removed.timer);
+      }
+      if (queue.length === 0) this.pendingBySession.delete(turn.sessionId);
     }
-    const queue = this.pendingBySession.get(sessionId);
-    for (const turn of queue ?? []) if (turn.timer) clearTimeout(turn.timer);
-    this.pendingBySession.delete(sessionId);
-    this.activeBySession.delete(sessionId);
-    const controller = this.deps.ctx.get("sessionController") as SessionControllerLike | undefined;
-    controller?.cancel({ sessionId });
-    this.taskSessions.delete(command.taskId);
-    this.logger.info(`agent-room: cancelled session ${sessionId} for task ${command.taskId}`);
+    // Cancel the DSH Session only when no unrelated turn (another task or a
+    // plain group message) still uses it; otherwise cancel just this task's turns.
+    const stillBusy =
+      (this.pendingBySession.get(sessionId)?.length ?? 0) > 0 ||
+      this.activeBySession.has(sessionId) ||
+      this.store
+        .listTurns(activeStates)
+        .some((turn) => turn.sessionId === sessionId && turn.taskId !== taskId);
+    if (!stillBusy) {
+      const controller = this.deps.ctx.get("sessionController") as
+        SessionControllerLike | undefined;
+      controller?.cancel({ sessionId });
+    } else {
+      this.logger.warn(
+        `agent-room: task ${taskId} cancelled without stopping session ${sessionId} (other work is active)`,
+      );
+    }
+    this.taskSessions.delete(taskId);
+    this.logger.info(`agent-room: cancelled task ${taskId} on session ${sessionId}`);
+    return true;
+  }
+
+  private async handleTaskCancel(command: TaskCancelCommand): Promise<void> {
+    const cancelled = await this.cancelTaskTurns(command.taskId, "task cancelled");
+    if (!cancelled) {
+      // The recovery mapping may not be populated yet. Throwing leaves the
+      // command unacknowledged so the server redelivers it after recovery.
+      throw new Error(`task ${command.taskId} is not recovered yet`);
+    }
   }
 
   private handleRecover(tasks: AgentTaskView[]): void {

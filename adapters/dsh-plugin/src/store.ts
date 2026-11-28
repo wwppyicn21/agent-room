@@ -23,6 +23,10 @@ export interface PendingTurnRecord {
   threadId: string | null;
   replyToMessageId: string | null;
   messageId: string | null;
+  /** Task that owns this turn; null for plain group chat messages. */
+  taskId?: string | null;
+  /** DSH turn number learned from the session log, used to reject late events. */
+  turnNumber?: number | null;
   prompt: string;
   text: string;
   state: TurnState;
@@ -43,6 +47,10 @@ interface StoreFileV2 {
 }
 
 const TERMINAL_TURN_STATES: ReadonlySet<TurnState> = new Set(["completed", "failed", "cancelled"]);
+
+export function isTerminalTurnState(state: TurnState): boolean {
+  return TERMINAL_TURN_STATES.has(state);
+}
 
 /**
  * Durable delivery and turn bookkeeping for the DSH plugin.
@@ -180,6 +188,11 @@ export class DeliveryStore {
     this.assertLoaded();
     const existing = this.turns.get(eventId);
     if (!existing) return undefined;
+    // Terminal turns are immutable: a late timeout/ack/event must never rewrite
+    // a completed, failed or cancelled turn into a different state.
+    if (patch.state && TERMINAL_TURN_STATES.has(existing.state) && patch.state !== existing.state) {
+      return existing;
+    }
     const updated: PendingTurnRecord = {
       ...existing,
       ...patch,

@@ -75,4 +75,38 @@ describe("web realtime client", () => {
     expect(presence).toEqual(["agt_1"]);
     client.close();
   });
+
+  it("surfaces permission revocations and falls back to the error code", async () => {
+    const states: Array<{ state: string; error?: string }> = [];
+    (globalThis as unknown as Record<string, unknown>).window = {
+      location: { protocol: "http:", host: "127.0.0.1:5173" },
+    };
+    (globalThis as unknown as Record<string, unknown>).WebSocket = FakeSocket;
+    const api = new ApiClient({
+      fetchImpl: async () =>
+        new Response(JSON.stringify({ ticket: "tkt_2", expiresAt: 100 }), { status: 200 }),
+    });
+    const client = new RealtimeClient(api, "grp_1", {
+      onEvent: () => undefined,
+      onPresence: () => undefined,
+      onState: (state, error) => states.push({ state, error }),
+    });
+    client.connect();
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    const socket = FakeSocket.instances.at(-1);
+    states.length = 0;
+    socket?.onmessage?.({ data: JSON.stringify({ type: "error", code: "forbidden" }) });
+    socket?.onmessage?.({
+      data: JSON.stringify({
+        type: "error",
+        code: "membership_revoked",
+        message: "you are no longer a member of this group",
+      }),
+    });
+    expect(states).toEqual([
+      { state: "closed", error: "forbidden" },
+      { state: "closed", error: "you are no longer a member of this group" },
+    ]);
+    client.close();
+  });
 });

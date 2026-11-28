@@ -141,6 +141,30 @@ export function requireGroupMember(db: RoomDb, groupId: string, actor: Actor): G
 }
 
 /**
+ * Owner-role changes inside a group are reserved for system owners/admins and
+ * the group's own owners. A group admin may manage regular members but cannot
+ * grant, remove or demote the owner role.
+ */
+export function requireGroupOwnerRole(db: RoomDb, groupId: string, actorUserId: string): void {
+  const user = requireUser(db, actorUserId);
+  if (isSystemAdmin(user)) return;
+  const membership = db
+    .select({ memberRole: groupMembers.memberRole })
+    .from(groupMembers)
+    .where(
+      and(
+        eq(groupMembers.groupId, groupId),
+        eq(groupMembers.memberType, "user"),
+        eq(groupMembers.memberId, actorUserId),
+      ),
+    )
+    .get();
+  if (membership?.memberRole !== "owner") {
+    throw new ForbiddenError(`user ${actorUserId} is not an owner of group ${groupId}`);
+  }
+}
+
+/**
  * Group-level management (members, settings, thread closing) requires either a
  * system owner/admin or a group owner/admin. Message *reads* stay member-only.
  */

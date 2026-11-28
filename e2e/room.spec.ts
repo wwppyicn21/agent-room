@@ -75,6 +75,28 @@ test("deduplicates a repeated clientMessageId in the browser", async ({ page, re
   await expect(page.getByText(text, { exact: true })).toHaveCount(1);
 });
 
+test("switching groups never shows another group's messages", async ({ page, request }) => {
+  const alpha = await createGroup(request);
+  const beta = await createGroup(request);
+  const alphaText = `alpha only ${Date.now()}`;
+  const betaText = `beta only ${Date.now()}`;
+  await call(request, "POST", `/api/v1/groups/${alpha.id}/messages`, OWNER, {
+    content: alphaText,
+  });
+  await call(request, "POST", `/api/v1/groups/${beta.id}/messages`, OWNER, {
+    content: betaText,
+  });
+  await login(page);
+  await openGroup(page, alpha.name);
+  await expect(page.getByText(alphaText, { exact: true })).toBeVisible();
+  await expect(page.getByText(betaText, { exact: true })).toHaveCount(0);
+  await openGroup(page, beta.name);
+  await expect(page.getByText(betaText, { exact: true })).toBeVisible();
+  await expect(page.getByText(alphaText, { exact: true })).toHaveCount(0);
+  await openGroup(page, alpha.name);
+  await expect(page.getByText(alphaText, { exact: true })).toBeVisible();
+});
+
 test("reconnects the realtime socket and recovers messages sent while offline", async ({
   page,
   request,

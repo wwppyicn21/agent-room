@@ -48,6 +48,13 @@ export interface Member {
   online?: boolean;
 }
 
+export interface MemberCandidate {
+  memberType: "user" | "agent";
+  memberId: string;
+  displayName: string;
+  status: string;
+}
+
 export interface Message {
   id: string;
   groupId: string;
@@ -338,6 +345,18 @@ export class ApiClient {
     return this.patch(`/api/v1/groups/${groupId}`, body);
   }
 
+  listMemberCandidates(
+    groupId: string,
+    kind: "user" | "agent",
+    q?: string,
+  ): Promise<{ candidates: MemberCandidate[] }> {
+    const params = new URLSearchParams({ memberType: kind });
+    if (q) params.set("q", q);
+    return this.request(
+      `/api/v1/groups/${encodeURIComponent(groupId)}/member-candidates?${params}`,
+    );
+  }
+
   listMembers(groupId: string): Promise<{ members: Member[] }> {
     return this.get(`/api/v1/groups/${groupId}/members`);
   }
@@ -387,8 +406,8 @@ export class ApiClient {
     return this.post(`/api/v1/groups/${groupId}/messages`, body);
   }
 
-  deleteMessage(messageId: string, reason?: string): Promise<{ message: Message }> {
-    return this.delete(`/api/v1/messages/${messageId}`, reason ? { reason } : undefined);
+  deleteMessage(messageId: string): Promise<void> {
+    return this.delete(`/api/v1/messages/${messageId}`);
   }
 
   listThreads(

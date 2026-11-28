@@ -133,10 +133,17 @@ describe("DSH plugin end-to-end", () => {
       expect(harness.prompts[0]?.content[0]?.text).toContain("hello from room");
 
       harness.emit("ses_bridge", {
-        type: "assistant/message",
-        data: { message: { content: [{ type: "text", text: "hello back" }] } },
+        type: "user/message",
+        data: { turn: 1, source: { rpcId: harness.prompts[0]!.requestId } },
       });
-      harness.emit("ses_bridge", { type: "turn/end", data: { reason: { kind: "completed" } } });
+      harness.emit("ses_bridge", {
+        type: "assistant/message",
+        data: { turn: 1, message: { content: [{ type: "text", text: "hello back" }] } },
+      });
+      harness.emit("ses_bridge", {
+        type: "turn/end",
+        data: { turn: 1, reason: { kind: "completed" } },
+      });
 
       const groupMessages = () =>
         listMessages(harness.room.ctx, {

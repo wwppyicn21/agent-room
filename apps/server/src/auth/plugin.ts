@@ -50,7 +50,7 @@ export async function registerAuth(
     // prefix alone must not bypass user authentication: validate the session
     // before letting the route rely on it.
     const authorization = request.headers.authorization ?? "";
-    if (authorization.startsWith("Bearer agt_")) {
+    if (authorization.toLowerCase().startsWith("bearer agt_")) {
       const token = authorization.slice(7).trim();
       if (!token) throw new UnauthorizedError("agent bearer token required");
       requireAgentSession(dependencies.ctx, token);

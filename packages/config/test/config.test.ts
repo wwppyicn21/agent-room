@@ -120,4 +120,13 @@ describe("loadConfig", () => {
     const config = loadConfig({});
     expect(Object.isFrozen(config)).toBe(true);
   });
+
+  it("caps the agent session TTL to the setTimeout maximum", () => {
+    expect(loadConfig({ AGENT_SESSION_TTL_MS: "3600000" }).agentSessionTtlMs).toBe(3_600_000);
+    expect(loadConfig({ AGENT_SESSION_TTL_MS: "604800000" }).agentSessionTtlMs).toBe(604_800_000);
+    expect(loadConfig({ AGENT_SESSION_TTL_MS: "2147483647" }).agentSessionTtlMs).toBe(
+      2_147_483_647,
+    );
+    expect(() => loadConfig({ AGENT_SESSION_TTL_MS: "2147483648" })).toThrow(ConfigError);
+  });
 });

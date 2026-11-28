@@ -35,7 +35,7 @@ export const configSchema = z
     accessAudience: z.string().min(1).optional(),
     /** One-time bootstrap identity for the first Owner (plan §8.1). */
     bootstrapOwnerEmail: z.string().email().optional(),
-    agentSessionTtlMs: z.coerce.number().int().min(60_000).default(43_200_000),
+    agentSessionTtlMs: z.coerce.number().int().min(60_000).max(2_147_483_647).default(43_200_000),
     agentChallengeTtlMs: z.coerce.number().int().min(10_000).default(60_000),
     agentPresenceTtlMs: z.coerce.number().int().min(1_000).default(60_000),
     agentHeartbeatMs: z.coerce.number().int().min(1_000).default(20_000),

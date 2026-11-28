@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
-import { ApiClient, type Agent, type Group, type Member, type MeResponse, type User } from "../api";
+import { ApiClient, type Group, type Member, type MemberCandidate, type MeResponse } from "../api";
 import { Avatar, Button, Card, Empty, Field, Select } from "../ui";
 import { formatTime, statusLabel } from "../format";
 
@@ -15,8 +15,8 @@ export function MembersView({
   onError: (error: unknown) => void;
 }) {
   const [members, setMembers] = useState<Member[]>([]);
-  const [users, setUsers] = useState<User[]>([]);
-  const [agents, setAgents] = useState<Agent[]>([]);
+  const [candidates, setCandidates] = useState<MemberCandidate[]>([]);
+  const [candidateError, setCandidateError] = useState<string | null>(null);
   const [kind, setKind] = useState<"user" | "agent">("user");
   const [memberId, setMemberId] = useState("");
   const [busy, setBusy] = useState(false);
@@ -31,29 +31,40 @@ export function MembersView({
     }
   }, [api, group.id, onError]);
 
-  // Directory endpoints are owner/admin-only. A regular member must still see
-  // the member list even though these calls return 403.
-  const loadDirectory = useCallback(async () => {
-    if (!isSystemAdmin) return;
-    try {
-      const [userList, agentList] = await Promise.all([api.listUsers(), api.listAgents()]);
-      setUsers(userList.users);
-      setAgents(agentList.agents);
-    } catch {
-      setUsers([]);
-      setAgents([]);
+  const myMembership = members.find(
+    (member) => member.memberType === "user" && member.memberId === me.id,
+  );
+  const canManage =
+    isSystemAdmin || myMembership?.memberRole === "owner" || myMembership?.memberRole === "admin";
+
+  const loadCandidates = useCallback(async () => {
+    if (!canManage) {
+      setCandidates([]);
+      return;
     }
-  }, [api, isSystemAdmin]);
+    try {
+      const result = await api.listMemberCandidates(group.id, kind);
+      setCandidates(result.candidates);
+      setCandidateError(null);
+    } catch (err) {
+      setCandidates([]);
+      setCandidateError(err instanceof Error ? err.message : String(err));
+    }
+  }, [api, canManage, group.id, kind]);
 
   const refresh = useCallback(async () => {
     await loadMembers();
-    await loadDirectory();
-  }, [loadMembers, loadDirectory]);
+    await loadCandidates();
+  }, [loadMembers, loadCandidates]);
 
   useEffect(() => {
     void loadMembers();
-    void loadDirectory();
-  }, [loadMembers, loadDirectory]);
+  }, [loadMembers]);
+
+  useEffect(() => {
+    setMemberId("");
+    void loadCandidates();
+  }, [loadCandidates]);
 
   const add = async () => {
     if (!memberId) return;
@@ -87,23 +98,6 @@ export function MembersView({
       onError(err);
     }
   };
-
-  const myMembership = members.find(
-    (member) => member.memberType === "user" && member.memberId === me.id,
-  );
-  const canManage = myMembership?.memberRole === "owner" || myMembership?.memberRole === "admin";
-  const candidates =
-    kind === "user"
-      ? users.filter(
-          (user) =>
-            !members.some((member) => member.memberType === "user" && member.memberId === user.id),
-        )
-      : agents.filter(
-          (agent) =>
-            !members.some(
-              (member) => member.memberType === "agent" && member.memberId === agent.id,
-            ),
-        );
 
   return (
     <div className="grid-2">
@@ -156,30 +150,33 @@ export function MembersView({
           {members.length === 0 && <Empty>暂无成员</Empty>}
         </div>
       </Card>
-      <Card title="添加成员">
-        <Field label="类型">
-          <Select
-            value={kind}
-            onChange={(event) => setKind(event.target.value as "user" | "agent")}
-          >
-            <option value="user">用户</option>
-            <option value="agent">Agent</option>
-          </Select>
-        </Field>
-        <Field label="成员">
-          <Select value={memberId} onChange={(event) => setMemberId(event.target.value)}>
-            <option value="">选择…</option>
-            {candidates.map((item) => (
-              <option key={item.id} value={item.id}>
-                {item.displayName}
-              </option>
-            ))}
-          </Select>
-        </Field>
-        <Button variant="primary" disabled={busy || !memberId} onClick={() => void add()}>
-          添加
-        </Button>
-      </Card>
+      {canManage && (
+        <Card title="添加成员">
+          <Field label="类型">
+            <Select
+              value={kind}
+              onChange={(event) => setKind(event.target.value as "user" | "agent")}
+            >
+              <option value="user">用户</option>
+              <option value="agent">Agent</option>
+            </Select>
+          </Field>
+          <Field label="成员">
+            <Select value={memberId} onChange={(event) => setMemberId(event.target.value)}>
+              <option value="">选择…</option>
+              {candidates.map((item) => (
+                <option key={item.memberId} value={item.memberId}>
+                  {item.displayName}
+                </option>
+              ))}
+            </Select>
+          </Field>
+          <Button variant="primary" disabled={busy || !memberId} onClick={() => void add()}>
+            添加
+          </Button>
+          {candidateError && <p className="muted small">候选列表不可用：{candidateError}</p>}
+        </Card>
+      )}
     </div>
   );
 }

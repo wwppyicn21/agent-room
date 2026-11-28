@@ -195,6 +195,11 @@ export function registerAgentRoutes(app: FastifyInstance, deps: AgentRouteDepend
         app.log.warn({ err: error, agentId: agent.id }, "expired session cleanup failed");
       }
       try {
+        hub.unregister(agent.id, socket as unknown as AgentSocket);
+      } catch {
+        // already unregistered
+      }
+      try {
         socket.close(1008, "session expired");
       } catch {
         // already closing
@@ -327,7 +332,10 @@ export function registerAgentRoutes(app: FastifyInstance, deps: AgentRouteDepend
     }, 1_000);
     timers.poll.unref();
 
-    timers.expiryTimer = setTimeout(closeForExpiry, Math.max(0, session.expiresAt - ctx.now()));
+    timers.expiryTimer = setTimeout(
+      closeForExpiry,
+      Math.min(Math.max(0, session.expiresAt - ctx.now()), 2_147_483_647),
+    );
     timers.expiryTimer.unref();
 
     socket.on("message", (raw: Buffer) => {

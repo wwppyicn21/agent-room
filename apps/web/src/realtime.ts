@@ -23,7 +23,7 @@ type Frame =
   | { type: "event"; event: EventRow }
   | { type: "presence"; groupId: string; agents: PresenceAgent[] }
   | { type: "pong" }
-  | { type: "error"; code: string; message: string };
+  | { type: "error"; code: string; message?: string };
 
 export class RealtimeClient {
   private socket: WebSocket | null = null;
@@ -144,7 +144,7 @@ export class RealtimeClient {
       return;
     }
     if (frame.type === "error") {
-      this.handlers.onState("closed", frame.message);
+      this.handlers.onState("closed", frame.message ?? frame.code);
     }
   }
 }

@@ -164,6 +164,10 @@ export class AgentClient {
   private readonly pendingReplies = new Map<string, PendingReply>();
   private readonly ackedCommands = new Set<string>();
   private readonly replyTimers = new Map<string, ReturnType<typeof setTimeout>>();
+  private readonly messageWaiters = new Map<
+    string,
+    { resolve: () => void; reject: (error: Error) => void; timer: ReturnType<typeof setTimeout> }
+  >();
 
   constructor(options: AgentClientOptions) {
     this.options = options;
@@ -343,13 +347,22 @@ export class AgentClient {
         if (frame.type === "message.sent") {
           const clientMessageId =
             typeof frame.clientMessageId === "string" ? frame.clientMessageId : null;
-          if (clientMessageId) this.confirmReply(clientMessageId);
+          if (clientMessageId) {
+            this.confirmReply(clientMessageId);
+            this.resolveMessageWaiter(clientMessageId);
+          }
           return;
         }
         if (frame.type === "error") {
           const clientMessageId =
             typeof frame.clientMessageId === "string" ? frame.clientMessageId : null;
-          if (clientMessageId) this.failReply(clientMessageId, String(frame.code));
+          if (clientMessageId) {
+            this.failReply(clientMessageId, String(frame.code));
+            this.rejectMessageWaiter(
+              clientMessageId,
+              new Error(String(frame.message ?? frame.code)),
+            );
+          }
           if (!settled) {
             settled = true;
             reject(new Error(String(frame.message ?? frame.code)));
@@ -368,6 +381,7 @@ export class AgentClient {
         for (const clientMessageId of [...this.replyTimers.keys()]) {
           this.clearReplyTimer(clientMessageId);
         }
+        this.rejectAllMessageWaiters(new Error("websocket closed"));
         if (!settled) {
           settled = true;
           reject(new Error("websocket closed before hello"));
@@ -537,6 +551,28 @@ export class AgentClient {
     pending.timer = timer;
   }
 
+  private resolveMessageWaiter(clientMessageId: string): void {
+    const waiter = this.messageWaiters.get(clientMessageId);
+    if (!waiter) return;
+    clearTimeout(waiter.timer);
+    this.messageWaiters.delete(clientMessageId);
+    waiter.resolve();
+  }
+
+  private rejectMessageWaiter(clientMessageId: string, error: Error): void {
+    const waiter = this.messageWaiters.get(clientMessageId);
+    if (!waiter) return;
+    clearTimeout(waiter.timer);
+    this.messageWaiters.delete(clientMessageId);
+    waiter.reject(error);
+  }
+
+  private rejectAllMessageWaiters(error: Error): void {
+    for (const clientMessageId of [...this.messageWaiters.keys()]) {
+      this.rejectMessageWaiter(clientMessageId, error);
+    }
+  }
+
   private flushPendingReplies(): void {
     for (const clientMessageId of [...this.pendingReplies.keys()]) {
       this.sendPendingReply(clientMessageId);
@@ -559,6 +595,37 @@ export class AgentClient {
     });
   }
 
+  /**
+   * Sends a message and resolves only after the server persists it and returns
+   * `message.sent` for this exact `clientMessageId`. A local socket write is
+   * not proof of persistence: callers that must not lose a reply should await
+   * this method and retry with the same clientMessageId after a reconnect.
+   */
+  async sendMessageWithAck(
+    groupId: string,
+    content: string,
+    options: SendMessageOptions = {},
+    timeoutMs = this.options.replyAckTimeoutMs ?? 10_000,
+  ): Promise<void> {
+    if (!this.socket) throw new Error("socket is not open");
+    const clientMessageId = options.clientMessageId ?? `sdk-msg-${randomBytes(12).toString("hex")}`;
+    await new Promise<void>((resolve, reject) => {
+      const timer = setTimeout(() => {
+        this.messageWaiters.delete(clientMessageId);
+        reject(new Error(`message.sent timed out for ${clientMessageId}`));
+      }, timeoutMs);
+      (timer as { unref?: () => void }).unref?.();
+      this.messageWaiters.set(clientMessageId, { resolve, reject, timer });
+      try {
+        this.sendMessage(groupId, content, { ...options, clientMessageId });
+      } catch (error) {
+        clearTimeout(timer);
+        this.messageWaiters.delete(clientMessageId);
+        reject(error instanceof Error ? error : new Error(String(error)));
+      }
+    });
+  }
+
   setStatus(status: "online" | "offline"): void {
     this.send({ type: "agent.status", status });
   }
@@ -570,6 +637,7 @@ export class AgentClient {
     }
     this.replyTimers.clear();
     this.pendingReplies.clear();
+    this.rejectAllMessageWaiters(new Error("client closed"));
     this.socketOpen = false;
     this.socket?.close();
     this.socket = undefined;

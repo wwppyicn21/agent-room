@@ -33,6 +33,7 @@ import {
   requireGroupManager,
   requireGroupMember,
   requireAgent,
+  requireGroupOwnerRole,
   requireUser,
   requireWriteUser,
   validateTitle,
@@ -153,6 +154,9 @@ export function addMember(
   if (memberType === "agent" && memberRole !== "member") {
     throw new ValidationError("agents can only be group members, not owners or admins");
   }
+  if (memberRole === "owner") {
+    requireGroupOwnerRole(ctx.db, input.groupId, input.actorUserId);
+  }
   assertKnownMember(ctx.db, input.groupId, memberType, input.memberId);
   const now = ctx.now();
   const id = newId("mem");
@@ -229,26 +233,7 @@ export function updateMemberRole(
   if (membership.memberRole === memberRole) return membership;
 
   if (memberRole === "owner" || membership.memberRole === "owner") {
-    const actor = ctx.db
-      .select({ role: users.role })
-      .from(users)
-      .where(eq(users.id, input.actorUserId))
-      .get();
-    const systemAdmin = actor?.role === "owner" || actor?.role === "admin";
-    const actorMembership = ctx.db
-      .select({ memberRole: groupMembers.memberRole })
-      .from(groupMembers)
-      .where(
-        and(
-          eq(groupMembers.groupId, input.groupId),
-          eq(groupMembers.memberType, "user"),
-          eq(groupMembers.memberId, input.actorUserId),
-        ),
-      )
-      .get();
-    if (!systemAdmin && actorMembership?.memberRole !== "owner") {
-      throw new ForbiddenError("only group owners can change the group owner role");
-    }
+    requireGroupOwnerRole(ctx.db, input.groupId, input.actorUserId);
   }
 
   if (membership.memberRole === "owner" && memberRole !== "owner") {
@@ -321,6 +306,9 @@ export function removeMember(
     )
     .get();
   if (!membership) throw new NotFoundError("membership not found");
+  if (membership.memberRole === "owner") {
+    requireGroupOwnerRole(ctx.db, input.groupId, input.actorUserId);
+  }
   if (memberType === "user" && membership.memberRole === "owner") {
     const otherOwner = ctx.db
       .select({ id: groupMembers.id })
@@ -419,6 +407,80 @@ export function requireGroupAccess(ctx: RoomContext, groupId: string, userId: st
   requireGroupMember(ctx.db, groupId, { type: "user", id: userId });
   if (group.status !== "active") throw new ForbiddenError("group is archived");
   return [];
+}
+
+export interface MemberCandidate {
+  memberType: "user" | "agent";
+  memberId: string;
+  displayName: string;
+  status: string;
+}
+
+/** Candidates for a specific group; never exposes users outside the manager's group scope. */
+export function listMemberCandidates(
+  ctx: RoomContext,
+  input: {
+    groupId: string;
+    viewerUserId: string;
+    memberType: "user" | "agent";
+    query?: string;
+    limit?: number;
+  },
+): MemberCandidate[] {
+  requireGroupManager(ctx.db, input.groupId, { type: "user", id: input.viewerUserId });
+  requireWriteUser(ctx.db, input.viewerUserId);
+  requireActiveGroup(ctx.db, input.groupId);
+  const memberType = memberTypeSchema.parse(input.memberType);
+  const query = input.query?.trim().toLowerCase() ?? "";
+  const limit = Math.min(Math.max(input.limit ?? 50, 1), 200);
+  const existing = new Set(
+    ctx.db
+      .select({ memberId: groupMembers.memberId })
+      .from(groupMembers)
+      .where(and(eq(groupMembers.groupId, input.groupId), eq(groupMembers.memberType, memberType)))
+      .all()
+      .map((row) => row.memberId),
+  );
+  if (memberType === "user") {
+    return ctx.db
+      .select()
+      .from(users)
+      .orderBy(users.displayName)
+      .all()
+      .filter(
+        (user) =>
+          user.status === "active" &&
+          !existing.has(user.id) &&
+          (!query ||
+            user.displayName.toLowerCase().includes(query) ||
+            (user.email?.toLowerCase().includes(query) ?? false)),
+      )
+      .slice(0, limit)
+      .map((user) => ({
+        memberType: "user" as const,
+        memberId: user.id,
+        displayName: user.displayName,
+        status: user.status,
+      }));
+  }
+  return ctx.db
+    .select()
+    .from(agents)
+    .orderBy(agents.displayName)
+    .all()
+    .filter(
+      (agent) =>
+        agent.status !== "disabled" &&
+        !existing.has(agent.id) &&
+        (!query || agent.displayName.toLowerCase().includes(query)),
+    )
+    .slice(0, limit)
+    .map((agent) => ({
+      memberType: "agent" as const,
+      memberId: agent.id,
+      displayName: agent.displayName,
+      status: agent.status,
+    }));
 }
 
 export function listGroupMembers(

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { ApiClient, type Approval, type Group, type GroupAgent, type Task } from "../api";
 import { Badge, Button, Card, Empty, ErrorBanner, Field, Select, TextArea, TextInput } from "../ui";
 import { formatTime, shortId, statusLabel } from "../format";
@@ -26,31 +26,51 @@ export function TasksView({
   const [description, setDescription] = useState("");
   const [assignedAgentId, setAssignedAgentId] = useState("");
   const [busy, setBusy] = useState(false);
+  const groupIdRef = useRef(group.id);
+  groupIdRef.current = group.id;
 
   const loadTasks = useCallback(async () => {
+    const groupId = group.id;
     try {
-      const result = await api.listTasks(group.id, { status: status || undefined, limit: 50 });
+      const result = await api.listTasks(groupId, { status: status || undefined, limit: 50 });
+      if (groupIdRef.current !== groupId) return;
       setTasks(result.items);
       setTasksError(null);
       setSelected((current) =>
         current && result.items.some((item) => item.id === current.id) ? current : null,
       );
     } catch (err) {
+      if (groupIdRef.current !== groupId) return;
       setTasks([]);
       setTasksError(err instanceof Error ? err.message : String(err));
     }
   }, [api, group.id, status]);
 
   const loadAgents = useCallback(async () => {
+    const groupId = group.id;
     try {
-      const result = await api.listGroupAgents(group.id);
+      const result = await api.listGroupAgents(groupId);
+      if (groupIdRef.current !== groupId) return;
       setAgents(result.agents);
       setAgentsError(null);
     } catch (err) {
+      if (groupIdRef.current !== groupId) return;
       setAgents([]);
       setAgentsError(err instanceof Error ? err.message : String(err));
     }
   }, [api, group.id]);
+
+  useEffect(() => {
+    setTasks([]);
+    setSelected(null);
+    setApprovals([]);
+    setTasksError(null);
+    setStatus("");
+    setSourceMessageId("");
+    setTitle("");
+    setDescription("");
+    setAssignedAgentId("");
+  }, [group.id]);
 
   useEffect(() => {
     void loadTasks();
@@ -63,11 +83,13 @@ export function TasksView({
   }, [loadAgents, group.id]);
 
   const loadApprovals = async (task: Task) => {
+    const groupId = group.id;
     try {
       const result = await api.listApprovals(task.id);
+      if (groupIdRef.current !== groupId || task.groupId !== groupId) return;
       setApprovals(result.approvals);
     } catch (err) {
-      onError(err);
+      if (groupIdRef.current === groupId) onError(err);
     }
   };
 

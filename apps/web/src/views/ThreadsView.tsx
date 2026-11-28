@@ -106,7 +106,7 @@ export function ThreadsView({
     if (!selectedId || !input.trim()) return;
     try {
       const result = await api.postThreadMessage(selectedId, { content: input.trim() });
-      setMessages((current) => [...current, result.message]);
+      setMessages((current) => mergeMessages(current, [result.message]));
       setInput("");
     } catch (err) {
       onError(err);

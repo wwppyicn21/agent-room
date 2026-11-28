@@ -288,7 +288,7 @@ export function App() {
             />
           )}
           {group && view === "diagnostics" && (
-            <DiagnosticsView api={api} group={group} onError={onError} />
+            <DiagnosticsView api={api} group={group} me={me.user} onError={onError} />
           )}
         </div>
       </main>

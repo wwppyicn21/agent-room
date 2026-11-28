@@ -303,7 +303,15 @@ export function handleRealtimeSocket(
     const revoked = groupId;
     groupId = null;
     presenceSignature = "";
-    send({ type: "error", code: reason, groupId: revoked });
+    send({
+      type: "error",
+      code: reason,
+      message:
+        reason === "membership_revoked"
+          ? "you are no longer a member of this group"
+          : "your account is disabled",
+      groupId: revoked,
+    });
   };
 
   const deliver = (): void => {
@@ -374,7 +382,11 @@ export function handleRealtimeSocket(
     },
     close: (reason: string) => {
       if (!closed) {
-        send({ type: "error", code: reason });
+        send({
+          type: "error",
+          code: reason,
+          message: reason === "user_disabled" ? "your account is disabled" : "connection closed",
+        });
         closed = true;
       }
       cleanup();

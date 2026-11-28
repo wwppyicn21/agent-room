@@ -17,6 +17,8 @@ class FakeClient implements RoomClientLike {
   connected = false;
   openCalls = 0;
   failSend = false;
+  manualAcks = false;
+  readonly acks: { resolve: () => void; reject: (error: Error) => void }[] = [];
   connectDelayMs = 0;
   sent: { groupId: string; content: string; options?: Record<string, unknown> }[] = [];
   options: AgentClientOptions | undefined;
@@ -36,6 +38,22 @@ class FakeClient implements RoomClientLike {
   sendMessage(groupId: string, content: string, options?: Record<string, unknown>): void {
     if (this.failSend) throw new Error("socket is not open");
     this.sent.push({ groupId, content, options });
+  }
+  async sendMessageWithAck(
+    groupId: string,
+    content: string,
+    options?: Record<string, unknown>,
+  ): Promise<void> {
+    if (this.failSend) throw new Error("socket is not open");
+    this.sent.push({ groupId, content, options });
+    if (!this.manualAcks) return;
+    await new Promise<void>((resolve, reject) => this.acks.push({ resolve, reject }));
+  }
+  confirmAck(): void {
+    this.acks.shift()?.resolve();
+  }
+  failAck(error = "ack failed"): void {
+    this.acks.shift()?.reject(new Error(error));
   }
 }
 
@@ -174,6 +192,13 @@ function messageEvent(overrides: Partial<AgentEvent> = {}): AgentEvent {
   };
 }
 
+function startTurn(harness: Harness, sessionId: string, eventId: string, turnNumber = 1): void {
+  harness.emit(sessionId, {
+    type: "user/message",
+    data: { turn: turnNumber, source: { rpcId: `room-${eventId}` } },
+  });
+}
+
 async function waitFor(check: () => boolean, timeoutMs = 2_000): Promise<void> {
   const started = Date.now();
   while (!check()) {
@@ -238,6 +263,7 @@ describe("DSH plugin bridge", () => {
     await waitFor(() => harness.client.connected);
 
     await harness.deliver(messageEvent());
+    startTurn(harness, "ses_a", "evd_1", 1);
     expect(harness.prompts).toHaveLength(1);
     await waitFor(() => harness.bridge.deliveryStore.getTurn("evd_1")?.state === "failed");
     expect(harness.bridge.deliveryStore.getTurn("evd_1")?.error).toBe("turn_timeout");
@@ -314,9 +340,11 @@ describe("DSH plugin bridge", () => {
     await harness.deliver(messageEvent({ threadId: "thr_1" }));
     expect(harness.prompts[0]?.content[0]?.text).toContain("thread_id: thr_1");
 
+    startTurn(harness, "ses_a", "evd_1", 1);
     harness.emit("ses_a", {
       type: "assistant/message",
       data: {
+        turn: 1,
         message: {
           content: [
             { type: "text", text: "public answer" },
@@ -325,9 +353,12 @@ describe("DSH plugin bridge", () => {
         },
       },
     });
-    harness.emit("ses_a", { type: "turn/end", data: { reason: { kind: "completed" } } });
+    harness.emit("ses_a", {
+      type: "turn/end",
+      data: { turn: 1, reason: { kind: "completed" } },
+    });
 
-    expect(harness.client.sent).toHaveLength(1);
+    await waitFor(() => harness.client.sent.length === 1);
     expect(harness.client.sent[0]).toMatchObject({
       groupId: "grp_a",
       content: "public answer",
@@ -341,19 +372,27 @@ describe("DSH plugin bridge", () => {
     await harness.bridge.start();
     await waitFor(() => harness.client.connected);
     await harness.deliver(messageEvent());
+    startTurn(harness, "ses_a", "evd_1", 1);
     harness.emit("ses_a", {
       type: "assistant/message",
-      data: { message: { content: [{ type: "text", text: "[skip] no action" }] } },
+      data: { turn: 1, message: { content: [{ type: "text", text: "[skip] no action" }] } },
     });
-    harness.emit("ses_a", { type: "turn/end", data: { reason: { kind: "completed" } } });
+    harness.emit("ses_a", {
+      type: "turn/end",
+      data: { turn: 1, reason: { kind: "completed" } },
+    });
     expect(harness.client.sent).toHaveLength(0);
 
     await harness.deliver(messageEvent({ eventId: "evd_2" }));
+    startTurn(harness, "ses_a", "evd_2", 2);
     harness.emit("ses_a", {
       type: "assistant/message",
-      data: { message: { content: [{ type: "text", text: "partial" }] } },
+      data: { turn: 2, message: { content: [{ type: "text", text: "partial" }] } },
     });
-    harness.emit("ses_a", { type: "turn/end", data: { reason: { kind: "error" } } });
+    harness.emit("ses_a", {
+      type: "turn/end",
+      data: { turn: 2, reason: { kind: "error" } },
+    });
     expect(harness.client.sent).toHaveLength(0);
     await harness.bridge.stop();
   });
@@ -367,11 +406,16 @@ describe("DSH plugin bridge", () => {
     await waitFor(() => harness.client.connected);
     await harness.deliver(messageEvent({ groupId: "grp_a" }));
     await harness.deliver(messageEvent({ eventId: "evd_b", groupId: "grp_b" }));
+    startTurn(harness, "ses_a", "evd_1", 1);
     harness.emit("ses_a", {
       type: "assistant/message",
-      data: { message: { content: [{ type: "text", text: "from a" }] } },
+      data: { turn: 1, message: { content: [{ type: "text", text: "from a" }] } },
     });
-    harness.emit("ses_a", { type: "turn/end", data: { reason: { kind: "completed" } } });
+    harness.emit("ses_a", {
+      type: "turn/end",
+      data: { turn: 1, reason: { kind: "completed" } },
+    });
+    await waitFor(() => harness.client.sent.length === 1);
     expect(harness.client.sent).toEqual([
       expect.objectContaining({ groupId: "grp_a", content: "from a" }),
     ]);
@@ -558,13 +602,16 @@ describe("DSH plugin turn recovery", () => {
 
     harness.emit("ses_a", {
       type: "user/message",
-      data: { source: { rpcId: "room-evd_2" } },
+      data: { turn: 2, source: { rpcId: "room-evd_2" } },
     });
     harness.emit("ses_a", {
       type: "assistant/message",
-      data: { message: { content: [{ type: "text", text: "second answer" }] } },
+      data: { turn: 2, message: { content: [{ type: "text", text: "second answer" }] } },
     });
-    harness.emit("ses_a", { type: "turn/end", data: { reason: { kind: "completed" } } });
+    harness.emit("ses_a", {
+      type: "turn/end",
+      data: { turn: 2, reason: { kind: "completed" } },
+    });
 
     await waitFor(() => harness.client.sent.length === 1);
     await waitFor(() => harness.bridge.deliveryStore.getTurn("evd_2")?.state === "completed");
@@ -580,7 +627,7 @@ describe("DSH plugin turn recovery", () => {
     const harness = makeHarness([{ groupId: "grp_a", sessionId: "ses_a" }]);
     await harness.bridge.start();
     await waitFor(() => harness.client.connected);
-    await harness.deliver(messageEvent());
+    await harness.deliver(messageEvent({ taskId: "tsk_1" }));
     harness.recover([{ task: { id: "tsk_1", groupId: "grp_a" } } as unknown as AgentTaskView]);
     await harness.cancel({
       commandId: "cmd_1",
@@ -605,11 +652,15 @@ describe("DSH plugin turn recovery", () => {
     await waitFor(() => harness.client.connected);
     await harness.deliver(messageEvent());
     harness.client.failSend = true;
+    startTurn(harness, "ses_a", "evd_1", 1);
     harness.emit("ses_a", {
       type: "assistant/message",
-      data: { message: { content: [{ type: "text", text: "durable answer" }] } },
+      data: { turn: 1, message: { content: [{ type: "text", text: "durable answer" }] } },
     });
-    harness.emit("ses_a", { type: "turn/end", data: { reason: { kind: "completed" } } });
+    harness.emit("ses_a", {
+      type: "turn/end",
+      data: { turn: 1, reason: { kind: "completed" } },
+    });
     await waitFor(() => harness.bridge.deliveryStore.getTurn("evd_1")?.state === "reply_pending");
     expect(harness.client.sent).toHaveLength(0);
     await harness.bridge.deliveryStore.flush();
@@ -638,5 +689,284 @@ describe("DSH plugin turn recovery", () => {
     expect(harness.client.openCalls).toBe(0);
     expect(harness.client.connected).toBe(false);
     expect(harness.bridge.status().connected).toBe(false);
+  });
+});
+
+describe("P0 turn isolation and reply ACK", () => {
+  it("ignores a human DSH conversation that is not a Room request", async () => {
+    const harness = makeHarness([{ groupId: "grp_a", sessionId: "ses_a" }]);
+    await harness.bridge.start();
+    await waitFor(() => harness.client.connected);
+    await harness.deliver(messageEvent());
+    harness.emit("ses_a", {
+      type: "user/message",
+      data: { turn: 9, source: { rpcId: "human-turn-9" } },
+    });
+    harness.emit("ses_a", {
+      type: "assistant/message",
+      data: { turn: 9, message: { content: [{ type: "text", text: "human answer" }] } },
+    });
+    harness.emit("ses_a", {
+      type: "turn/end",
+      data: { turn: 9, reason: { kind: "completed" } },
+    });
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    expect(harness.client.sent).toHaveLength(0);
+    expect(harness.bridge.deliveryStore.getTurn("evd_1")?.state).toBe("awaiting_response");
+    await harness.bridge.stop();
+  });
+
+  it("lets turn B run after turn A timed out, and ignores A's late reply", async () => {
+    const harness = makeHarness([{ groupId: "grp_a", sessionId: "ses_a" }], {
+      turnTimeoutMs: 40,
+    });
+    await harness.bridge.start();
+    await waitFor(() => harness.client.connected);
+
+    await harness.deliver(messageEvent({ eventId: "evd_a" }));
+    startTurn(harness, "ses_a", "evd_a", 1);
+    await waitFor(() => harness.bridge.deliveryStore.getTurn("evd_a")?.state === "failed");
+
+    await harness.deliver(messageEvent({ eventId: "evd_b" }));
+    startTurn(harness, "ses_a", "evd_b", 2);
+    harness.emit("ses_a", {
+      type: "assistant/message",
+      data: { turn: 2, message: { content: [{ type: "text", text: "answer b" }] } },
+    });
+    harness.emit("ses_a", {
+      type: "turn/end",
+      data: { turn: 2, reason: { kind: "completed" } },
+    });
+    await waitFor(() => harness.client.sent.length === 1);
+    expect(harness.client.sent[0]?.content).toBe("answer b");
+
+    // A's late assistant/turn-end belongs to a dead turn and must be ignored.
+    harness.emit("ses_a", {
+      type: "assistant/message",
+      data: { turn: 1, message: { content: [{ type: "text", text: "late a" }] } },
+    });
+    harness.emit("ses_a", {
+      type: "turn/end",
+      data: { turn: 1, reason: { kind: "completed" } },
+    });
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    expect(harness.client.sent).toHaveLength(1);
+    expect(harness.bridge.deliveryStore.getTurn("evd_a")?.state).toBe("failed");
+    expect(harness.bridge.deliveryStore.getTurn("evd_b")?.state).toBe("completed");
+    await harness.bridge.stop();
+  });
+
+  it("answers consecutive Room requests in their own turn", async () => {
+    const harness = makeHarness([{ groupId: "grp_a", sessionId: "ses_a" }]);
+    await harness.bridge.start();
+    await waitFor(() => harness.client.connected);
+    await harness.deliver(messageEvent({ eventId: "evd_a" }));
+    await harness.deliver(messageEvent({ eventId: "evd_b" }));
+    startTurn(harness, "ses_a", "evd_a", 1);
+
+    harness.emit("ses_a", {
+      type: "assistant/message",
+      data: { turn: 1, message: { content: [{ type: "text", text: "first" }] } },
+    });
+    harness.emit("ses_a", {
+      type: "turn/end",
+      data: { turn: 1, reason: { kind: "completed" } },
+    });
+    await waitFor(() => harness.client.sent.length === 1);
+    expect(harness.client.sent[0]?.content).toBe("first");
+
+    startTurn(harness, "ses_a", "evd_b", 2);
+    harness.emit("ses_a", {
+      type: "assistant/message",
+      data: { turn: 2, message: { content: [{ type: "text", text: "second" }] } },
+    });
+    harness.emit("ses_a", {
+      type: "turn/end",
+      data: { turn: 2, reason: { kind: "completed" } },
+    });
+    await waitFor(() => harness.client.sent.length === 2);
+    expect(harness.client.sent.map((item) => item.content)).toEqual(["first", "second"]);
+    await harness.bridge.stop();
+  });
+
+  it("cancels only the requested task and leaves another task on the same session running", async () => {
+    const harness = makeHarness([{ groupId: "grp_a", sessionId: "ses_a" }]);
+    await harness.bridge.start();
+    await waitFor(() => harness.client.connected);
+    await harness.deliver(messageEvent({ eventId: "evd_a", taskId: "tsk_a" }));
+    await harness.deliver(messageEvent({ eventId: "evd_b", taskId: "tsk_b" }));
+    startTurn(harness, "ses_a", "evd_a", 1);
+    startTurn(harness, "ses_a", "evd_b", 2);
+
+    await harness.cancel({
+      commandId: "cmd_a",
+      type: "task.cancel",
+      taskId: "tsk_a",
+      runId: null,
+      reason: "cancelled",
+      createdAt: new Date().toISOString(),
+    });
+
+    expect(harness.bridge.deliveryStore.getTurn("evd_a")?.state).toBe("cancelled");
+    expect(harness.bridge.deliveryStore.getTurn("evd_b")?.state).toBe("awaiting_response");
+    expect(harness.cancels).toHaveLength(0);
+
+    harness.emit("ses_a", {
+      type: "assistant/message",
+      data: { turn: 2, message: { content: [{ type: "text", text: "b still runs" }] } },
+    });
+    harness.emit("ses_a", {
+      type: "turn/end",
+      data: { turn: 2, reason: { kind: "completed" } },
+    });
+    await waitFor(() => harness.client.sent.length === 1);
+    expect(harness.client.sent[0]?.content).toBe("b still runs");
+    await harness.bridge.stop();
+  });
+
+  it("cancels only the owning task when the server emits task.cancelled", async () => {
+    const harness = makeHarness([{ groupId: "grp_a", sessionId: "ses_a" }]);
+    await harness.bridge.start();
+    await waitFor(() => harness.client.connected);
+    await harness.deliver(messageEvent({ eventId: "evd_a", taskId: "tsk_a" }));
+    await harness.deliver(messageEvent({ eventId: "evd_b", taskId: "tsk_b" }));
+    startTurn(harness, "ses_a", "evd_a", 1);
+    startTurn(harness, "ses_a", "evd_b", 2);
+
+    await harness.deliver({
+      ...messageEvent({ eventId: "evd_cancel", taskId: "tsk_a" }),
+      eventType: "task.cancelled",
+    });
+
+    expect(harness.bridge.deliveryStore.getTurn("evd_a")?.state).toBe("cancelled");
+    expect(harness.bridge.deliveryStore.getTurn("evd_b")?.state).toBe("awaiting_response");
+    await harness.bridge.stop();
+  });
+
+  it("does not acknowledge a cancel command before recovery has mapped the task", async () => {
+    const harness = makeHarness([{ groupId: "grp_a", sessionId: "ses_a" }]);
+    await harness.bridge.start();
+    await waitFor(() => harness.client.connected);
+    const command = {
+      commandId: "cmd_late",
+      type: "task.cancel" as const,
+      taskId: "tsk_late",
+      runId: null,
+      reason: "cancelled",
+      createdAt: new Date().toISOString(),
+    };
+    await expect(harness.cancel(command)).rejects.toThrow(/not recovered/);
+
+    harness.recover([{ task: { id: "tsk_late", groupId: "grp_a" } } as unknown as AgentTaskView]);
+    await expect(harness.cancel(command)).resolves.toBeUndefined();
+    await harness.bridge.stop();
+  });
+
+  it("keeps reply_pending until the server ACK and completes only afterwards", async () => {
+    const harness = makeHarness([{ groupId: "grp_a", sessionId: "ses_a" }]);
+    harness.client.manualAcks = true;
+    await harness.bridge.start();
+    await waitFor(() => harness.client.connected);
+    await harness.deliver(messageEvent());
+    startTurn(harness, "ses_a", "evd_1", 1);
+    harness.emit("ses_a", {
+      type: "assistant/message",
+      data: { turn: 1, message: { content: [{ type: "text", text: "acked answer" }] } },
+    });
+    harness.emit("ses_a", {
+      type: "turn/end",
+      data: { turn: 1, reason: { kind: "completed" } },
+    });
+    await waitFor(() => harness.client.sent.length === 1);
+    expect(harness.bridge.deliveryStore.getTurn("evd_1")?.state).toBe("reply_pending");
+
+    harness.client.confirmAck();
+    await waitFor(() => harness.bridge.deliveryStore.getTurn("evd_1")?.state === "completed");
+    expect(harness.client.sent[0]?.options?.clientMessageId).toBe("plugin-reply-evd_1");
+    await harness.bridge.stop();
+  });
+
+  it("keeps reply_pending when the server rejects the reply ACK", async () => {
+    const harness = makeHarness([{ groupId: "grp_a", sessionId: "ses_a" }]);
+    harness.client.manualAcks = true;
+    await harness.bridge.start();
+    await waitFor(() => harness.client.connected);
+    await harness.deliver(messageEvent());
+    startTurn(harness, "ses_a", "evd_1", 1);
+    harness.emit("ses_a", {
+      type: "assistant/message",
+      data: { turn: 1, message: { content: [{ type: "text", text: "retry me" }] } },
+    });
+    harness.emit("ses_a", {
+      type: "turn/end",
+      data: { turn: 1, reason: { kind: "completed" } },
+    });
+    await waitFor(() => harness.client.sent.length === 1);
+    harness.client.failAck("server unavailable");
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    expect(harness.bridge.deliveryStore.getTurn("evd_1")?.state).toBe("reply_pending");
+    await harness.bridge.stop();
+  });
+
+  it("does not lose a turn when DSH events arrive before prompt() resolves", async () => {
+    const harness = makeHarness([{ groupId: "grp_a", sessionId: "ses_a" }]);
+    let releasePrompt: (() => void) | undefined;
+    harness.controller.prompt.mockImplementationOnce(async (request: unknown) => {
+      harness.prompts.push(request as never);
+      await new Promise<void>((resolve) => {
+        releasePrompt = resolve;
+      });
+      return { accepted: true as const };
+    });
+    await harness.bridge.start();
+    await waitFor(() => harness.client.connected);
+    const delivery = harness.deliver(messageEvent());
+    await waitFor(() => harness.prompts.length === 1);
+    startTurn(harness, "ses_a", "evd_1", 1);
+    harness.emit("ses_a", {
+      type: "assistant/message",
+      data: { turn: 1, message: { content: [{ type: "text", text: "early answer" }] } },
+    });
+    harness.emit("ses_a", {
+      type: "turn/end",
+      data: { turn: 1, reason: { kind: "completed" } },
+    });
+    releasePrompt?.();
+    await delivery;
+    await waitFor(() => harness.client.sent.length === 1);
+    expect(harness.bridge.deliveryStore.getTurn("evd_1")?.state).toBe("completed");
+    await harness.bridge.stop();
+  });
+
+  it("does not prompt again when a cancelled delivery is redelivered", async () => {
+    const harness = makeHarness([{ groupId: "grp_a", sessionId: "ses_a" }]);
+    await harness.bridge.start();
+    await waitFor(() => harness.client.connected);
+    await harness.deliver(messageEvent({ taskId: "tsk_1" }));
+    harness.recover([{ task: { id: "tsk_1", groupId: "grp_a" } } as unknown as AgentTaskView]);
+    await harness.cancel({
+      commandId: "cmd_1",
+      type: "task.cancel",
+      taskId: "tsk_1",
+      runId: null,
+      reason: "removed",
+      createdAt: new Date().toISOString(),
+    });
+    expect(harness.bridge.deliveryStore.getTurn("evd_1")?.state).toBe("cancelled");
+    const prompts = harness.prompts.length;
+    await harness.deliver(messageEvent({ taskId: "tsk_1" }));
+    expect(harness.prompts).toHaveLength(prompts);
+    expect(harness.bridge.deliveryStore.getTurn("evd_1")?.state).toBe("cancelled");
+    await harness.bridge.stop();
+  });
+
+  it("flushes pending store writes before stop resolves", async () => {
+    const harness = makeHarness([{ groupId: "grp_a", sessionId: "ses_a" }]);
+    await harness.bridge.start();
+    await waitFor(() => harness.client.connected);
+    await harness.deliver(messageEvent());
+    const flush = vi.spyOn(harness.bridge.deliveryStore, "flush");
+    await harness.bridge.stop();
+    expect(flush).toHaveBeenCalled();
   });
 });

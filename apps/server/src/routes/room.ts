@@ -8,6 +8,7 @@ import {
   findUser,
   getGroup,
   listGroupMembers,
+  listMemberCandidates,
   listGroupsForAgent,
   listGroupsForUser,
   removeMember,
@@ -70,7 +71,7 @@ function actorOf(request: FastifyRequest): { type: "user"; id: string } {
 
 function agentOf(ctx: RoomContext, request: FastifyRequest): string {
   const header = request.headers.authorization;
-  const token = header?.startsWith("Bearer ") ? header.slice(7).trim() : "";
+  const token = header && /^Bearer\s/i.test(header) ? header.replace(/^Bearer\s+/i, "").trim() : "";
   if (!token || !token.startsWith("agt_")) {
     throw new UnauthorizedError("agent bearer token required");
   }
@@ -98,8 +99,27 @@ function params<T>(request: FastifyRequest): T {
 }
 
 function limitOf(value: string | undefined, fallback: number): number {
+  if (value === undefined || value === "") return fallback;
+  if (!/^\d+$/.test(value)) {
+    throw new ValidationError("limit must be a positive integer");
+  }
   const parsed = Number(value);
-  return Number.isFinite(parsed) && parsed > 0 ? Math.floor(parsed) : fallback;
+  if (!Number.isSafeInteger(parsed) || parsed < 1) {
+    throw new ValidationError("limit must be a positive integer");
+  }
+  return parsed;
+}
+
+function enumParam<T extends string>(
+  value: string | undefined,
+  allowed: readonly T[],
+  name: string,
+): T | undefined {
+  if (value === undefined || value === "") return undefined;
+  if (!allowed.includes(value as T)) {
+    throw new ValidationError(`${name} must be one of ${allowed.join(", ")}`);
+  }
+  return value as T;
 }
 
 /** Strict non-negative integer query parameter; empty means absent. */
@@ -245,6 +265,24 @@ export function registerRoomRoutes(app: FastifyInstance, deps: RoomRouteDependen
     return { members };
   });
 
+  app.get("/api/v1/groups/:groupId/member-candidates", async (request) => {
+    const actor = actorOf(request);
+    const { groupId } = params<{ groupId: string }>(request);
+    const queryParams = query<{ memberType?: string; q?: string; limit?: string }>(request);
+    const memberType = z.enum(["user", "agent"]).safeParse(queryParams.memberType);
+    if (!memberType.success) {
+      throw new ValidationError("memberType must be user or agent");
+    }
+    const candidates = listMemberCandidates(ctx, {
+      groupId,
+      viewerUserId: actor.id,
+      memberType: memberType.data,
+      query: queryParams.q,
+      limit: limitOf(queryParams.limit, 50),
+    });
+    return { candidates };
+  });
+
   app.post("/api/v1/groups/:groupId/members", async (request, reply) => {
     const actor = actorOf(request);
     const { groupId } = params<{ groupId: string }>(request);
@@ -353,7 +391,7 @@ export function registerRoomRoutes(app: FastifyInstance, deps: RoomRouteDependen
     return listThreads(ctx, {
       groupId,
       viewer: actor,
-      status,
+      status: enumParam(status, ["open", "closed", "failed"] as const, "status"),
       limit: limitOf(limit, 50),
       cursor: cursor || undefined,
     });
@@ -442,7 +480,20 @@ export function registerRoomRoutes(app: FastifyInstance, deps: RoomRouteDependen
     return listTasks(ctx, {
       groupId,
       viewerUserId: actor.id,
-      status: status as never,
+      status: enumParam(
+        status,
+        [
+          "queued",
+          "assigned",
+          "running",
+          "waiting_approval",
+          "paused",
+          "succeeded",
+          "failed",
+          "cancelled",
+        ] as const,
+        "status",
+      ),
       limit: limitOf(limit, 50),
       cursor,
     });

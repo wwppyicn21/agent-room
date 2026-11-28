@@ -528,3 +528,44 @@ describe("agent sdk control commands", () => {
     expect(commandAcks(socket)).toHaveLength(0);
   });
 });
+
+describe("agent sdk message acknowledgements", () => {
+  it("resolves sendMessageWithAck only after message.sent", async () => {
+    const { client, socket } = await openClient();
+    let settled = false;
+    const sending = client
+      .sendMessageWithAck("grp_1", "hello", { clientMessageId: "sdk-cmid-1" })
+      .then(() => {
+        settled = true;
+      });
+    const frame = replyFrames(socket).at(-1);
+    expect(frame?.clientMessageId).toBe("sdk-cmid-1");
+    await flush();
+    expect(settled).toBe(false);
+
+    socket.emit({ type: "message.sent", clientMessageId: "sdk-cmid-1" });
+    await sending;
+    expect(settled).toBe(true);
+  });
+
+  it("rejects sendMessageWithAck when the server returns a matching error", async () => {
+    const { client, socket } = await openClient();
+    const sending = client.sendMessageWithAck("grp_1", "hello", {
+      clientMessageId: "sdk-cmid-2",
+    });
+    socket.emit({
+      type: "error",
+      code: "forbidden",
+      message: "not a member",
+      clientMessageId: "sdk-cmid-2",
+    });
+    await expect(sending).rejects.toThrow("not a member");
+  });
+
+  it("times out a reply that never receives message.sent", async () => {
+    const { client } = await openClient(undefined, { replyAckTimeoutMs: 20 });
+    await expect(
+      client.sendMessageWithAck("grp_1", "hello", { clientMessageId: "sdk-cmid-3" }),
+    ).rejects.toThrow(/timed out/);
+  });
+});

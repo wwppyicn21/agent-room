@@ -666,4 +666,80 @@ describe("M5 review fix 3 REST revocation", () => {
     ]);
     for (const response of writeAttempts) expect(response.statusCode).toBe(403);
   });
+
+  it("rejects invalid pagination and status filters with 400", async () => {
+    const { app, ctx, owner } = await setup();
+    const groupId = createGroup(ctx, { name: "filters", createdByUserId: owner }).id;
+    const headers = { "x-dev-user-id": owner };
+    const badLimit = await app.inject({
+      method: "GET",
+      url: `/api/v1/groups/${groupId}/messages?limit=abc`,
+      headers,
+    });
+    expect(badLimit.statusCode).toBe(400);
+    const badTaskStatus = await app.inject({
+      method: "GET",
+      url: `/api/v1/groups/${groupId}/tasks?status=bogus`,
+      headers,
+    });
+    expect(badTaskStatus.statusCode).toBe(400);
+    const badThreadStatus = await app.inject({
+      method: "GET",
+      url: `/api/v1/groups/${groupId}/threads?status=bogus`,
+      headers,
+    });
+    expect(badThreadStatus.statusCode).toBe(400);
+  });
+
+  it("scopes member candidates to group managers", async () => {
+    const { app, ctx, owner } = await setup();
+    const groupId = createGroup(ctx, { name: "candidates", createdByUserId: owner }).id;
+    const member = createUser(ctx, {
+      displayName: "plain member",
+      role: "member",
+      actorUserId: owner,
+    }).id;
+    const outsiderId = createUser(ctx, {
+      displayName: "outsider",
+      role: "member",
+      actorUserId: owner,
+    }).id;
+    addMember(ctx, { groupId, actorUserId: owner, memberType: "user", memberId: member });
+    const forbidden = await app.inject({
+      method: "GET",
+      url: `/api/v1/groups/${groupId}/member-candidates?memberType=user`,
+      headers: { "x-dev-user-id": member },
+    });
+    expect(forbidden.statusCode).toBe(403);
+    const ok = await app.inject({
+      method: "GET",
+      url: `/api/v1/groups/${groupId}/member-candidates?memberType=user`,
+      headers: { "x-dev-user-id": owner },
+    });
+    expect(ok.statusCode).toBe(200);
+    const names = ok
+      .json()
+      .candidates.map((candidate: { displayName: string }) => candidate.displayName);
+    expect(names).toContain("outsider");
+    expect(names).not.toContain("plain member");
+    expect(outsiderId).toMatch(/^usr_/);
+  });
+
+  it("accepts a case-insensitive bearer scheme for agent tokens", async () => {
+    const { app, ctx, owner } = await setup();
+    const groupId = createGroup(ctx, { name: "bearer", createdByUserId: owner }).id;
+    const agentId = registerAgent(ctx, {
+      displayName: "agent",
+      runtime: "test",
+      actorUserId: owner,
+    }).id;
+    addMember(ctx, { groupId, actorUserId: owner, memberType: "agent", memberId: agentId });
+    const token = agentToken(ctx, agentId);
+    const response = await app.inject({
+      method: "GET",
+      url: "/api/v1/agent/groups",
+      headers: { authorization: `bearer ${token}` },
+    });
+    expect(response.statusCode).toBe(200);
+  });
 });

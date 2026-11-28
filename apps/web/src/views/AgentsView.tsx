@@ -205,7 +205,6 @@ export function AgentsView({
                     <div className="mono small">{shortId(key.fingerprint)}</div>
                     <div className="muted small">
                       {statusLabel(key.status)} · 创建 {formatTime(key.createdAt)}
-                      {key.revokedAt ? ` · 吊销 ${formatTime(key.revokedAt)}` : ""}
                     </div>
                   </div>
                   {key.status === "active" && canAdmin && (

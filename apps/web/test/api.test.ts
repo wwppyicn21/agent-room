@@ -112,4 +112,12 @@ describe("web api client", () => {
     expect(result.items[0].agentDisplayName).toBe("dsh");
     expect(result.items[0].eventType).toBe("message.created");
   });
+
+  it("deletes a message as a bodyless DELETE and resolves with void", async () => {
+    const { api, calls } = client(() => new Response(null, { status: 204 }));
+    await expect(api.deleteMessage("msg_1")).resolves.toBeUndefined();
+    expect(calls[0].url).toBe("/api/v1/messages/msg_1");
+    expect(calls[0].init?.method).toBe("DELETE");
+    expect(calls[0].init?.body).toBeUndefined();
+  });
 });

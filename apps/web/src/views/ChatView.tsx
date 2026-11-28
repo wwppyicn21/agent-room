@@ -35,33 +35,51 @@ export function ChatView({ api, me, group, notify, onError }: ChatViewProps) {
   const [replyTo, setReplyTo] = useState<Message | null>(null);
   const [sending, setSending] = useState(false);
   const [state, setState] = useState<"connecting" | "open" | "closed">("connecting");
+  const [connectionError, setConnectionError] = useState<string | null>(null);
   const [eventCursor, setEventCursor] = useState<number | null>(null);
   const [olderCursor, setOlderCursor] = useState<number | null>(null);
   const onErrorRef = useRef(onError);
   onErrorRef.current = onError;
   const bottomRef = useRef<HTMLDivElement | null>(null);
+  const listRef = useRef<HTMLDivElement | null>(null);
+  const stickRef = useRef(true);
+  const groupIdRef = useRef(group.id);
+  groupIdRef.current = group.id;
 
   const load = useCallback(async () => {
+    const groupId = group.id;
     try {
       const [history, memberList] = await Promise.all([
-        api.listMessages(group.id, { limit: 50 }),
-        api.listMembers(group.id),
+        api.listMessages(groupId, { limit: 50 }),
+        api.listMembers(groupId),
       ]);
+      if (groupIdRef.current !== groupId) return;
       setMessages(history.items);
       setEventCursor(history.eventCursor);
       setOlderCursor(history.nextCursor);
       setMembers(memberList.members);
+      stickRef.current = true;
     } catch (err) {
-      onError(err);
+      if (groupIdRef.current === groupId) onError(err);
     }
   }, [api, group.id]);
 
   useEffect(() => {
     setMessages([]);
+    setMembers([]);
+    setPresence(new Set());
     setReplyTo(null);
     setEventCursor(null);
     setOlderCursor(null);
-    void load();
+    stickRef.current = true;
+    let active = true;
+    void (async () => {
+      if (!active) return;
+      await load();
+    })();
+    return () => {
+      active = false;
+    };
   }, [load]);
 
   useEffect(() => {
@@ -123,8 +141,9 @@ export function ChatView({ api, me, group, notify, onError }: ChatViewProps) {
               .then((result) => setMembers(result.members))
               .catch(() => undefined);
           },
-          onState: (next) => {
+          onState: (next, error) => {
             setState(next);
+            setConnectionError(error ?? null);
           },
         },
         eventCursor,
@@ -144,7 +163,7 @@ export function ChatView({ api, me, group, notify, onError }: ChatViewProps) {
   }, [api, group.id, eventCursor]);
 
   useEffect(() => {
-    bottomRef.current?.scrollIntoView({ behavior: "smooth" });
+    if (stickRef.current) bottomRef.current?.scrollIntoView({ block: "end" });
   }, [messages]);
 
   const send = async (event: { preventDefault: () => void }) => {
@@ -156,7 +175,7 @@ export function ChatView({ api, me, group, notify, onError }: ChatViewProps) {
       const result = await api.postMessage(group.id, {
         content,
         replyToMessageId: replyTo?.id,
-        clientMessageId: `web-${crypto.randomUUID()}`,
+        clientMessageId: `web-${randomId()}`,
       });
       setMessages((current) => mergeMessages(current, [result.message]));
       setInput("");
@@ -195,7 +214,7 @@ export function ChatView({ api, me, group, notify, onError }: ChatViewProps) {
     <div className="chat">
       <div className="chat-head">
         <div className="row tight">
-          <span className={`dot ${state === "open" ? "ok" : "off"}`} />
+          <span className={`dot ${state === "open" ? "online" : "off"}`} />
           <span className="muted small">{state === "open" ? "实时已连接" : "连接中/已断开"}</span>
         </div>
         <div className="row tight">
@@ -206,86 +225,116 @@ export function ChatView({ api, me, group, notify, onError }: ChatViewProps) {
           ))}
           {onlineAgents.length === 0 && <span className="muted small">暂无在线 Agent</span>}
         </div>
+        {connectionError && <span className="badge badge-danger">{connectionError}</span>}
       </div>
-      <div className="messages">
-        {olderCursor !== null && (
-          <button
-            className="link small load-earlier"
-            onClick={() => {
-              const cursor = olderCursor;
-              if (cursor === null) return;
-              void api
-                .listMessages(group.id, { limit: 50, before: cursor })
-                .then((page) => {
-                  setMessages((current) => mergeMessages(page.items, current));
-                  setOlderCursor(page.nextCursor);
-                })
-                .catch(onErrorRef.current);
-            }}
-          >
-            加载更早消息
-          </button>
-        )}
-        {messages.length === 0 && <Empty>还没有消息，说点什么吧。</Empty>}
-        {messages.map((message) => (
-          <article key={message.id} className={`message ${message.senderType}`}>
-            <header>
-              <strong>{nameOf(message)}</strong>
-              <span className="muted small">{formatTime(message.createdAt)}</span>
-              {message.senderType !== "system" && (
-                <>
-                  <button className="link small" onClick={() => setReplyTo(message)}>
-                    回复
-                  </button>
-                  {(message.senderId === me.id || me.role === "owner" || me.role === "admin") && (
-                    <button className="link small" onClick={() => void remove(message)}>
-                      删除
-                    </button>
-                  )}
-                </>
-              )}
-            </header>
-            {message.replyToMessageId && (
-              <div className="reply-quote">
-                {(() => {
-                  const original = messages.find((item) => item.id === message.replyToMessageId);
-                  return original ? <>回复 {nameOf(original)}</> : <>回复「较早的消息」</>;
-                })()}
-              </div>
-            )}
-            <div className="bubble">{message.content}</div>
-            {message.hop > 0 && <div className="muted tiny">hop {message.hop}</div>}
-          </article>
-        ))}
-        <div ref={bottomRef} />
-      </div>
-      <form className="composer" onSubmit={(event) => void send(event)}>
-        {replyTo && (
-          <div className="reply-bar">
-            回复 {nameOf(replyTo)}：{replyTo.content.slice(0, 60)}
-            <button type="button" className="link" onClick={() => setReplyTo(null)}>
-              取消
+      <div className="chat-main">
+        <div
+          className="messages"
+          ref={listRef}
+          onScroll={() => {
+            const el = listRef.current;
+            if (!el) return;
+            stickRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < 80;
+          }}
+        >
+          {olderCursor !== null && (
+            <button
+              className="link small load-earlier"
+              onClick={() => {
+                const cursor = olderCursor;
+                if (cursor === null) return;
+                const el = listRef.current;
+                const previousHeight = el?.scrollHeight ?? 0;
+                const previousTop = el?.scrollTop ?? 0;
+                void api
+                  .listMessages(group.id, { limit: 50, before: cursor })
+                  .then((page) => {
+                    setMessages((current) => mergeMessages(page.items, current));
+                    setOlderCursor(page.nextCursor);
+                    requestAnimationFrame(() => {
+                      if (!el) return;
+                      el.scrollTop = previousTop + (el.scrollHeight - previousHeight);
+                      stickRef.current = false;
+                    });
+                  })
+                  .catch(onErrorRef.current);
+              }}
+            >
+              加载更早消息
             </button>
-          </div>
-        )}
-        <div className="row">
-          <TextArea
-            value={input}
-            placeholder={`以 ${me.displayName} 的身份发言…`}
-            rows={2}
-            onChange={(event) => setInput(event.target.value)}
-            onKeyDown={(event) => {
-              if (event.key === "Enter" && !event.shiftKey) {
-                event.preventDefault();
-                void send(event);
-              }
-            }}
-          />
-          <Button variant="primary" type="submit" disabled={sending || !input.trim()}>
-            {sending ? "发送中…" : "发送"}
-          </Button>
+          )}
+          {messages.length === 0 && <Empty>还没有消息，说点什么吧。</Empty>}
+          {messages.map((message) => (
+            <article key={message.id} className={`message ${message.senderType}`}>
+              <header>
+                <strong>{nameOf(message)}</strong>
+                <span className="muted small">{formatTime(message.createdAt)}</span>
+                {message.senderType !== "system" && (
+                  <>
+                    <button className="link small" onClick={() => setReplyTo(message)}>
+                      回复
+                    </button>
+                    {(message.senderId === me.id || me.role === "owner" || me.role === "admin") && (
+                      <button className="link small" onClick={() => void remove(message)}>
+                        删除
+                      </button>
+                    )}
+                  </>
+                )}
+              </header>
+              {message.replyToMessageId && (
+                <div className="reply-quote">
+                  {(() => {
+                    const original = messages.find((item) => item.id === message.replyToMessageId);
+                    return original ? <>回复 {nameOf(original)}</> : <>回复「较早的消息」</>;
+                  })()}
+                </div>
+              )}
+              <div className="bubble">{message.content}</div>
+              {message.hop > 0 && <div className="muted tiny">hop {message.hop}</div>}
+            </article>
+          ))}
+          <div ref={bottomRef} />
         </div>
-      </form>
+        <form className="composer" onSubmit={(event) => void send(event)}>
+          {replyTo && (
+            <div className="reply-bar">
+              回复 {nameOf(replyTo)}：{replyTo.content.slice(0, 60)}
+              <button type="button" className="link" onClick={() => setReplyTo(null)}>
+                取消
+              </button>
+            </div>
+          )}
+          <div className="row">
+            <TextArea
+              value={input}
+              placeholder={`以 ${me.displayName} 的身份发言…`}
+              rows={2}
+              onChange={(event) => setInput(event.target.value)}
+              onKeyDown={(event) => {
+                if (event.key === "Enter" && !event.shiftKey) {
+                  event.preventDefault();
+                  void send(event);
+                }
+              }}
+            />
+            <Button variant="primary" type="submit" disabled={sending || !input.trim()}>
+              {sending ? "发送中…" : "发送"}
+            </Button>
+          </div>
+        </form>
+      </div>
     </div>
   );
+}
+
+function randomId(): string {
+  const cryptoApi = globalThis.crypto as Crypto | undefined;
+  if (typeof cryptoApi?.randomUUID === "function") return cryptoApi.randomUUID();
+  const bytes = new Uint8Array(16);
+  if (typeof cryptoApi?.getRandomValues === "function") cryptoApi.getRandomValues(bytes);
+  else
+    for (let index = 0; index < bytes.length; index += 1)
+      bytes[index] = Math.floor(Math.random() * 256);
+  return Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0")).join("");
 }

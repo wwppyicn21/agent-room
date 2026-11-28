@@ -817,4 +817,30 @@ describe("AI participation engine", () => {
       }).id,
     ).toBeTruthy();
   });
+
+  it("stops fan-out for a user interjection once the reply budget is spent", () => {
+    const { groupId, a } = setup({ maxRepliesPerRoot: 1 });
+    const source = postMessage(room.ctx, {
+      groupId,
+      actor: { type: "user", id: owner },
+      content: "root",
+    });
+    expect(deliveredAgentIds(groupId)).toHaveLength(2);
+    postMessage(room.ctx, {
+      groupId,
+      actor: { type: "agent", id: a },
+      content: "only reply",
+      rootMessageId: source.id,
+      replyToMessageId: source.id,
+    });
+    postMessage(room.ctx, {
+      groupId,
+      actor: { type: "user", id: owner },
+      content: "any update?",
+      replyToMessageId: source.id,
+    });
+    expect(deliveredAgentIds(groupId)).toHaveLength(2);
+    const stop = stopEvents().at(-1);
+    expect(stop).toMatchObject({ reason: "reply_budget", rootMessageId: source.id });
+  });
 });

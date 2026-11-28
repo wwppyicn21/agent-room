@@ -111,10 +111,9 @@ export function decideParticipation(
   if (message.hop >= group.maxHops) return none("hop_limit");
 
   const rootId = rootMessageIdOf(message);
-  if (
-    message.senderType === "agent" &&
-    countAgentRepliesForRoot(db, rootId) >= group.maxRepliesPerRoot
-  ) {
+  // The root budget counts agent replies, but once it is exhausted any further
+  // fan-out under this root would be rejected later; stop it here instead.
+  if (countAgentRepliesForRoot(db, rootId) >= group.maxRepliesPerRoot) {
     return none("reply_budget");
   }
 

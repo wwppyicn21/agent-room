@@ -322,9 +322,16 @@ h3 {
   font-size: 26px;
 }
 .chat {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) 260px;
-  gap: 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-height: 0;
+  flex: 1;
+}
+.chat-main {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
   min-height: 0;
   flex: 1;
 }
@@ -609,4 +616,10 @@ h3 {
   .grid-2 {
     grid-template-columns: 1fr;
   }
+}
+
+.composer {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
 }
